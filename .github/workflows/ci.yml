@@ -24,3 +24,15 @@ jobs:
       - run: python -m pytest -q
       - run: python scripts/check_public_scope.py
       - run: node --check frontend/app.js
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t dcsj-smoke .
+      - run: docker run -d --name dcsj-smoke --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges --mount source=dcsj-smoke-data,target=/app/.runtime -p 127.0.0.1:8768:8767 dcsj-smoke
+      - run: test "$(docker exec dcsj-smoke id -u)" = 10001
+      - run: python tests/smoke_http.py http://127.0.0.1:8768 create /tmp/dcsj-smoke-id
+      - run: docker restart dcsj-smoke
+      - run: python tests/smoke_http.py http://127.0.0.1:8768 verify /tmp/dcsj-smoke-id
+      - if: failure()
+        run: docker logs dcsj-smoke
