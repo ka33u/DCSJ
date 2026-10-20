@@ -60,11 +60,18 @@ def _migrate(db, path):
                 "entity_id TEXT NOT NULL, created_at TEXT NOT NULL, details TEXT NOT NULL)",
                 "CREATE INDEX IF NOT EXISTS calculations_created ON calculations(created_at DESC)",
                 "CREATE INDEX IF NOT EXISTS calculations_project ON calculations(project_id, created_at DESC)",
+                "CREATE TABLE IF NOT EXISTS optimization_jobs (id TEXT PRIMARY KEY, name TEXT NOT NULL, request TEXT NOT NULL, "
+                "status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, evaluated INTEGER NOT NULL DEFAULT 0, "
+                "budget INTEGER NOT NULL, best_id TEXT, message TEXT NOT NULL DEFAULT '', owner TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0)",
+                "CREATE TABLE IF NOT EXISTS optimization_candidates (job_id TEXT NOT NULL REFERENCES optimization_jobs(id), "
+                "ordinal INTEGER NOT NULL, parameters TEXT NOT NULL, calculation_id TEXT, objective REAL, feasible INTEGER NOT NULL, "
+                "violations TEXT NOT NULL, error TEXT, PRIMARY KEY(job_id, ordinal))",
+                "CREATE TABLE IF NOT EXISTS optimization_workers (id TEXT PRIMARY KEY, heartbeat REAL NOT NULL)",
             ]:
                 db.execute(statement)
             db.execute("INSERT OR IGNORE INTO project_revisions "
                        "SELECT id,revision,name,parameters,notes,updated_at FROM projects")
-            db.execute("PRAGMA user_version=1")
+            db.execute("PRAGMA user_version=2")
             db.commit()
             _initialized.add(identity)
         except BaseException:
@@ -73,8 +80,8 @@ def _migrate(db, path):
 
 
 @contextmanager
-def connect():
-    path = database_path()
+def connect(path=None):
+    path = Path(path) if path is not None else database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=15)
     db.row_factory = sqlite3.Row

@@ -57,3 +57,16 @@ def test_input_boundaries_and_local_documentation(client):
     assert 'cdn.jsdelivr.net' not in client.get('/docs').text
     assert client.get('/api-assets/swagger-ui.css').status_code == 200
     assert '/api/v1/comparisons' in client.get('/openapi.json').json()['paths']
+
+
+def test_calculation_cannot_claim_unrelated_project_revision(client, parameters, snapshot):
+    from dcsj import projects
+    from dcsj.storage import ConflictError
+    import pytest
+    saved = projects.save_project('A', parameters)
+    snapshot['inputs'] = {**parameters, 'L': 170}
+    with pytest.raises(ConflictError):
+        calculations.save(snapshot, project_id=saved['id'], project_revision=1)
+    response = client.post('/api/v1/calculate', json={
+        'parameters': snapshot['inputs'], 'project_id': saved['id'], 'project_revision': 1})
+    assert response.status_code == 409

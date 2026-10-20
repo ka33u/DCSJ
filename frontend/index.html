@@ -22,6 +22,9 @@
         <button class="nav-item" data-view="catalog"><span class="nav-icon" aria-hidden="true">▤</span>电机型号库<span class="nav-index">02</span></button>
         <button class="nav-item" data-view="materials"><span class="nav-icon" aria-hidden="true">⌁</span>材料与磁化曲线<span class="nav-index">03</span></button>
         <button class="nav-item" data-view="projects"><span class="nav-icon" aria-hidden="true">▢</span>我的设计<span class="nav-index">04</span></button>
+        <button class="nav-item" data-view="comparisons"><span class="nav-icon" aria-hidden="true">⇄</span>方案对比<span class="nav-index">05</span></button>
+        <button class="nav-item" data-view="modeling"><span class="nav-icon" aria-hidden="true">◎</span>快速建模<span class="nav-index">06</span></button>
+        <button class="nav-item" data-view="optimization"><span class="nav-icon" aria-hidden="true">↗</span>自动寻优<span class="nav-index">07</span></button>
       </nav>
       <div class="sidebar-label secondary">DEVELOPER</div>
       <nav class="navigation" aria-label="开发与说明">
@@ -89,10 +92,39 @@
         </section>
 
         <section class="page" id="view-projects" aria-labelledby="projects-title">
-          <div class="page-heading"><div><div class="eyebrow">SAVED DESIGNS</div><h1 id="projects-title">我的设计</h1><p>打开已保存的参数版本，继续修改与计算。</p></div><button class="button" id="refresh-projects">刷新列表</button></div>
+          <div class="page-heading"><div><div class="eyebrow">SAVED DESIGNS</div><h1 id="projects-title">我的设计</h1><p>打开已保存的参数版本，继续修改与计算。</p></div><div class="heading-actions"><label><input type="checkbox" id="include-archived"> 显示归档</label><button class="button" id="refresh-projects">刷新列表</button></div></div>
           <section class="panel"><div id="projects-feedback" class="table-feedback" role="status"></div><div class="table-scroll"><table class="data-table"><thead><tr><th>设计名称</th><th>设计 ID</th><th>最近保存</th><th><span class="sr-only">操作</span></th></tr></thead><tbody id="project-table-body"></tbody></table></div></section>
         </section>
 
+        <section class="page" id="view-comparisons" aria-labelledby="comparisons-title">
+          <div class="page-heading"><div><div class="eyebrow">DESIGN COMPARISON</div><h1 id="comparisons-title">方案对比</h1><p>选择 2–8 次已保存的计算，基于固定输入与结果比较。</p></div><button class="button" id="refresh-calculations">刷新记录</button></div>
+          <section class="panel"><div class="filter-bar"><label class="select-filter">基准方案 <select id="comparison-baseline"><option value="">先选择计算记录</option></select></label><button class="button button-primary" id="run-comparison">对比所选方案</button><span id="comparison-count" class="muted">已选 0 / 8</span></div>
+            <div id="calculations-feedback" class="table-feedback" role="status"></div><div class="table-scroll"><table class="data-table"><thead><tr><th>选择</th><th>名称与计算时间</th><th>功率 kW</th><th>效率</th><th>材料成本</th><th>操作</th></tr></thead><tbody id="calculation-table-body"></tbody></table></div>
+            <div class="pagination"><span id="calculation-page"></span><div><button class="button button-small" id="calculation-previous">上一页</button><button class="button button-small" id="calculation-next">下一页</button></div></div>
+          </section><section id="comparison-result" class="panel feature-content hidden" aria-live="polite"></section>
+        </section>
+        <section class="page" id="view-modeling" aria-labelledby="modeling-title">
+          <div class="page-heading"><div><div class="eyebrow">QUICK MODELING</div><h1 id="modeling-title">快速建模</h1><p>按额定要求选择本地模板，检查尺寸与修改，再载入完整参数。</p></div><button class="button" id="preview-current-geometry">预览当前设计</button></div>
+          <section class="panel feature-content"><form id="template-search" class="quick-form">
+            <label>目标功率 kW<input class="text-input" id="template-power" type="number" min="0.001" max="100000" step="any" value="12" required></label>
+            <label>极数<input class="text-input" id="template-poles" type="number" min="2" max="64" step="2" value="4" required></label>
+            <label>频率 Hz<input class="text-input" id="template-frequency" type="number" min="1" max="1000" step="any" value="50" required></label>
+            <label>相电压 V<input class="text-input" id="template-voltage" type="number" min="1" max="50000" step="any" value="230" required></label>
+            <button class="button button-primary" type="submit">寻找模板</button></form><div id="template-list" class="template-list"></div></section>
+          <section id="quick-editor" class="panel feature-content hidden"><h2 id="quick-template-name">模板参数</h2><p class="muted">仅应用明确修改的值。不会自动猜测槽形与绕组。</p><form id="quick-model-form"><div id="quick-fields" class="quick-form"></div><div class="feature-actions"><button class="button" type="submit">校验并预览</button><button class="button button-primary" type="button" id="apply-quick-model" disabled>载入工作台</button></div></form></section>
+          <section id="geometry-preview" class="panel feature-content hidden" aria-live="polite"></section>
+        </section>
+        <section class="page" id="view-optimization" aria-labelledby="optimization-title">
+          <div class="page-heading"><div><div class="eyebrow">DESIGN OPTIMIZATION</div><h1 id="optimization-title">自动寻优</h1><p>在指定范围内逐项真实计算，保留满足约束的最佳候选。</p></div><button class="button" id="optimization-use-current">使用工作台当前设计</button></div>
+          <section class="panel feature-content"><p id="optimization-base" class="source-box">尚未选择基准设计，请先在工作台载入完整参数。</p><p id="optimization-method" class="muted"></p>
+            <form id="optimization-form"><div class="quick-form"><label>任务名称<input class="text-input" id="optimization-name" value="寻优方案" maxlength="120" required></label><label>优化目标<select class="text-input" id="optimization-objective"></select></label><label>计算预算（含基准）<input class="text-input" id="optimization-budget" type="number" min="2" max="128" value="24" required></label><label>随机种子<input class="text-input" id="optimization-seed" type="number" min="0" max="4294967295" value="42" required></label></div>
+              <h3 class="result-section-title">搜索变量</h3><p class="muted small">额定参数、材料单价与经验系数固定。制造步长为空时按连续变量搜索；绕组数量使用整数。</p><div id="optimization-variables"></div><button class="button button-small" type="button" id="add-optimization-variable">添加变量</button>
+              <h3 class="result-section-title">性能约束</h3><p class="muted small">效率、功率因数等使用比例值，例如 0.93；原最大转矩估计需结合曲线另行核验。</p><div id="optimization-constraints"></div><button class="button button-small" type="button" id="add-optimization-constraint">添加约束</button>
+              <div class="feature-actions"><button class="button button-primary" type="submit" id="start-optimization">启动寻优</button></div><div id="optimization-error" class="inline-error hidden" role="alert"></div>
+            </form></section>
+          <section class="panel feature-content"><div class="panel-header"><h2>任务记录</h2><button class="text-button" id="refresh-optimization-jobs">刷新</button></div><div id="optimization-jobs"></div></section>
+          <section id="optimization-detail" class="panel feature-content hidden" aria-live="polite"></section>
+        </section>
         <section class="page" id="view-about" aria-labelledby="about-title">
           <div class="page-heading"><div><div class="eyebrow">ENGINE &amp; PROVENANCE</div><h1 id="about-title">分析与实现状态</h1><p>明确区分恢复的数据、重新实现的计算和尚未确认的能力。</p></div><a class="button button-primary" href="/docs" target="_blank" rel="noopener">打开 API 文档 ↗</a></div>
           <div class="about-grid"><section class="panel"><div class="panel-header"><h2>服务与计算能力</h2><button class="text-button" id="refresh-status">刷新</button></div><div id="status-detail" class="about-content"><p class="loading-copy">正在读取状态…</p></div></section><section class="panel"><div class="panel-header"><h2>数据与结果的使用方式</h2></div><div class="about-content"><ol class="explanation-list"><li><strong>原始型号数据</strong><p>型号库中的参数来自恢复的数据源。每次载入会显示原表、记录及文件来源。</p></li><li><strong>本次计算结果</strong><p>只展示计算 API 实际返回的数值与曲线。修改参数后，已有结果会标记为过期。</p></li><li><strong>未确认字段与计算限制</strong><p>未识别的字段完整保留。计算警告与引擎限制会显示在工作台中，供核对适用条件。</p></li><li><strong>可复用的 HTTP API</strong><p>接口文档提供参数定义与在线请求入口。设计 JSON 可用于保存、迁移与集成。</p></li></ol></div></section></div>
@@ -102,7 +134,8 @@
     </div>
   </div>
   <input id="import-file" type="file" accept=".json,application/json" hidden>
-  <dialog id="save-dialog"><form id="save-form"><div class="dialog-heading"><div><div class="eyebrow">SAVE DESIGN</div><h2>保存当前设计</h2></div><button class="icon-button" type="button" id="close-save" aria-label="关闭保存窗口">×</button></div><p class="muted">保存当前参数。再次打开后可继续编辑并重新计算。</p><label class="field-label" for="design-name">设计名称</label><input class="text-input" id="design-name" required maxlength="120" placeholder="例如：三相异步电机方案 A"><div id="save-error" class="inline-error hidden" role="alert"></div><div class="dialog-actions"><button class="button" type="button" id="cancel-save">取消</button><button class="button button-primary" type="submit" id="confirm-save">保存设计</button></div></form></dialog>
+  <dialog id="save-dialog"><form id="save-form"><div class="dialog-heading"><div><div class="eyebrow">SAVE DESIGN</div><h2>保存当前设计</h2></div><button class="icon-button" type="button" id="close-save" aria-label="关闭保存窗口">×</button></div><p class="muted">保存当前参数。再次打开后可继续编辑并重新计算。</p><label class="field-label" for="design-name">设计名称</label><input class="text-input" id="design-name" required maxlength="120" placeholder="例如：三相异步电机方案 A"><label class="field-label" for="design-notes">设计备注</label><textarea class="text-input" id="design-notes" maxlength="4000" rows="3"></textarea><label><input type="checkbox" id="save-as-new"> 另存为新设计</label><div id="save-error" class="inline-error hidden" role="alert"></div><div class="dialog-actions"><button class="button" type="button" id="cancel-save">取消</button><button class="button button-primary" type="submit" id="confirm-save">保存设计</button></div></form></dialog>
+  <dialog id="history-dialog" class="wide-dialog"><div class="dialog-heading"><h2>版本历史</h2><button class="button" id="close-history">关闭</button></div><div id="history-content"></div></dialog>
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 </body>
 </html>

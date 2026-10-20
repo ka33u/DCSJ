@@ -2,19 +2,21 @@
 import json
 import uuid
 
-from .parameters import field_info
-from .storage import NotFoundError, audit, connect, dumps, now
+from .parameters import field_info, validate
+from .storage import ConflictError, NotFoundError, audit, connect, dumps, now
 
 
-def save(result, name=None, project_id=None, project_revision=None):
+def save(result, name=None, project_id=None, project_revision=None, *, database=None):
     identity, timestamp = str(uuid.uuid4()), now()
     name = name or str(result["inputs"]["SizeX"])
-    with connect() as db:
+    with connect(database) as db:
         if project_id is not None:
-            version = db.execute("SELECT 1 FROM project_revisions WHERE project_id=? AND revision=?",
+            version = db.execute("SELECT parameters FROM project_revisions WHERE project_id=? AND revision=?",
                                  (project_id, project_revision)).fetchone()
             if version is None:
                 raise NotFoundError("关联的设计版本不存在")
+            if validate(json.loads(version['parameters'])) != result['inputs']:
+                raise ConflictError("本次输入与关联设计版本不同，请先保存新版本，或不关联版本进行计算。")
         db.execute("INSERT INTO calculations VALUES (?,?,?,?,?,?,?)",
                    (identity, name, project_id, project_revision, dumps(result["inputs"]), dumps(result), timestamp))
         audit(db, "calculation.completed", identity, {"project_id": project_id,

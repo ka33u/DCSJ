@@ -21,8 +21,11 @@
     materialRequest: 0,
     busy: false,
     dirty: false,
+    project: null,
+    selectedCalculations: new Map(), calculationOffset: 0,
+    quickTemplate: null, quickPreview: null,
   };
-  const viewNames = { workbench: "设计工作台", catalog: "电机型号库", materials: "材料与磁化曲线", projects: "我的设计", about: "分析与实现状态" };
+  const viewNames = { workbench: "设计工作台", catalog: "电机型号库", materials: "材料与磁化曲线", projects: "我的设计", about: "分析与实现状态", comparisons: "方案对比", modeling: "快速建模", optimization: "自动寻优" };
   const colors = ["#3a8d70", "#668fc0", "#d59b55", "#a37bad", "#6aa9ad", "#bd7771"];
   let toastTimer;
   let modelRequest = 0;
@@ -118,6 +121,9 @@
     if (view === "catalog" && !state.catalog.loaded) loadCatalog();
     if (view === "materials" && !state.materialsLoaded) loadMaterials();
     if (view === "projects") loadProjects();
+    if (view === "comparisons") loadCalculations();
+    if (view === "optimization") { loadOptimizationConfig(); loadOptimizationJobs(); if (selectedJob) watchJob(selectedJob); }
+    else clearTimeout(jobPoll);
   }
   function populated() { return Object.keys(state.parameters).length > 0; }
   function setDesignState(text, tone = "") {
@@ -152,6 +158,7 @@
     return Object.fromEntries(entries);
   }
   function acceptDesign(parameters, name, source, model = "") {
+    state.project = null;
     state.parameters = validParameters(parameters);
     state.name = String(name || "未命名设计");
     state.model = String(model || parameters.SizeX || parameters.Model || parameters.model || "");
@@ -364,6 +371,14 @@
     const meta = el("div", "result-meta");
     meta.append(el("span", "", `引擎：${asText(result.engine?.name || result.engine || "未提供")}`), el("span", "", `本次计算 · ${new Date().toLocaleTimeString("zh-CN")}`));
     container.append(meta);
+    if (result.calculation_id) {
+      const actions = el("div", "feature-actions");
+      actions.append(reportLink(result.calculation_id), button("加入方案对比", "button button-small", () => {
+        selectCalculation({ id: result.calculation_id, name: result.name });
+        navigate("comparisons");
+      }));
+      container.append(actions);
+    }
     const warningBox = warningsNode(warnings);
     if (warningBox) container.append(warningBox);
     if (metrics.length) {
@@ -512,7 +527,7 @@
     $("#result-badge").textContent = "计算中";
     $("#result-badge").className = "badge neutral";
     try {
-      const result = await api("/calculate", { method: "POST", body: JSON.stringify({ parameters: state.parameters }) });
+      const result = await api("/calculate", { method: "POST", body: JSON.stringify({ parameters: state.parameters, name: state.name, ...(state.project && !state.dirty ? { project_id: state.project.id, project_revision: state.project.revision } : {}) }) });
       if (!result || !Array.isArray(result.metrics)) throw new Error("计算接口没有返回约定的 metrics 数组，请检查后端接口。");
       state.result = result;
       state.resultRevision = revision;
@@ -608,7 +623,12 @@
         const action = el("td");
         const trigger = button("载入设计 →", "text-button", () => loadModel(item.id, trigger));
         trigger.setAttribute("aria-label", `载入型号 ${item.model || item.id}`);
-        action.append(trigger);
+        action.append(trigger, button("版本", "text-button", () => showHistory(project)), button(project.archived ? "恢复" : "归档", "text-button", async () => {
+          try {
+            await api(`/projects/${project.id}/archive`, { method: "POST", body: JSON.stringify({ archived: !project.archived, expected_revision: project.revision }) });
+            loadProjects();
+          } catch (error) { showToast(errorText(error), "error"); }
+        }));
         row.append(action);
         $("#model-table-body").append(row);
       });
@@ -697,13 +717,13 @@
     $("#projects-feedback").textContent = "正在读取已保存设计…";
     $("#project-table-body").replaceChildren();
     try {
-      const data = await api("/projects");
+      const data = await api(`/projects?include_archived=${$("#include-archived").checked}`);
       if (!Array.isArray(data.items)) throw new Error("设计接口没有返回 items 数组。");
       $("#projects-feedback").textContent = data.items.length ? "" : "还没有保存的设计。在工作台中载入参数后，点击「保存设计」。";
       data.items.forEach(project => {
         const row = el("tr");
         const date = new Date(project.updated_at);
-        [project.name, project.id, Number.isNaN(date.getTime()) ? project.updated_at || "—" : date.toLocaleString("zh-CN")].forEach(value => row.append(el("td", "", value)));
+        [`${project.name} · v${project.revision}${project.archived ? " · 已归档" : ""}`, project.id, Number.isNaN(date.getTime()) ? project.updated_at || "—" : date.toLocaleString("zh-CN")].forEach(value => row.append(el("td", "", value)));
         const action = el("td");
         const trigger = button("打开设计 →", "text-button", async () => {
           if (state.busy) return showToast("计算正在进行，请在完成后打开其他设计。", "warning");
@@ -713,7 +733,8 @@
             const design = await api(`/projects/${encodeURIComponent(project.id)}`);
             if (request !== modelRequest) return;
             acceptDesign(design.parameters, design.name, design.source || `已保存设计 · ${design.id}`, design.model || "");
-            showToast(`已打开设计：${design.name}`);
+            state.project = design;
+            showToast(`已打开设计：${design.name} · v${design.revision}`);
           } catch (error) { showToast(errorText(error), "error"); }
           finally { trigger.disabled = false; }
         });
@@ -726,6 +747,9 @@
   function openSaveDialog() {
     if (!populated()) return showToast("请先载入设计参数。", "warning");
     $("#design-name").value = state.name;
+    $("#design-notes").value = state.project?.notes || "";
+    $("#save-as-new").checked = !state.project || !!state.project.archived;
+    $("#save-as-new").disabled = !state.project;
     $("#save-error").classList.add("hidden");
     $("#save-dialog").showModal();
     $("#design-name").focus();
@@ -738,9 +762,11 @@
     $("#confirm-save").textContent = "保存中…";
     const revision = state.revision;
     try {
-      const saved = await api("/projects", { method: "POST", body: JSON.stringify({ name, parameters: state.parameters }) });
+      const updating = state.project && !$("#save-as-new").checked;
+      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, parameters: state.parameters, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
       if (!saved.id) throw new Error("服务未返回设计 ID，无法确认是否保存成功。");
       if (revision === state.revision) {
+        state.project = saved;
         state.name = saved.name || name;
         state.dirty = false;
         $("#current-design").textContent = state.name;
@@ -787,6 +813,308 @@
       showToast("设计参数已导入。请重新运行计算检查结果。");
     } catch (error) { showToast(errorText(error), "error"); }
   }
+  function reportLink(id) {
+    const link = el("a", "button button-small", "打印报告 ↗");
+    link.href = `/reports/${encodeURIComponent(id)}`;
+    link.target = "_blank"; link.rel = "noopener";
+    return link;
+  }
+  async function showHistory(project) {
+    const container = $("#history-content");
+    container.replaceChildren(el("p", "muted", "读取版本…"));
+    $("#history-dialog").showModal();
+    try {
+      const data = await api(`/projects/${project.id}/revisions`);
+      container.replaceChildren();
+      data.items.forEach(item => {
+        const row = el("div", "history-entry");
+        row.append(el("strong", "", `v${item.revision} · ${item.name}`), el("p", "muted", `${item.created_at} ${item.notes || ""}`), button("以此版本另建方案", "button button-small", async () => {
+          try {
+            if (state.busy) throw new Error("请等待当前计算完成。");
+            const revision = await api(`/projects/${project.id}/revisions/${item.revision}`);
+            acceptDesign(revision.parameters, `${revision.name} · v${item.revision} 副本`, `版本 ${project.id} / ${item.revision}`);
+            state.dirty = true;
+            $("#history-dialog").close();
+          } catch (error) { showToast(errorText(error), "error"); }
+        }));
+        container.append(row);
+      });
+    } catch (error) { container.replaceChildren(el("p", "inline-error", errorText(error))); }
+  }
+  function selectCalculation(item, selected = true) {
+    if (selected && !state.selectedCalculations.has(item.id) && state.selectedCalculations.size >= 8) {
+      showToast("最多同时对比 8 个方案。", "warning"); return false;
+    }
+    if (selected) state.selectedCalculations.set(item.id, item);
+    else state.selectedCalculations.delete(item.id);
+    const baseline = $("#comparison-baseline");
+    const previous = baseline.value;
+    baseline.replaceChildren();
+    state.selectedCalculations.forEach(scheme => {
+      const option = el("option", "", `${scheme.name} · ${scheme.id.slice(0, 8)}`);
+      option.value = scheme.id; baseline.append(option);
+    });
+    if (state.selectedCalculations.has(previous)) baseline.value = previous;
+    $("#comparison-count").textContent = `已选 ${state.selectedCalculations.size} / 8`;
+    return true;
+  }
+  let calculationsRequest = 0;
+  async function loadCalculations() {
+    const request = ++calculationsRequest;
+    $("#calculations-feedback").textContent = "读取计算记录…";
+    try {
+      const data = await api(`/calculations?limit=20&offset=${state.calculationOffset}`);
+      if (request !== calculationsRequest) return;
+      $("#calculation-table-body").replaceChildren();
+      data.items.forEach(item => {
+        const row = el("tr"), cell = el("td"), checkbox = el("input");
+        checkbox.type = "checkbox"; checkbox.checked = state.selectedCalculations.has(item.id);
+        checkbox.setAttribute("aria-label", `选择 ${item.name} ${item.id.slice(0, 8)}`);
+        checkbox.addEventListener("change", () => { if (!selectCalculation(item, checkbox.checked)) checkbox.checked = false; });
+        cell.append(checkbox); row.append(cell);
+        const label = el("td"); label.append(el("strong", "", item.name), el("small", "record-date", new Date(item.created_at).toLocaleString("zh-CN")));
+        row.append(label);
+        [item.power_kw, item.efficiency, item.material_cost].forEach(value => row.append(el("td", "", fmt(value))));
+        const actions = el("td");
+        actions.append(reportLink(item.id), button("打开快照", "text-button", () => openSnapshot(item.id)));
+        row.append(actions); $("#calculation-table-body").append(row);
+      });
+      $("#calculations-feedback").textContent = data.total ? "" : "还没有计算记录。运行计算后，结果会自动保存到这里。";
+      $("#calculation-page").textContent = `共 ${data.total} 条 · 第 ${Math.floor(state.calculationOffset / 20) + 1} 页`;
+      $("#calculation-previous").disabled = state.calculationOffset === 0;
+      $("#calculation-next").disabled = state.calculationOffset + data.items.length >= data.total;
+    } catch (error) { if (request === calculationsRequest) $("#calculations-feedback").textContent = errorText(error); }
+  }
+  async function openSnapshot(id) {
+    try {
+      if (state.busy) throw new Error("请等待当前计算完成。");
+      const item = await api(`/calculations/${id}`);
+      acceptDesign(item.inputs, item.name, `计算快照 ${id}`);
+      state.result = item; state.resultRevision = state.revision;
+      renderResults(item);
+    } catch (error) { showToast(errorText(error), "error"); }
+  }
+  function featureTable(headers, rows) {
+    const scroll = el("div", "table-scroll"), table = el("table", "data-table");
+    const head = el("thead"), tr = el("tr"), body = el("tbody");
+    headers.forEach(h => tr.append(el("th", "", h))); head.append(tr);
+    rows.forEach(cells => { const row = el("tr"); cells.forEach(c => row.append(el("td", "", c))); body.append(row); });
+    table.append(head, body); scroll.append(table); return scroll;
+  }
+  async function runComparison() {
+    const ids = [...state.selectedCalculations.keys()];
+    if (ids.length < 2) return showToast("请选择至少两个计算方案。", "warning");
+    const trigger = $("#run-comparison"); trigger.disabled = true;
+    try {
+      const data = await api("/comparisons", { method: "POST", body: JSON.stringify({ calculation_ids: ids, baseline_id: $("#comparison-baseline").value }) });
+      const container = $("#comparison-result"); container.classList.remove("hidden"); container.replaceChildren(el("h2", "", "性能与参数差异"));
+      container.append(el("p", "muted", "Δ 为相对基准的算术差值，正负方向并不表示性能优劣；基准为 0 时不计算百分比。"));
+      const warnings = [...data.warnings, ...data.schemes.flatMap(s => s.warnings.map(w => `${s.name}：${w}`))];
+      const box = warningsNode(warnings, "比较条件与计算提示"); if (box) container.append(box);
+      const headings = data.schemes.map(s => `${s.name} · ${s.id.slice(0, 8)}${s.id === data.baseline_id ? "（基准）" : ""}`);
+      container.append(featureTable(["指标 / 单位", ...headings], data.metrics.map(metric => [
+        `${metric.label} ${metric.unit}`, ...metric.cells.map(cell => cell.id === data.baseline_id ? fmt(cell.value) : `${fmt(cell.value)}\nΔ ${fmt(cell.delta)} (${fmt(cell.delta_percent, 3)}%)`),
+      ])));
+      container.append(el("h3", "result-section-title", "变化的输入参数"));
+      if (data.parameter_differences.length) container.append(featureTable(["参数", ...headings], data.parameter_differences.map(field => [field.label, ...field.cells.map(c => fmt(c.value))])));
+      else container.append(el("p", "muted", "这些计算使用相同输入。"));
+      container.append(el("h3", "result-section-title", "记录来源"));
+      data.schemes.forEach(s => { const details = el("details", "trace-details"); details.append(el("summary", "", s.name), el("pre", "", JSON.stringify(s.provenance, null, 2)), reportLink(s.id)); container.append(details); });
+      container.scrollIntoView({ block: "start", behavior: "smooth" });
+    } catch (error) { showToast(errorText(error), "error"); }
+    finally { trigger.disabled = false; }
+  }
+  let templateRequest = 0;
+  async function searchTemplates(event) {
+    event.preventDefault(); const request = ++templateRequest;
+    const container = $("#template-list"); container.replaceChildren(el("p", "muted", "检索模板…"));
+    const params = new URLSearchParams({ power_kw: $("#template-power").value, poles: $("#template-poles").value, frequency_hz: $("#template-frequency").value, phase_voltage: $("#template-voltage").value });
+    try {
+      const data = await api(`/modeling/templates?${params}`);
+      if (request !== templateRequest) return;
+      container.replaceChildren();
+      const note = warningsNode(data.warnings, data.method); if (note) container.append(note);
+      if (!data.items.length) container.append(el("p", "muted", "没有可用模板。请安装本地型号库，或导入自己的完整设计后使用「预览当前设计」。"));
+      data.items.forEach(item => {
+        const card = el("div", "template-card");
+        card.append(el("strong", "", item.model), el("p", "muted", `${fmt(item.power_kw)} kW · ${item.poles} 极 · ${item.frequency_hz} Hz · 相电压 ${item.phase_voltage} V`), el("small", "", `来源：${item.source}`), button("选用模板", "button button-small", () => chooseTemplate(item)));
+        container.append(card);
+      });
+    } catch (error) { if (request === templateRequest) container.replaceChildren(el("p", "inline-error", errorText(error))); }
+  }
+  let quickRequest = 0;
+  async function chooseTemplate(item) {
+    const request = ++quickRequest;
+    try {
+      const model = await api(`/models/${item.id}`);
+      if (request !== quickRequest) return;
+      state.quickTemplate = model; state.quickPreview = null;
+      $("#apply-quick-model").disabled = true;
+      $("#quick-template-name").textContent = `${item.model} · 参数修改`;
+      const container = $("#quick-fields"); container.replaceChildren();
+      const keys = ["SizeX", "kW", "f", "Ufai", "Jiefa", "Paihao", "D1", "Di1", "Di2", "g", "L", "Q1", "Q2", "ZZ", "a", "JJ", "Djj", "MM", "Dmm"];
+      keys.forEach(key => {
+        const field = state.schema.fields.find(f => f.key === key) || { label: key };
+        const label = el("label", "", `${field.label} (${key})`), input = el("input", "text-input");
+        input.value = model.parameters[key] ?? ""; input.dataset.key = key;
+        input.type = ["SizeX", "Jiefa", "Paihao"].includes(key) ? "text" : "number";
+        input.step = "any"; input.required = true;
+        input.addEventListener("input", () => { ++quickRequest; state.quickPreview = null; $("#apply-quick-model").disabled = true; });
+        label.append(input); container.append(label);
+      });
+      $("#quick-editor").classList.remove("hidden");
+      $("#quick-editor").scrollIntoView({ block: "start", behavior: "smooth" });
+    } catch (error) { showToast(errorText(error), "error"); }
+  }
+  function showGeometry(data, changes = [], warnings = []) {
+    const container = $("#geometry-preview"); container.classList.remove("hidden"); container.replaceChildren(el("h2", "", "尺寸与变更预览"));
+    const image = el("img", "geometry-image");
+    image.alt = "铁心尺寸与槽位示意图";
+    const url = URL.createObjectURL(new Blob([data.svg], { type: "image/svg+xml" }));
+    image.onload = image.onerror = () => URL.revokeObjectURL(url); image.src = url;
+    container.append(image);
+    const box = warningsNode([...warnings, ...data.warnings], "使用说明"); if (box) container.append(box);
+    if (changes.length) container.append(featureTable(["参数", "模板值", "当前值"], changes.map(change => [change.label, fmt(change.before), fmt(change.after)])));
+    container.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+  async function previewQuickModel(event) {
+    event.preventDefault(); if (!state.quickTemplate) return;
+    const request = ++quickRequest;
+    try {
+      const changes = Object.fromEntries($$("#quick-fields input").map(input => [input.dataset.key, input.type === "number" ? Number(input.value) : input.value]));
+      const item = await api("/modeling/preview", { method: "POST", body: JSON.stringify({ model_id: state.quickTemplate.id, changes }) });
+      if (request !== quickRequest) return;
+      state.quickPreview = item; $("#apply-quick-model").disabled = false;
+      showGeometry(item.geometry, item.changes, item.warnings);
+    } catch (error) { if (request === quickRequest) showToast(errorText(error), "error"); }
+  }
+
+  let optimizationConfig = null, optimizationBase = null, selectedJob = null, jobPoll = null, jobRequest = 0;
+  const jobStatus = { queued: "排队中", running: "计算中", cancelling: "正在取消", cancelled: "已取消", succeeded: "搜索结束", failed: "失败", interrupted: "执行中断" };
+  const terminalJobs = new Set(["cancelled", "succeeded", "failed", "interrupted"]);
+  async function loadOptimizationConfig() {
+    if (optimizationConfig) return;
+    try {
+      optimizationConfig = await api("/optimization/config");
+      $("#optimization-method").textContent = optimizationConfig.method;
+      $("#optimization-objective").replaceChildren();
+      optimizationConfig.objectives.forEach(item => { const option = el("option", "", item.label); option.value = item.id; $("#optimization-objective").append(option); });
+      addOptimizationVariable("L");
+    } catch (error) { showToast(errorText(error), "error"); }
+  }
+  function useOptimizationBase() {
+    if (!populated()) return showToast("请先在工作台载入完整设计。", "warning");
+    optimizationBase = JSON.parse(JSON.stringify(state.parameters));
+    $("#optimization-base").textContent = `基准：${state.name} · ${fmt(optimizationBase.kW)} kW · ${fmt(optimizationBase.p)} 极；后续修改工作台不会改变此任务基准。`;
+    $("#optimization-name").value = `${state.name} · 寻优`.slice(0, 120);
+    $$("#optimization-variables .search-variable").forEach(row => suggestVariableBounds(row));
+  }
+  function inputField(label, type, name, value = "") {
+    const wrapper = el("label", "", label), input = el("input", "text-input");
+    input.type = type; input.name = name; input.value = value; if (type === "number") input.step = "any";
+    wrapper.append(input); return wrapper;
+  }
+  function suggestVariableBounds(row) {
+    const key = $("select[name=key]", row).value;
+    const isMaterial = key === "Paihao";
+    $$('input[name=minimum],input[name=maximum],input[name=step]', row).forEach(input => { input.disabled = isMaterial; input.required = !isMaterial && input.name !== "step"; });
+    $("input[name=choices]", row).disabled = !isMaterial;
+    $("input[name=choices]", row).required = isMaterial;
+    if (isMaterial) { $("input[name=choices]", row).value = optimizationConfig.materials.join(", "); return; }
+    const base = Number(optimizationBase?.[key]);
+    const integer = optimizationConfig.variables.find(v => v.key === key)?.integer;
+    if (Number.isFinite(base) && base > 0) {
+      $("input[name=minimum]", row).value = integer ? Math.max(1, Math.floor(base * .9)) : Number((base * .9).toPrecision(6));
+      $("input[name=maximum]", row).value = integer ? Math.ceil(base * 1.1) : Number((base * 1.1).toPrecision(6));
+    } else { $("input[name=minimum]", row).value = ""; $("input[name=maximum]", row).value = ""; }
+    $("input[name=step]", row).value = integer ? 1 : "";
+  }
+  function addOptimizationVariable(key = "g") {
+    if (!optimizationConfig) return;
+    if ($$(".search-variable").length >= 6) return showToast("最多配置 6 个搜索变量。", "warning");
+    const row = el("div", "quick-form search-variable"), label = el("label", "", "变量"), select = el("select", "text-input"); select.name = "key";
+    optimizationConfig.variables.forEach(item => { const option = el("option", "", `${item.key} · ${item.label}`); option.value = item.key; select.append(option); });
+    select.value = key; label.append(select); row.append(label, inputField("下限", "number", "minimum"), inputField("上限", "number", "maximum"), inputField("制造步长（可选）", "number", "step"), inputField("材料候选，逗号分隔", "text", "choices"), button("移除", "text-button", () => row.remove()));
+    select.addEventListener("change", () => suggestVariableBounds(row));
+    $("#optimization-variables").append(row); suggestVariableBounds(row);
+  }
+  function addOptimizationConstraint() {
+    if (!optimizationConfig) return;
+    if ($$(".search-constraint").length >= 15) return;
+    const row = el("div", "quick-form search-constraint"), label = el("label", "", "指标"), select = el("select", "text-input"); select.name = "metric";
+    optimizationConfig.constraint_metrics.forEach(key => { const field = state.schema.fields.find(f => f.key === key); const option = el("option", "", `${key} · ${field?.label || (key === "total_loss" ? "总损耗 W" : "")}`); option.value = key; select.append(option); });
+    label.append(select); row.append(label, inputField("最小值（可选）", "number", "minimum"), inputField("最大值（可选）", "number", "maximum"), button("移除", "text-button", () => row.remove()));
+    $("#optimization-constraints").append(row);
+  }
+  function readBounds(row) {
+    const result = {};
+    ["minimum", "maximum", "step"].forEach(name => { const input = $(`input[name=${name}]`, row); if (input && !input.disabled && input.value !== "") result[name] = Number(input.value); });
+    return result;
+  }
+  async function startOptimization(event) {
+    event.preventDefault();
+    const trigger = $("#start-optimization"), errors = $("#optimization-error");
+    errors.classList.add("hidden"); trigger.disabled = true;
+    try {
+      if (!optimizationBase) throw new Error("请先点击「使用工作台当前设计」。");
+      const variables = $$(".search-variable").map(row => {
+        const key = $("select[name=key]", row).value;
+        return key === "Paihao" ? { key, choices: $("input[name=choices]", row).value.split(/[,，]/).map(s => s.trim()).filter(Boolean) } : { key, ...readBounds(row) };
+      });
+      const constraints = $$(".search-constraint").map(row => ({ metric: $("select[name=metric]", row).value, ...readBounds(row) }));
+      const request = { name: $("#optimization-name").value, parameters: optimizationBase, variables, constraints, objective: $("#optimization-objective").value, max_evaluations: Number($("#optimization-budget").value), seed: Number($("#optimization-seed").value) };
+      const job = await api("/optimization/jobs", { method: "POST", body: JSON.stringify(request) });
+      selectedJob = job.id; showJob(job); loadOptimizationJobs(); watchJob(job.id);
+      showToast("寻优任务已排队，可离开此页继续设计。");
+    } catch (error) { errors.textContent = errorText(error); errors.classList.remove("hidden"); }
+    finally { trigger.disabled = false; }
+  }
+  async function loadOptimizationJobs() {
+    try {
+      const data = await api("/optimization/jobs"), container = $("#optimization-jobs"); container.replaceChildren();
+      if (!data.items.length) container.append(el("p", "muted", "尚无寻优任务。"));
+      data.items.forEach(job => { const row = el("div", "history-entry"); row.append(el("strong", "", job.name), el("span", "muted", ` · ${jobStatus[job.status] || job.status} · ${job.evaluated}/${job.budget} `), button("查看任务", "text-button", () => { selectedJob = job.id; watchJob(job.id); })); container.append(row); });
+    } catch (error) { $("#optimization-jobs").replaceChildren(el("p", "inline-error", errorText(error))); }
+  }
+  async function watchJob(id) {
+    clearTimeout(jobPoll); const request = ++jobRequest;
+    try {
+      const job = await api(`/optimization/jobs/${id}`);
+      if (request !== jobRequest || selectedJob !== id) return;
+      showJob(job);
+      if (!terminalJobs.has(job.status) && $("#view-optimization").classList.contains("active")) jobPoll = setTimeout(() => watchJob(id), 2000);
+      else loadOptimizationJobs();
+    } catch (error) { showToast(errorText(error), "error"); }
+  }
+  function showJob(job) {
+    const container = $("#optimization-detail"); container.classList.remove("hidden");
+    container.replaceChildren(el("h2", "", `${job.name} · ${jobStatus[job.status] || job.status}`));
+    const progress = el("progress"); progress.max = job.budget; progress.value = job.evaluated;
+    progress.setAttribute("aria-label", `已评估 ${job.evaluated}，预算 ${job.budget}`);
+    container.append(progress, el("p", "muted", `已评估 ${job.evaluated} / ${job.budget}；失败与基准计算均计入预算。`), el("p", "", job.message));
+    const actions = el("div", "feature-actions");
+    if (!terminalJobs.has(job.status)) {
+      const cancel = button(job.status === "cancelling" ? "当前计算结束后停止" : "取消任务", "button", async () => { try { showJob(await api(`/optimization/jobs/${job.id}/cancel`, { method: "POST" })); watchJob(job.id); } catch (error) { showToast(errorText(error), "error"); } });
+      cancel.disabled = job.status === "cancelling"; actions.append(cancel);
+    } else actions.append(button("按原配置重新运行", "button", async () => { try { const next = await api(`/optimization/jobs/${job.id}/retry`, { method: "POST" }); selectedJob = next.id; watchJob(next.id); loadOptimizationJobs(); } catch (error) { showToast(errorText(error), "error"); } }));
+    if (job.best_id) {
+      actions.append(button("打开最佳候选", "button button-primary", () => openSnapshot(job.best_id)), reportLink(job.best_id));
+      const baseline = job.candidates.find(c => c.ordinal === 1)?.calculation_id;
+      if (baseline && baseline !== job.best_id) actions.append(button("与基准对比", "button", () => { state.selectedCalculations.clear(); selectCalculation({ id: baseline, name: `${job.name} / 基准` }); selectCalculation({ id: job.best_id, name: `${job.name} / 最佳候选` }); navigate("comparisons"); runComparison(); }));
+    }
+    container.append(actions);
+    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ objective: job.request.objective, variables: job.request.variables, constraints: job.request.constraints, seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
+    if (!job.candidates.length) { container.append(el("p", "muted", "尚无完成的候选。")); return; }
+    const scroll = el("div", "table-scroll"), table = el("table", "data-table"), head = el("thead"), heading = el("tr"), body = el("tbody");
+    ["序号", "搜索变量", "目标值", "约束与诊断", "操作"].forEach(title => heading.append(el("th", "", title))); head.append(heading);
+    job.candidates.forEach(candidate => {
+      const row = el("tr"); row.append(el("td", "", `${candidate.ordinal}${candidate.ordinal === 1 ? " 基准" : ""}${candidate.calculation_id === job.best_id ? " ★" : ""}`));
+      row.append(el("td", "", job.request.variables.map(v => `${v.key}=${fmt(candidate.parameters[v.key])}`).join("\n")), el("td", "", fmt(candidate.objective, 7)), el("td", "", candidate.error || (candidate.feasible ? "满足约束" : candidate.violations.join("；"))));
+      const action = el("td"); if (candidate.calculation_id) action.append(button("打开", "text-button", () => openSnapshot(candidate.calculation_id)), reportLink(candidate.calculation_id)); row.append(action); body.append(row);
+    });
+    table.append(head, body); scroll.append(table); container.append(scroll);
+  }
+
   async function boot() {
     const tasks = await Promise.allSettled([loadStatus(), api("/schema"), loadSeries()]);
     const schemaResult = tasks[1];
@@ -821,6 +1149,32 @@
   $("#page-next").addEventListener("click", () => { state.catalog.offset += state.catalog.limit; loadCatalog(); });
   $("#refresh-materials").addEventListener("click", loadMaterials);
   $("#refresh-projects").addEventListener("click", loadProjects);
+  $("#optimization-use-current").addEventListener("click", useOptimizationBase);
+  $("#add-optimization-variable").addEventListener("click", () => addOptimizationVariable());
+  $("#add-optimization-constraint").addEventListener("click", () => addOptimizationConstraint());
+  $("#optimization-form").addEventListener("submit", startOptimization);
+  $("#refresh-optimization-jobs").addEventListener("click", loadOptimizationJobs);
+  $("#include-archived").addEventListener("change", loadProjects);
+  $("#close-history").addEventListener("click", () => $("#history-dialog").close());
+  $("#refresh-calculations").addEventListener("click", loadCalculations);
+  $("#run-comparison").addEventListener("click", runComparison);
+  $("#calculation-previous").addEventListener("click", () => { state.calculationOffset = Math.max(0, state.calculationOffset - 20); loadCalculations(); });
+  $("#calculation-next").addEventListener("click", () => { state.calculationOffset += 20; loadCalculations(); });
+  $("#template-search").addEventListener("submit", searchTemplates);
+  $("#quick-model-form").addEventListener("submit", previewQuickModel);
+  $("#apply-quick-model").addEventListener("click", () => {
+    if (!state.quickPreview || state.busy) return;
+    const item = state.quickPreview;
+    acceptDesign(item.parameters, item.name, item.source);
+    state.dirty = true;
+    showToast("已载入模板修改，请重新计算。");
+  });
+  $("#preview-current-geometry").addEventListener("click", async () => {
+    try {
+      if (!populated()) throw new Error("请先载入设计参数。");
+      showGeometry(await api("/geometry/preview", { method: "POST", body: JSON.stringify({ parameters: state.parameters }) }));
+    } catch (error) { showToast(errorText(error), "error"); }
+  });
   $("#refresh-status").addEventListener("click", loadStatus);
   $("#save-design").addEventListener("click", openSaveDialog);
   $("#save-form").addEventListener("submit", saveProject);

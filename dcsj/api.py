@@ -1,24 +1,36 @@
 """Local web workbench and versioned engineering API."""
 import math
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import __version__, catalog, projects, calculations, modeling
 from .execution import BusyError, compute
 from .storage import ConflictError, NotFoundError
-from .parameters import EXAMPLE, ROOT, InputError, schema
+from .parameters import EXAMPLE, ROOT, InputError, schema, validate
 from .engine import CalculationUnavailableError
+from . import jobs, optimization
+
+
+@asynccontextmanager
+async def lifespan(app):
+    worker = jobs.Worker().start()
+    try:
+        yield
+    finally:
+        worker.close()
 
 app = FastAPI(
     title="DCSJ 电磁设计 API", version=__version__,
     description="三相异步电动机设计工作台。相电压、极数和原材料表语义见参数 schema。"
                 "历史型号记录与本次重新计算的结果分开提供。",
     docs_url=None, redoc_url=None,
+    lifespan=lifespan,
 )
 
 
@@ -98,6 +110,11 @@ class QuickModelInput(BaseModel):
 @app.exception_handler(NotFoundError)
 async def not_found_error(request, error):
     return JSONResponse({"detail": str(error)}, status_code=404)
+
+
+@app.exception_handler(BusyError)
+async def busy_error(request, error):
+    return JSONResponse({"detail": str(error)}, status_code=429, headers={"Retry-After": "2"})
 
 
 @app.exception_handler(CalculationUnavailableError)
@@ -187,7 +204,9 @@ def get_model(model_id: str):
 def calculate(body: CalculationInput):
     from .engine import CalculationError
     if body.project_id is not None:
-        projects.get_revision(body.project_id, body.project_revision)
+        version = projects.get_revision(body.project_id, body.project_revision)
+        if validate(version['parameters']) != validate(body.parameters):
+            raise ConflictError("输入与关联版本不同，请先保存新版本，或不关联版本进行计算。")
     try:
         result = compute(body.parameters)
         return calculations.save(result, body.name, body.project_id, body.project_revision)
@@ -259,6 +278,12 @@ def get_calculation(calculation_id: str):
     return calculations.get(calculation_id)
 
 
+@app.get("/reports/{calculation_id}", response_class=HTMLResponse, tags=["打印报告"])
+def calculation_report(calculation_id: str):
+    from .reports import render
+    return HTMLResponse(render(calculations.get(calculation_id)), headers={"Cache-Control": "no-store"})
+
+
 @app.post("/api/v1/comparisons", tags=["计算记录与对比"])
 def compare_calculations(body: ComparisonInput):
     return calculations.compare(body.calculation_ids, body.baseline_id)
@@ -282,6 +307,36 @@ def quick_model(body: QuickModelInput):
 @app.post("/api/v1/geometry/preview", tags=["快速建模"])
 def geometry_preview(body: DesignInput):
     return modeling.geometry(body.parameters)
+
+
+@app.get("/api/v1/optimization/config", tags=["自动寻优"])
+def optimization_config():
+    return optimization.config()
+
+
+@app.get("/api/v1/optimization/jobs", tags=["自动寻优"])
+def optimization_jobs():
+    return {"items": jobs.list_jobs()}
+
+
+@app.post("/api/v1/optimization/jobs", status_code=202, tags=["自动寻优"])
+def create_optimization(body: optimization.SearchInput):
+    return jobs.create(body)
+
+
+@app.get("/api/v1/optimization/jobs/{identity}", tags=["自动寻优"])
+def optimization_job(identity: str):
+    return jobs.get(identity)
+
+
+@app.post("/api/v1/optimization/jobs/{identity}/cancel", tags=["自动寻优"])
+def cancel_optimization(identity: str):
+    return jobs.cancel(identity)
+
+
+@app.post("/api/v1/optimization/jobs/{identity}/retry", status_code=202, tags=["自动寻优"])
+def retry_optimization(identity: str):
+    return jobs.retry(identity)
 
 
 @app.get("/", include_in_schema=False)

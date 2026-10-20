@@ -20,7 +20,7 @@ ENGINE_NAME = "DCSJ Python 数值核心"
 _kernel_path = ROOT / "dcsj/generated/numeric_kernel.json.gz"
 KERNEL_SHA256 = hashlib.sha256(_kernel_path.read_bytes()).hexdigest() if _kernel_path.is_file() else None
 WRAPPER_SHA256 = hashlib.sha256(b"".join((ROOT / "dcsj" / name).read_bytes()
-    for name in ("engine.py", "numeric_vm.py", "parameters.py"))).hexdigest()
+    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py"))).hexdigest()
 LIMITATIONS = [
     "由原 Fortran 程序的计算指令恢复；使用双精度中间运算和原单精度存储。",
     "已恢复三相异步电动机计算；历史型号保存值可能使用不同版本的材料表。",

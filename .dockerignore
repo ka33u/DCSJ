@@ -1,0 +1,11 @@
+**
+!Dockerfile
+!requirements.txt
+!run.py
+!dcsj/
+!dcsj/*.py
+!frontend/
+!frontend/**
+!data/
+!data/schema.sql
+!data/README.md
