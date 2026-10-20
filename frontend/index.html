@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#12252b">
+  <title>DCSJ · 电磁设计工作台</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳转到主内容</a>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#workbench" aria-label="DCSJ 电磁设计工作台">
+        <span class="brand-mark" aria-hidden="true">D<span></span></span>
+        <span><strong>DCSJ</strong><small>电磁设计工作台</small></span>
+      </a>
+      <div class="sidebar-label">DESIGN WORKSPACE</div>
+      <nav class="navigation" aria-label="主导航">
+        <button class="nav-item active" data-view="workbench" aria-current="page"><span class="nav-icon" aria-hidden="true">▦</span>设计工作台<span class="nav-index">01</span></button>
+        <button class="nav-item" data-view="catalog"><span class="nav-icon" aria-hidden="true">▤</span>电机型号库<span class="nav-index">02</span></button>
+        <button class="nav-item" data-view="materials"><span class="nav-icon" aria-hidden="true">⌁</span>材料与磁化曲线<span class="nav-index">03</span></button>
+        <button class="nav-item" data-view="projects"><span class="nav-icon" aria-hidden="true">▢</span>我的设计<span class="nav-index">04</span></button>
+      </nav>
+      <div class="sidebar-label secondary">DEVELOPER</div>
+      <nav class="navigation" aria-label="开发与说明">
+        <a class="nav-item" href="/docs" target="_blank" rel="noopener"><span class="nav-icon" aria-hidden="true">⌘</span>API 接口文档<span class="external-icon" aria-hidden="true">↗</span></a>
+        <button class="nav-item" data-view="about"><span class="nav-icon" aria-hidden="true">ⓘ</span>分析与实现状态</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="connection"><span id="connection-dot" class="status-dot"></span><span id="connection-text">正在连接服务</span></div>
+        <p id="sidebar-version">DCSJ WEB WORKBENCH</p>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <div class="breadcrumb"><span>DCSJ</span><span aria-hidden="true">/</span><strong id="breadcrumb-current">设计工作台</strong></div>
+        <div class="topbar-right"><span class="local-label"><span class="status-dot teal"></span>本地设计环境</span><a href="/docs" target="_blank" rel="noopener">API ↗</a></div>
+      </header>
+      <main id="main-content" tabindex="-1">
+        <div id="global-notice" class="notice hidden" role="status"></div>
+
+        <section class="page active" id="view-workbench" aria-labelledby="workbench-title">
+          <div class="page-heading">
+            <div><div class="eyebrow">ELECTROMAGNETIC DESIGN</div><h1 id="workbench-title">设计工作台</h1><p>从原始设计数据出发，查看参数、运行计算与检查结果。</p></div>
+            <div class="heading-actions"><button class="button" id="open-import">导入 JSON</button><button class="button" id="export-design">导出 JSON <span aria-hidden="true">↓</span></button></div>
+          </div>
+          <div class="summary-strip">
+            <div><span class="summary-label">当前设计</span><strong id="current-design">尚未载入</strong></div>
+            <div><span class="summary-label">原始型号</span><strong id="current-model">—</strong></div>
+            <div><span class="summary-label">计算引擎</span><strong id="current-engine">连接中…</strong></div>
+            <div class="summary-status"><span class="summary-label">设计状态</span><strong id="design-state"><span class="status-dot"></span>等待参数</strong></div>
+          </div>
+          <div class="engine-note" id="engine-note"><span class="note-icon" aria-hidden="true">i</span><p>正在读取计算能力与限制…</p><button class="text-button" data-go="about">查看说明 →</button></div>
+          <div class="workbench-grid">
+            <section class="panel parameter-panel" aria-labelledby="parameter-title">
+              <div class="panel-header"><div><span class="step-number">01</span><h2 id="parameter-title">设计参数</h2></div><div class="panel-actions"><button class="text-button" id="load-example">载入示例</button><button class="button button-small" data-go="catalog">从型号库选择</button></div></div>
+              <div id="source-box" class="source-box"><span class="source-label">数据来源</span><span id="parameter-source">未载入数据</span></div>
+              <div class="editor-toolbar"><label class="search-field compact"><span aria-hidden="true">⌕</span><input type="search" id="parameter-search" placeholder="查找参数名称或符号" aria-label="查找参数"></label><span id="parameter-count" class="muted">0 个参数</span></div>
+              <div id="parameter-tabs" class="parameter-tabs" aria-label="参数分组"></div>
+              <form id="parameter-form" novalidate>
+                <div id="parameter-fields" class="parameter-fields"><div class="empty-state"><span class="empty-symbol" aria-hidden="true">▦</span><h3>载入设计参数</h3><p>选择一个原始型号，或载入可运行的示例。</p></div></div>
+                <div id="validation-errors" class="inline-error hidden" role="alert"></div>
+                <div class="parameter-footer"><button type="button" class="button" id="save-design">保存设计</button><button type="submit" class="button button-primary" id="calculate-button" disabled><span aria-hidden="true">▷</span> 运行计算</button></div>
+              </form>
+              <details class="raw-details"><summary>查看完整原始参数</summary><p class="small muted">原始字段会完整保留；已识别的历史输出在编辑区只读展示，不作为本次计算结果。</p><pre id="raw-parameters">{}</pre></details>
+            </section>
+            <section class="panel result-panel" aria-labelledby="result-title">
+              <div class="panel-header"><div><span class="step-number">02</span><h2 id="result-title">计算结果</h2></div><span id="result-badge" class="badge neutral">等待计算</span></div>
+              <div id="result-content" class="result-content"><div class="empty-state results-empty"><div class="empty-chart" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><h3>准备好后，运行一次计算</h3><p>这里将展示新引擎计算的性能指标、曲线和计算过程。</p><span class="empty-footnote">历史缓存不会自动替代本次结果</span></div></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page" id="view-catalog" aria-labelledby="catalog-title">
+          <div class="page-heading"><div><div class="eyebrow">ORIGINAL MODEL CATALOG</div><h1 id="catalog-title">电机型号库</h1><p>检索恢复的原始型号，查看来源并载入工作台。</p></div><span class="large-count"><strong id="catalog-total">—</strong> 个型号</span></div>
+          <section class="panel">
+            <form class="filter-bar" id="catalog-filter"><label class="search-field"><span aria-hidden="true">⌕</span><input id="model-search" type="search" placeholder="搜索型号，例如 Y、YE 或功率" aria-label="搜索电机型号"></label><label class="select-filter"><span>系列</span><select id="series-filter"><option value="">全部系列</option></select></label><button class="button button-primary" type="submit">检索</button></form>
+            <div id="catalog-feedback" class="table-feedback" role="status"></div>
+            <div class="table-scroll"><table class="data-table model-table"><thead><tr><th>型号</th><th>系列</th><th>额定功率 <small>kW</small></th><th>极数</th><th>电压 <small>V</small></th><th>频率 <small>Hz</small></th><th>来源</th><th><span class="sr-only">操作</span></th></tr></thead><tbody id="model-table-body"></tbody></table></div>
+            <div class="pagination"><span id="page-description">尚未加载</span><div><button class="button button-small" id="page-previous" disabled>← 上一页</button><span id="page-number">—</span><button class="button button-small" id="page-next" disabled>下一页 →</button></div></div>
+          </section>
+        </section>
+
+        <section class="page" id="view-materials" aria-labelledby="materials-title">
+          <div class="page-heading"><div><div class="eyebrow">MATERIAL LIBRARY</div><h1 id="materials-title">材料与磁化曲线</h1><p>查看原始材料数据及 B–H 曲线；具体单位以数据字段为准。</p></div><span class="large-count"><strong id="material-total">—</strong> 种材料</span></div>
+          <div class="materials-layout"><section class="panel material-selector"><div class="panel-header"><h2>材料目录</h2><button class="text-button" id="refresh-materials">刷新</button></div><div id="material-list" class="material-list"><p class="loading-copy">正在读取材料…</p></div></section><section class="panel material-detail"><div id="material-detail"><div class="empty-state"><span class="empty-symbol" aria-hidden="true">⌁</span><h3>选择一种材料</h3><p>查看磁化数据、曲线和来源说明。</p></div></div></section></div>
+        </section>
+
+        <section class="page" id="view-projects" aria-labelledby="projects-title">
+          <div class="page-heading"><div><div class="eyebrow">SAVED DESIGNS</div><h1 id="projects-title">我的设计</h1><p>打开已保存的参数版本，继续修改与计算。</p></div><button class="button" id="refresh-projects">刷新列表</button></div>
+          <section class="panel"><div id="projects-feedback" class="table-feedback" role="status"></div><div class="table-scroll"><table class="data-table"><thead><tr><th>设计名称</th><th>设计 ID</th><th>最近保存</th><th><span class="sr-only">操作</span></th></tr></thead><tbody id="project-table-body"></tbody></table></div></section>
+        </section>
+
+        <section class="page" id="view-about" aria-labelledby="about-title">
+          <div class="page-heading"><div><div class="eyebrow">ENGINE &amp; PROVENANCE</div><h1 id="about-title">分析与实现状态</h1><p>明确区分恢复的数据、重新实现的计算和尚未确认的能力。</p></div><a class="button button-primary" href="/docs" target="_blank" rel="noopener">打开 API 文档 ↗</a></div>
+          <div class="about-grid"><section class="panel"><div class="panel-header"><h2>服务与计算能力</h2><button class="text-button" id="refresh-status">刷新</button></div><div id="status-detail" class="about-content"><p class="loading-copy">正在读取状态…</p></div></section><section class="panel"><div class="panel-header"><h2>数据与结果的使用方式</h2></div><div class="about-content"><ol class="explanation-list"><li><strong>原始型号数据</strong><p>型号库中的参数来自恢复的数据源。每次载入会显示原表、记录及文件来源。</p></li><li><strong>本次计算结果</strong><p>只展示计算 API 实际返回的数值与曲线。修改参数后，已有结果会标记为过期。</p></li><li><strong>未确认字段与计算限制</strong><p>未识别的字段完整保留。计算警告与引擎限制会显示在工作台中，供核对适用条件。</p></li><li><strong>可复用的 HTTP API</strong><p>接口文档提供参数定义与在线请求入口。设计 JSON 可用于保存、迁移与集成。</p></li></ol></div></section></div>
+        </section>
+        <footer class="workspace-footer"><span>DCSJ / 电磁设计工作台</span><span>可追溯的数据 · 可检查的计算</span></footer>
+      </main>
+    </div>
+  </div>
+  <input id="import-file" type="file" accept=".json,application/json" hidden>
+  <dialog id="save-dialog"><form id="save-form"><div class="dialog-heading"><div><div class="eyebrow">SAVE DESIGN</div><h2>保存当前设计</h2></div><button class="icon-button" type="button" id="close-save" aria-label="关闭保存窗口">×</button></div><p class="muted">保存当前参数。再次打开后可继续编辑并重新计算。</p><label class="field-label" for="design-name">设计名称</label><input class="text-input" id="design-name" required maxlength="120" placeholder="例如：三相异步电机方案 A"><div id="save-error" class="inline-error hidden" role="alert"></div><div class="dialog-actions"><button class="button" type="button" id="cancel-save">取消</button><button class="button button-primary" type="submit" id="confirm-save">保存设计</button></div></form></dialog>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+</body>
+</html>
