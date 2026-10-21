@@ -102,6 +102,11 @@
             <div id="calculations-feedback" class="table-feedback" role="status"></div><div class="table-scroll"><table class="data-table"><thead><tr><th>选择</th><th>名称与计算时间</th><th>功率 kW</th><th>效率</th><th>材料成本</th><th>操作</th></tr></thead><tbody id="calculation-table-body"></tbody></table></div>
             <div class="pagination"><span id="calculation-page"></span><div><button class="button button-small" id="calculation-previous">上一页</button><button class="button button-small" id="calculation-next">下一页</button></div></div>
           </section><section id="comparison-result" class="panel feature-content hidden" aria-live="polite"></section>
+          <section class="panel feature-content"><h2>已保存的对比</h2><p class="muted">保存后的基准、方案顺序、差值和评审说明固定保留，可重新打开或打印。</p>
+            <div id="saved-comparisons-feedback" class="table-feedback" role="status"></div>
+            <div class="table-scroll"><table class="data-table"><thead><tr><th>名称</th><th>方案数</th><th>保存时间</th><th>操作</th></tr></thead><tbody id="saved-comparisons-body"></tbody></table></div>
+            <div class="pagination"><span id="saved-comparisons-page"></span><div><button id="saved-comparisons-previous" class="button button-small" disabled>上一页</button><button id="saved-comparisons-next" class="button button-small" disabled>下一页</button></div></div>
+          </section>
         </section>
         <section class="page" id="view-modeling" aria-labelledby="modeling-title">
           <div class="page-heading"><div><div class="eyebrow">QUICK MODELING</div><h1 id="modeling-title">快速建模</h1><p>按额定要求选择本地模板，检查尺寸与修改，再载入完整参数。</p></div><button class="button" id="preview-current-geometry">预览当前设计</button></div>

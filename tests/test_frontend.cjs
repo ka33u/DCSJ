@@ -55,6 +55,7 @@ async function app(t, route) {
       { key: 'kW', label: '额定功率', group: 'basic', type: 'number', role: 'input' }] };
     else if (path === '/series') data = { items: ['人工系列'] };
     else data = await route(path, request);
+    if (data === undefined && path === '/comparison-sets' && request.method === 'GET') data = { items: [], total: 0 };
     assert.notEqual(data, undefined, `Unexpected API request: ${path}`);
     return { ok: true, status: 200, text: async () => JSON.stringify(data) };
   };
@@ -249,4 +250,47 @@ test('quick modeling applies only the current validated preview and ignores stal
   assert.equal(ui.doc.querySelector('#current-design').textContent, '模板修改方案');
   assert.equal(JSON.parse(ui.doc.querySelector('#raw-parameters').textContent).L, 120);
   assert.equal(ui.doc.querySelector('#result-badge').textContent, '等待计算');
+});
+
+test('saving a comparison freezes the displayed selection and reopens after a fresh page load', async t => {
+  let saved;
+  const result = { baseline_id: 'b', warnings: [], metrics: [], parameter_differences: [],
+    schemes: ['a', 'b'].map(id => ({ id, name: id, warnings: [], provenance: {} })) };
+  const route = (path, request) => {
+    if (path === '/calculations') return records();
+    if (path === '/comparisons') {
+      assert.deepEqual(request.body, { calculation_ids: ['a', 'b'], baseline_id: 'b' });
+      return result;
+    }
+    if (path === '/comparison-sets' && request.method === 'POST') {
+      assert.deepEqual(request.body, { name: '评审批次', notes: '保留评审说明', calculation_ids: ['a', 'b'], baseline_id: 'b' });
+      saved = { ...result, id: 'review-1', name: request.body.name, notes: request.body.notes, created_at: created };
+      return saved;
+    }
+    if (path === '/comparison-sets') return { items: saved ? [{ ...saved, scheme_count: 2 }] : [], total: saved ? 1 : 0 };
+    if (path === '/comparison-sets/review-1') return saved;
+  };
+  const ui = await app(t, route);
+  ui.nav('comparisons');
+  await until(() => ui.doc.querySelectorAll('#calculation-table-body tr').length === 2, 'Calculations load');
+  const select = [...ui.doc.querySelectorAll('#calculation-table-body input[type="checkbox"]')];
+  select.forEach(input => input.click());
+  ui.doc.querySelector('#comparison-baseline').value = 'b';
+  ui.doc.querySelector('#run-comparison').click();
+  await until(() => ui.doc.querySelector('.comparison-save-form'), 'Comparison can be saved');
+  // Changing the picker after comparison must not silently change what gets saved.
+  select[0].click();
+  ui.doc.querySelector('[name="comparison-name"]').value = '评审批次';
+  ui.doc.querySelector('[name="comparison-notes"]').value = '保留评审说明';
+  ui.doc.querySelector('.comparison-save-form').dispatchEvent(new ui.w.Event('submit', { cancelable: true }));
+  await until(() => ui.doc.querySelector('#comparison-result a[href="/comparison-reports/review-1"]'), 'Saved report links appear');
+  assert.match(ui.doc.querySelector('#comparison-result').textContent, /保留评审说明/);
+  const reopened = await app(t, route);
+  reopened.nav('comparisons');
+  await until(() => reopened.doc.querySelectorAll('#saved-comparisons-body tr').length === 1, 'Saved review survives a fresh page');
+  reopened.find('#saved-comparisons-body button', '打开对比').click();
+  await until(() => reopened.doc.querySelector('#comparison-result h2')?.textContent === '评审批次', 'Saved review reopens');
+  assert.equal(reopened.doc.querySelector('#comparison-baseline').value, 'b');
+  assert.equal(reopened.doc.querySelector('#comparison-count').textContent, '已选 2 / 8');
+  assert.ok(reopened.doc.querySelector('#comparison-result a[href="/api/v1/comparison-sets/review-1/report.pdf"]'));
 });

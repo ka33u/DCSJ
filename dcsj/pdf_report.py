@@ -45,6 +45,15 @@ def plain(value):
     return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(value))
 
 
+def checked_paragraph(value, style, cmap):
+    visible = plain(value)
+    missing = sorted({ch for ch in visible if not ch.isspace() and (ord(ch) not in cmap or cmap[ord(ch)] == 0)})
+    if missing:
+        codes = ', '.join(f'U+{ord(ch):04X}' for ch in missing[:8])
+        raise PDFContentError('PDF 字体不支持部分字符（' + codes + '），请调整文本或安装覆盖这些字符的字体。')
+    return Paragraph(escape(visible).replace('\n', '<br/>'), style)
+
+
 @lru_cache(maxsize=4)
 def _load_font(path, modified, size):
     name = f'DCSJPdf-{hashlib.sha256(path.encode()).hexdigest()[:12]}-{modified}-{size}'
@@ -158,12 +167,7 @@ def _render(snapshot):
     }
 
     def paragraph(value, style='body'):
-        visible = plain(value)
-        missing = sorted({ch for ch in visible if not ch.isspace() and (ord(ch) not in cmap or cmap[ord(ch)] == 0)})
-        if missing:
-            codes = ', '.join(f'U+{ord(ch):04X}' for ch in missing[:8])
-            raise PDFContentError('PDF 字体不支持部分字符（' + codes + '），请调整文本或安装覆盖这些字符的字体。')
-        return Paragraph(escape(visible).replace('\n', '<br/>'), styles[style])
+        return checked_paragraph(value, styles[style], cmap)
 
     def table(headers, rows, widths):
         grid = [[paragraph(h, 'cell') for h in headers]] + [[paragraph(v, 'cell') for v in row] for row in rows]

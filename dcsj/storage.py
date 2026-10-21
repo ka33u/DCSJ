@@ -67,11 +67,15 @@ def _migrate(db, path):
                 "ordinal INTEGER NOT NULL, parameters TEXT NOT NULL, calculation_id TEXT, objective REAL, feasible INTEGER NOT NULL, "
                 "violations TEXT NOT NULL, error TEXT, PRIMARY KEY(job_id, ordinal))",
                 "CREATE TABLE IF NOT EXISTS optimization_workers (id TEXT PRIMARY KEY, heartbeat REAL NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS comparison_sets (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+                "notes TEXT NOT NULL, baseline_id TEXT NOT NULL REFERENCES calculations(id), "
+                "result TEXT NOT NULL, created_at TEXT NOT NULL)",
+                "CREATE INDEX IF NOT EXISTS comparison_sets_created ON comparison_sets(created_at DESC)",
             ]:
                 db.execute(statement)
             db.execute("INSERT OR IGNORE INTO project_revisions "
                        "SELECT id,revision,name,parameters,notes,updated_at FROM projects")
-            db.execute("PRAGMA user_version=2")
+            db.execute("PRAGMA user_version=3")
             db.commit()
             _initialized.add(identity)
         except BaseException:

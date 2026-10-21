@@ -57,14 +57,18 @@ def compare(identities, baseline_id=None):
     snapshots = [get(identity) for identity in identities]
     baseline = next(r for r in snapshots if r["calculation_id"] == baseline_id)
     metrics, differences, warnings = [], [], []
-    for key, base in baseline["values"].items():
+    keys = dict.fromkeys(key for snapshot in snapshots for key in snapshot['values'])
+    for key in keys:
+        base = baseline['values'].get(key)
         cells = []
         for snapshot in snapshots:
             value = snapshot["values"].get(key)
-            delta = None if value is None else value - base
+            delta = None if value is None or base is None else value - base
             cells.append({"id": snapshot["calculation_id"], "value": value, "delta": delta,
                           "delta_percent": delta / abs(base) * 100 if delta is not None and base else None})
         metrics.append({**field_info(key), "cells": cells})
+    if any(set(snapshot['values']) != set(baseline['values']) for snapshot in snapshots):
+        warnings.append('部分方案缺少计算指标；缺失值保留为空，基准或候选缺值时不计算差值。')
     keys = sorted(set().union(*(s["inputs"] for s in snapshots)))
     for key in keys:
         cells = [{"id": s["calculation_id"], "value": s["inputs"].get(key)} for s in snapshots]
@@ -81,8 +85,8 @@ def compare(identities, baseline_id=None):
         material_versions.setdefault(snapshot['inputs'].get('Paihao'), set()).add(
             snapshot.get('provenance', {}).get('material_sha256'))
     for name, versions in material_versions.items():
-        if len(versions) > 1:
-            warnings.append(f"同牌号材料 {name} 使用了不同版本的数据，请确认材料版本后再作同条件比较。")
+        if len(versions) > 1 or None in versions:
+            warnings.append(f"同牌号材料 {name} 数据版本不同或未记录，请确认材料版本后再作同条件比较。")
     return {"baseline_id": baseline_id,
             "schemes": [{"id": s["calculation_id"], "name": s["name"], "created_at": s["created_at"],
                          "warnings": s["warnings"], "provenance": s["provenance"]} for s in snapshots],

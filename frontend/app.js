@@ -22,7 +22,7 @@
     busy: false,
     dirty: false,
     project: null,
-    selectedCalculations: new Map(), calculationOffset: 0,
+    selectedCalculations: new Map(), calculationOffset: 0, comparisonOffset: 0,
     quickTemplate: null, quickPreview: null,
   };
   const viewNames = { workbench: "设计工作台", catalog: "电机型号库", materials: "材料与磁化曲线", projects: "我的设计", about: "分析与实现状态", comparisons: "方案对比", modeling: "快速建模", optimization: "自动寻优" };
@@ -121,7 +121,7 @@
     if (view === "catalog" && !state.catalog.loaded) loadCatalog();
     if (view === "materials" && !state.materialsLoaded) loadMaterials();
     if (view === "projects") loadProjects();
-    if (view === "comparisons") loadCalculations();
+    if (view === "comparisons") { loadCalculations(); loadSavedComparisons(); }
     if (view === "optimization") { loadOptimizationConfig(); loadOptimizationJobs(); if (selectedJob) watchJob(selectedJob); }
     else clearTimeout(jobPoll);
   }
@@ -826,15 +826,15 @@
       showToast("设计参数已导入。请重新运行计算检查结果。");
     } catch (error) { showToast(errorText(error), "error"); }
   }
-  function reportLink(id) {
+  function reportLink(id, comparison = false) {
     const links = el("span", "report-links");
     const link = el("a", "button button-small", "网页打印 ↗");
-    link.href = `/reports/${encodeURIComponent(id)}`;
+    link.href = `/${comparison ? "comparison-reports" : "reports"}/${encodeURIComponent(id)}`;
     link.target = "_blank"; link.rel = "noopener";
     links.append(link);
     if (state.status?.reports?.pdf?.available) {
       const pdf = el("a", "button button-small", "下载 PDF");
-      pdf.href = `/api/v1/calculations/${encodeURIComponent(id)}/report.pdf`;
+      pdf.href = `/api/v1/${comparison ? "comparison-sets" : "calculations"}/${encodeURIComponent(id)}/report.pdf`;
       links.append(pdf);
     }
     return links;
@@ -929,28 +929,92 @@
     rows.forEach(cells => { const row = el("tr"); cells.forEach(c => row.append(el("td", "", c))); body.append(row); });
     table.append(head, body); scroll.append(table); return scroll;
   }
+  let comparisonRequest = 0, savedComparisonsRequest = 0;
   async function runComparison() {
     const ids = [...state.selectedCalculations.keys()];
     if (ids.length < 2) return showToast("请选择至少两个计算方案。", "warning");
+    const request = ++comparisonRequest;
     const trigger = $("#run-comparison"); trigger.disabled = true;
     try {
       const data = await api("/comparisons", { method: "POST", body: JSON.stringify({ calculation_ids: ids, baseline_id: $("#comparison-baseline").value }) });
-      const container = $("#comparison-result"); container.classList.remove("hidden"); container.replaceChildren(el("h2", "", "性能与参数差异"));
-      container.append(el("p", "muted", "Δ 为相对基准的算术差值，正负方向并不表示性能优劣；基准为 0 时不计算百分比。"));
-      const warnings = [...data.warnings, ...data.schemes.flatMap(s => s.warnings.map(w => `${s.name}：${w}`))];
-      const box = warningsNode(warnings, "比较条件与计算提示"); if (box) container.append(box);
-      const headings = data.schemes.map(s => `${s.name} · ${s.id.slice(0, 8)}${s.id === data.baseline_id ? "（基准）" : ""}`);
-      container.append(featureTable(["指标 / 单位", ...headings], data.metrics.map(metric => [
-        `${metric.label} ${metric.unit}`, ...metric.cells.map(cell => cell.id === data.baseline_id ? fmt(cell.value) : `${fmt(cell.value)}\nΔ ${fmt(cell.delta)} (${fmt(cell.delta_percent, 3)}%)`),
-      ])));
-      container.append(el("h3", "result-section-title", "变化的输入参数"));
-      if (data.parameter_differences.length) container.append(featureTable(["参数", ...headings], data.parameter_differences.map(field => [field.label, ...field.cells.map(c => fmt(c.value))])));
-      else container.append(el("p", "muted", "这些计算使用相同输入。"));
-      container.append(el("h3", "result-section-title", "记录来源"));
-      data.schemes.forEach(s => { const details = el("details", "trace-details"); details.append(el("summary", "", s.name), el("pre", "", JSON.stringify(s.provenance, null, 2)), reportLink(s.id)); container.append(details); });
-      container.scrollIntoView({ block: "start", behavior: "smooth" });
-    } catch (error) { showToast(errorText(error), "error"); }
+      if (request === comparisonRequest) renderComparison(data);
+    } catch (error) { if (request === comparisonRequest) showToast(errorText(error), "error"); }
     finally { trigger.disabled = false; }
+  }
+  function renderComparison(data) {
+    const container = $("#comparison-result"); container.classList.remove("hidden"); container.replaceChildren(el("h2", "", data.name || "性能与参数差异"));
+    comparisonControls(container, data);
+    container.append(el("p", "muted", "Δ 为相对基准的算术差值，正负方向并不表示性能优劣；基准为 0 时不计算百分比。"));
+    const warnings = [...data.warnings, ...data.schemes.flatMap(s => s.warnings.map(w => `${s.name}：${w}`))];
+    const box = warningsNode(warnings, "比较条件与计算提示"); if (box) container.append(box);
+    const headings = data.schemes.map(s => `${s.name} · ${s.id.slice(0, 8)}${s.id === data.baseline_id ? "（基准）" : ""}`);
+    container.append(featureTable(["指标 / 单位", ...headings], data.metrics.map(metric => [
+      `${metric.label} ${metric.unit}`, ...metric.cells.map(cell => cell.id === data.baseline_id ? fmt(cell.value) : `${fmt(cell.value)}\nΔ ${fmt(cell.delta)} (${fmt(cell.delta_percent, 3)}%)`),
+    ])));
+    container.append(el("h3", "result-section-title", "变化的输入参数"));
+    if (data.parameter_differences.length) container.append(featureTable(["参数", ...headings], data.parameter_differences.map(field => [field.label, ...field.cells.map(c => fmt(c.value))])));
+    else container.append(el("p", "muted", "这些计算使用相同输入。"));
+    container.append(el("h3", "result-section-title", "记录来源"));
+    data.schemes.forEach(s => { const details = el("details", "trace-details"); details.append(el("summary", "", s.name), el("pre", "", JSON.stringify(s.provenance, null, 2)), reportLink(s.id)); container.append(details); });
+    container.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+  function comparisonControls(container, data) {
+    if (data.id) {
+      container.append(el("p", "muted", `已保存 · ${new Date(data.created_at).toLocaleString("zh-CN")} · ${data.id}`));
+      if (data.notes) container.append(el("p", "comparison-notes", data.notes));
+      container.append(reportLink(data.id, true));
+      return;
+    }
+    const request = comparisonRequest, form = el("form", "comparison-save-form");
+    const nameLabel = el("label", "", "对比名称"), name = el("input", "text-input");
+    name.name = "comparison-name"; name.required = true; name.maxLength = 120; name.value = "方案对比";
+    nameLabel.append(name);
+    const notesLabel = el("label", "", "评审说明（可选）"), notes = el("textarea", "text-input");
+    notes.name = "comparison-notes"; notes.maxLength = 4000; notes.rows = 3; notesLabel.append(notes);
+    const submit = el("button", "button button-primary", "保存对比并生成报告"); submit.type = "submit";
+    form.append(nameLabel, notesLabel, submit);
+    form.addEventListener("submit", async event => {
+      event.preventDefault(); submit.disabled = true;
+      try {
+        const saved = await api("/comparison-sets", { method: "POST", body: JSON.stringify({
+          name: name.value.trim(), notes: notes.value, calculation_ids: data.schemes.map(s => s.id), baseline_id: data.baseline_id }) });
+        if (request === comparisonRequest) renderComparison(saved);
+        state.comparisonOffset = 0; loadSavedComparisons(); showToast("对比已保存，可重新打开或下载报告。");
+      } catch (error) { showToast(errorText(error), "error"); }
+      finally { submit.disabled = false; }
+    });
+    container.append(form);
+  }
+  async function loadSavedComparisons() {
+    const request = ++savedComparisonsRequest;
+    $("#saved-comparisons-feedback").textContent = "读取已保存对比…";
+    try {
+      const data = await api(`/comparison-sets?limit=20&offset=${state.comparisonOffset}`);
+      if (request !== savedComparisonsRequest) return;
+      const body = $("#saved-comparisons-body"); body.replaceChildren();
+      data.items.forEach(item => {
+        const row = el("tr");
+        row.append(el("td", "", item.name), el("td", "", `${item.scheme_count} 个方案`), el("td", "", new Date(item.created_at).toLocaleString("zh-CN")));
+        const actions = el("td");
+        actions.append(button("打开对比", "text-button", () => openSavedComparison(item.id)), reportLink(item.id, true));
+        row.append(actions); body.append(row);
+      });
+      $("#saved-comparisons-feedback").textContent = data.total ? "" : "尚未保存对比。选择方案并运行对比后，可保存评审说明与报告。";
+      $("#saved-comparisons-page").textContent = `共 ${data.total} 条 · 第 ${Math.floor(state.comparisonOffset / 20) + 1} 页`;
+      $("#saved-comparisons-previous").disabled = state.comparisonOffset === 0;
+      $("#saved-comparisons-next").disabled = state.comparisonOffset + data.items.length >= data.total;
+    } catch (error) { if (request === savedComparisonsRequest) $("#saved-comparisons-feedback").textContent = errorText(error); }
+  }
+  async function openSavedComparison(id) {
+    const request = ++comparisonRequest;
+    try {
+      const saved = await api(`/comparison-sets/${encodeURIComponent(id)}`);
+      if (request !== comparisonRequest) return;
+      state.selectedCalculations.clear();
+      saved.schemes.forEach(scheme => selectCalculation(scheme));
+      $("#comparison-baseline").value = saved.baseline_id;
+      renderComparison(saved); loadCalculations();
+    } catch (error) { if (request === comparisonRequest) showToast(errorText(error), "error"); }
   }
   let templateRequest = 0;
   async function searchTemplates(event) {
@@ -1184,7 +1248,9 @@
   $("#refresh-optimization-jobs").addEventListener("click", loadOptimizationJobs);
   $("#include-archived").addEventListener("change", loadProjects);
   $("#close-history").addEventListener("click", () => $("#history-dialog").close());
-  $("#refresh-calculations").addEventListener("click", loadCalculations);
+  $("#refresh-calculations").addEventListener("click", () => { loadCalculations(); loadSavedComparisons(); });
+  $("#saved-comparisons-previous").addEventListener("click", () => { state.comparisonOffset = Math.max(0, state.comparisonOffset - 20); loadSavedComparisons(); });
+  $("#saved-comparisons-next").addEventListener("click", () => { state.comparisonOffset += 20; loadSavedComparisons(); });
   $("#run-comparison").addEventListener("click", runComparison);
   $("#calculation-previous").addEventListener("click", () => { state.calculationOffset = Math.max(0, state.calculationOffset - 20); loadCalculations(); });
   $("#calculation-next").addEventListener("click", () => { state.calculationOffset += 20; loadCalculations(); });

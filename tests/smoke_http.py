@@ -30,6 +30,13 @@ for attempt in range(30):
 assert status['engine']['status'] == 'unavailable'
 assert status['catalog']['model_count'] == 0
 assert status['reports']['pdf']['available'], 'Container must include the installed PDF font'
+reviews = request('/api/v1/comparison-sets')
+assert reviews['total'] == 1 and reviews['items'][0]['name'] == 'Container comparison smoke'
+review_id = reviews['items'][0]['id']
+review = request('/api/v1/comparison-sets/' + review_id)
+assert len(review['schemes']) == 2 and review['metrics'][0]['cells'][0]['value'] == .9
+with urlopen(url + '/api/v1/comparison-sets/' + review_id + '/report.pdf', timeout=15) as response:
+    assert response.headers['Content-Type'] == 'application/pdf' and response.read().startswith(b'%PDF-')
 if mode == 'create':
     saved = request('/api/v1/projects', {'name': 'Container smoke draft', 'parameters': {'kW': 12}})
     state_path.write_text(saved['id'])

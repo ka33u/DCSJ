@@ -9,7 +9,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import __version__, catalog, projects, calculations, modeling
+from . import __version__, catalog, projects, calculations, comparisons, modeling
 from .execution import BusyError, compute
 from .storage import ConflictError, NotFoundError
 from .parameters import EXAMPLE, ROOT, InputError, schema, validate
@@ -101,6 +101,18 @@ class ComparisonInput(BaseModel):
         if self.baseline_id is not None and self.baseline_id not in self.calculation_ids:
             raise ValueError("基准方案必须在对比列表中")
         return self
+
+
+class SavedComparisonInput(ComparisonInput):
+    name: str = Field(min_length=1, max_length=120)
+    notes: str = Field(default='', max_length=4000)
+
+    @field_validator('name')
+    @classmethod
+    def nonblank_name(cls, value):
+        if not value.strip():
+            raise ValueError('对比名称不能为空')
+        return value.strip()
 
 
 class QuickModelInput(BaseModel):
@@ -311,6 +323,39 @@ def calculation_report(calculation_id: str):
 @app.post("/api/v1/comparisons", tags=["计算记录与对比"])
 def compare_calculations(body: ComparisonInput):
     return calculations.compare(body.calculation_ids, body.baseline_id)
+
+
+@app.post('/api/v1/comparison-sets', status_code=201, tags=['计算记录与对比'])
+def save_comparison(body: SavedComparisonInput):
+    return comparisons.save(body.name, body.calculation_ids, body.baseline_id, body.notes)
+
+
+@app.get('/api/v1/comparison-sets', tags=['计算记录与对比'])
+def list_comparisons(limit: Annotated[int, Query(ge=1, le=100)] = 20,
+                     offset: Annotated[int, Query(ge=0)] = 0):
+    return comparisons.list_saved(limit, offset)
+
+
+@app.get('/api/v1/comparison-sets/{comparison_id}', tags=['计算记录与对比'])
+def get_comparison(comparison_id: str):
+    return comparisons.get(comparison_id)
+
+
+@app.get('/api/v1/comparison-sets/{comparison_id}/report.pdf', response_class=Response,
+         responses={200: {'content': {'application/pdf': {'schema': {'type': 'string', 'format': 'binary'}}}}},
+         tags=['打印报告'])
+def comparison_pdf(comparison_id: str):
+    from .comparison_reports import render_pdf
+    saved = comparisons.get(comparison_id)
+    return Response(render_pdf(saved), media_type='application/pdf', headers={
+        'Content-Disposition': f'attachment; filename="DCSJ-comparison-{saved["id"]}.pdf"',
+        'Cache-Control': 'no-store'})
+
+
+@app.get('/comparison-reports/{comparison_id}', response_class=HTMLResponse, tags=['打印报告'])
+def comparison_report(comparison_id: str):
+    from .comparison_reports import render_html
+    return HTMLResponse(render_html(comparisons.get(comparison_id)), headers={'Cache-Control': 'no-store'})
 
 
 @app.get("/api/v1/modeling/templates", tags=["快速建模"])

@@ -43,6 +43,17 @@ jobs:
                          "curves": [], "provenance": {}})
           assert data.startswith(b"%PDF-") and b"/FontFile2" in data
           print("Read-only container generated an embedded-font Chinese PDF:", len(data), "bytes")
+          from dcsj import calculations, comparisons
+          from dcsj.comparison_reports import render_pdf
+          sample = {"inputs": {"SizeX": "人工容器数据"}, "values": {"ATA1": 0.9},
+                    "warnings": ["人工测试结果，不是电机预测。"], "provenance": {"input_sha256": "synthetic"}}
+          first = calculations.save(sample, "人工基准")
+          sample["values"]["ATA1"] = 0.91
+          second = calculations.save(sample, "人工候选")
+          saved = comparisons.save("Container comparison smoke", [first["calculation_id"], second["calculation_id"]])
+          data = render_pdf(saved)
+          assert data.startswith(b"%PDF-") and b"/FontFile2" in data
+          print("Read-only container saved comparison and generated PDF:", len(data), "bytes")
           PY
       - run: python tests/smoke_http.py http://127.0.0.1:8768 create /tmp/dcsj-smoke-id
       - run: docker restart dcsj-smoke
