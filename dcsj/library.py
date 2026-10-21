@@ -170,6 +170,7 @@ def model(reference):
 
 
 def material(reference):
+    from .curves import material_plot
     entry = from_reference(reference, 'materials')
     doc = entry['document']
     return {'id': reference, 'name': entry['name'], 'calculation_key': reference,
@@ -177,7 +178,8 @@ def material(reference):
             'source': {'path': '用户材料库', 'description': doc['source'], 'revision': entry['revision'], 'sha256': entry['document_sha256']},
             'warnings': entry['compatibility']['reasons'],
             'curves': [{'id': key, 'title': title, 'x_label': '磁密 B (T)', 'y_label': unit,
-                        'series': [{'name': entry['name'], 'points': [{'x': x, 'y': y} for x, y in doc[key]]}]}
+                        'series': [{'name': entry['name'], 'points': [{'x': x, 'y': y} for x, y in doc[key]]}],
+                        'plot': material_plot([{'x': x, 'y': y} for x, y in doc[key]], key, doc['h_unit'], doc['loss_unit'])}
                        for key, title, unit in [('bh', '磁化曲线', 'H (' + doc['h_unit'] + ')'),
                                                 ('loss', '损耗曲线', doc['loss_unit'])]]}
 

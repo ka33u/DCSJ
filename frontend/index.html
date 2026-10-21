@@ -88,7 +88,7 @@
         </section>
 
         <section class="page" id="view-materials" aria-labelledby="materials-title">
-          <div class="page-heading"><div><div class="eyebrow">MATERIAL LIBRARY</div><h1 id="materials-title">材料与磁化曲线</h1><p>查看原始材料数据及 B–H 曲线；具体单位以数据字段为准。</p></div><span class="large-count"><strong id="material-total">—</strong> 种材料</span></div>
+          <div class="page-heading"><div><div class="eyebrow">MATERIAL LIBRARY</div><h1 id="materials-title">材料与磁化曲线</h1><p>分别查看 B1–H1 磁化数据与 B2–Pfe 损耗数据，两组磁密采样独立保留。</p></div><span class="large-count"><strong id="material-total">—</strong> 种材料</span></div>
           <div class="materials-layout"><section class="panel material-selector"><div class="panel-header"><h2>材料目录</h2><button class="text-button" id="refresh-materials">刷新</button></div><div id="material-list" class="material-list"><p class="loading-copy">正在读取材料…</p></div></section><section class="panel material-detail"><div id="material-detail"><div class="empty-state"><span class="empty-symbol" aria-hidden="true">⌁</span><h3>选择一种材料</h3><p>查看磁化数据、曲线和来源说明。</p></div></div></section></div>
         </section>
 
@@ -144,10 +144,13 @@
                 <label class="entry-label">来源<input id="entry-source" class="text-input" maxlength="2000" value="手工录入" required></label><label class="entry-label">备注<textarea id="entry-notes" class="text-input" rows="2" maxlength="4000"></textarea></label>
                 <div id="entry-model-fields"><div class="feature-actions"><button class="button button-small" id="copy-current-entry" type="button">复制工作台参数</button></div><label class="entry-label">完整参数 JSON<textarea id="entry-parameters" class="text-input code-input" rows="12" spellcheck="false" placeholder="粘贴完整参数对象"></textarea></label></div>
                 <div id="entry-material-fields" class="hidden">
-                  <div class="quick-form"><label>频率 Hz<input id="entry-frequency" class="text-input" type="number" step="any" min="0.001" max="100000" value="50"></label><label>磁场强度单位<select id="entry-h-unit" class="text-input"><option>A/m</option><option>A/cm</option></select></label><label>损耗单位<select id="entry-loss-unit" class="text-input"><option value="W/kg">W/kg</option><option value="W/m3">W/m³</option><option value="kernel_native">原计算核数值（已确认）</option></select></label></div>
-                  <p class="muted small">每行输入两列数字，用空格、逗号或制表符分隔。磁密 B 单位为 T，须严格递增；H 和损耗须非负、单调不减。</p>
-                  <label class="entry-label">B–H 磁化曲线<textarea id="entry-bh" class="text-input code-input" rows="8" spellcheck="false" placeholder="B, H"></textarea></label><label class="entry-label">B–损耗曲线<textarea id="entry-loss" class="text-input code-input" rows="8" spellcheck="false" placeholder="B, 损耗"></textarea></label>
-                  <p class="notice">W/kg、W/m³ 曲线可保存和绘图。只有已确认采用原计算核损耗数值、50 Hz、两条曲线均覆盖 0.5–1.88 T 的材料可用于当前计算；不外推，不自动猜测损耗换算。</p>
+                  <div class="quick-form"><label>频率 · Hz<input id="entry-frequency" class="text-input" type="number" step="any" min="0.001" max="100000" value="50" required></label><label>保存 H 单位<select id="entry-h-unit" class="text-input"><option>A/m</option><option>A/cm</option></select></label><label>Pfe 数值单位<select id="entry-loss-unit" class="text-input"><option value="W/kg">W/kg（来源已确认）</option><option value="W/m3">W/m³（来源已确认）</option><option value="kernel_native">原计算核数值（来源单位待核验）</option></select></label></div>
+                  <p class="material-editor-note">表格沿用原版单位：B1、B2 为 G，H1 为 A/cm。两张表可有不同的磁密和行数；例如 B1 可从 5000、5500 G 采样，B2 可从 5000、6000 G 采样，互不补齐或配对。</p>
+                  <div id="material-point-editors" class="material-point-editors"></div>
+                  <p class="muted small">保存时 B1、B2 各自换算为 T（10000 G = 1 T），H1 按所选 API 单位换算（1 A/cm = 100 A/m），保持 0.6 用户 JSON 格式兼容。Pfe 不作单位推断或数值换算。</p>
+                  <div class="feature-actions"><button class="button" type="button" id="preview-material-draft">校验并预览两条曲线</button><span id="material-draft-status" class="muted small" role="status"></span></div>
+                  <div id="material-draft-error" class="inline-error hidden" role="alert"></div><div id="material-draft-preview" class="hidden"></div>
+                  <p class="notice">W/kg、W/m³ 曲线可保存和绘图。只有明确保留原计算核损耗数值、50 Hz、两张表各自覆盖 5000–18800 G 的材料可用于当前计算；不外推，不猜测损耗换算。原版 Pfe 图轴标注为 W/cm³，其实际语义仍待核验。</p>
                 </div>
                 <div class="feature-actions"><button id="save-entry" class="button button-primary" type="submit">保存为新记录</button><button id="new-entry" class="button" type="button">新建 / 取消编辑</button><button id="open-entry-import" class="button" type="button">导入用户 JSON</button></div>
               </fieldset></form><p id="entry-feedback" role="status"></p><input type="file" id="entry-file" accept="application/json,.json" hidden>

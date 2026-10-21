@@ -3,7 +3,7 @@
   "private": true,
   "description": "DOM interaction regression tests for the standalone DCSJ frontend",
   "scripts": {
-    "test": "node --test tests/test_frontend.cjs"
+    "test": "node --test tests/test_frontend.cjs tests/test_material_editor.cjs"
   },
   "engines": {
     "node": "^24.15.0 || >=26.0.0"

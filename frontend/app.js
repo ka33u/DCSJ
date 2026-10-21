@@ -370,7 +370,7 @@
     const container = $("#result-content");
     container.replaceChildren();
     const metrics = Array.isArray(result.metrics) ? result.metrics : [];
-    const curves = Array.isArray(result.curves) ? result.curves : [];
+    const curves = Array.isArray(result.curves) ? result.curves.filter(curve => curve.display !== false) : [];
     const warnings = Array.isArray(result.warnings) ? result.warnings : [];
     const meta = el("div", "result-meta");
     const calculatedAt = result.created_at ? new Date(result.created_at) : null;
@@ -437,89 +437,82 @@
     if (text !== undefined) node.textContent = text;
     return node;
   }
+  let curveSequence = 0;
   function renderCurve(curve) {
     const card = el("div", "chart-card");
     card.append(el("h3", "chart-title", curve.title || "数据曲线"));
-    const rawSeries = Array.isArray(curve.series) ? curve.series : [];
+    const plot = curve.plot || {}, rawSeries = Array.isArray(curve.series) ? curve.series : [];
     let invalidCount = 0;
-    const series = rawSeries.map((item, index) => ({
-      name: String(item.name || `曲线 ${index + 1}`),
-      color: colors[index % colors.length],
-      points: (Array.isArray(item.points) ? item.points : []).filter(point => {
-        const valid = point !== null && typeof point === "object" && typeof point.x === "number" && typeof point.y === "number" && Number.isFinite(point.x) && Number.isFinite(point.y);
-        if (!valid) invalidCount++;
-        return valid;
-      }),
+    const validPoints = points => (Array.isArray(points) ? points : []).filter(point => {
+      const valid = point && typeof point.x === "number" && typeof point.y === "number" && Number.isFinite(point.x) && Number.isFinite(point.y);
+      if (!valid) invalidCount++;
+      return valid;
+    });
+    const series = (plot.series || rawSeries).map((item, index) => ({
+      ...item, name: String(item.name || `曲线 ${index + 1}`),
+      color: /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : colors[index % colors.length],
+      points: validPoints(item.points),
     }));
     const points = series.flatMap(item => item.points);
-    if (!points.length) {
-      card.append(el("p", "chart-empty", "没有可绘制的有效坐标数据。"));
-      return card;
+    if (!points.length) { card.append(el("p", "chart-empty", "没有可绘制的有效坐标数据。")); return card; }
+    const bounds = points.reduce((a, p) => [Math.min(a[0], p.x), Math.max(a[1], p.x), Math.min(a[2], p.y), Math.max(a[3], p.y)], [Infinity, -Infinity, 0, -Infinity]);
+    let xMin = plot.x_min ?? bounds[0], xMax = plot.x_max ?? bounds[1];
+    if (xMin === xMax) xMax = xMin + 1;
+    const axes = (plot.y_axes || [{ id: "y", label: curve.y_label || "y", min: bounds[2], max: bounds[3] }]).map(axis => ({ ...axis, max: axis.max === axis.min ? axis.min + 1 : axis.max }));
+    if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || xMax <= xMin || !axes.length || axes.some(a => !Number.isFinite(a.min) || !Number.isFinite(a.max) || a.max <= a.min)) {
+      card.append(el("p", "chart-warning", "坐标轴范围无效，请检查曲线数据。")); return card;
     }
+    const byAxis = new Map(axes.map(axis => [axis.id, axis]));
+    if (series.some(item => item.axis && !byAxis.has(item.axis))) { card.append(el("p", "chart-warning", "曲线引用未知坐标轴。")); return card; }
+    const axisFor = item => byAxis.get(item.axis || axes[0].id);
+    const axisColor = axis => series.find(item => axisFor(item).id === axis.id)?.color || '#526b5d';
     const legend = el("div", "chart-legend");
     series.forEach(item => {
-      const label = el("span", "legend-item");
-      const dot = el("i", "legend-dot");
-      dot.style.backgroundColor = item.color;
-      label.append(dot, document.createTextNode(item.name));
-      legend.append(label);
+      const label = el("span", "legend-item"), dot = el("i", "legend-dot"); dot.style.backgroundColor = item.color;
+      label.append(dot, document.createTextNode(`${item.name}${axes.length > 1 ? ` · ${axisFor(item).label}` : ""}`)); legend.append(label);
     });
     card.append(legend);
+    if (plot.note) card.append(el("p", "chart-note muted small", plot.note));
     if (invalidCount) card.append(el("p", "chart-warning", `${invalidCount} 个非数值坐标无法绘制，已从曲线中跳过。`));
-    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
-    points.forEach(point => { xMin = Math.min(xMin, point.x); xMax = Math.max(xMax, point.x); yMin = Math.min(yMin, point.y); yMax = Math.max(yMax, point.y); });
-    if (xMin === xMax) { const pad = Math.abs(xMin) * .1 || 1; xMin -= pad; xMax += pad; }
-    if (yMin === yMax) { const pad = Math.abs(yMin) * .1 || 1; yMin -= pad; yMax += pad; }
-    const yPad = (yMax - yMin) * .07;
-    yMin = yMin >= 0 ? Math.max(0, yMin - yPad) : yMin - yPad;
-    yMax += yPad;
-    const width = 540, height = 300, left = 67, right = 22, top = 34, bottom = 54;
-    const plotW = width - left - right, plotH = height - top - bottom;
-    const px = x => left + (x - xMin) / (xMax - xMin) * plotW;
-    const py = y => top + (yMax - y) / (yMax - yMin) * plotH;
-    const svg = svgNode("svg", { viewBox: `0 0 ${width} ${height}`, class: "curve-svg", role: "img", "aria-label": `${curve.title || "数据曲线"}，横轴 ${curve.x_label || "x"}，纵轴 ${curve.y_label || "y"}` });
-    svg.append(svgNode("title", {}, `${curve.title || "数据曲线"}；详细数值见下方数据表`));
-    for (let tick = 0; tick <= 4; tick++) {
-      const y = top + plotH * tick / 4;
-      svg.append(svgNode("line", { x1: left, x2: width - right, y1: y, y2: y, stroke: "#e8eeea", "stroke-dasharray": "3 4", "stroke-width": 1 }));
-      svg.append(svgNode("text", { x: left - 9, y: y + 3, "text-anchor": "end", fill: "#96a69d", "font-size": 9 }, fmt(yMax - (yMax - yMin) * tick / 4, 3)));
-      const x = left + plotW * tick / 4;
-      svg.append(svgNode("text", { x, y: height - bottom + 20, "text-anchor": "middle", fill: "#96a69d", "font-size": 9 }, fmt(xMin + (xMax - xMin) * tick / 4, 3)));
+    const width = axes.length > 2 ? 760 : 600, left = 20 + 58 * axes.length, right = 28, top = 38, bottom = 54;
+    const plotW = width - left - right, plotH = Number.isFinite(plot.aspect_ratio) && plot.aspect_ratio >= .5 && plot.aspect_ratio <= 4 ? plotW / plot.aspect_ratio : 278;
+    const height = top + plotH + bottom, xlabel = plot.x_label || curve.x_label || "x";
+    const xTicks = Number.isInteger(plot.x_ticks) ? Math.max(2, Math.min(20, plot.x_ticks)) : 5, yTicks = Number.isInteger(plot.y_ticks) ? Math.max(2, Math.min(20, plot.y_ticks)) : 5;
+    const px = x => left + (plot.x_reverse ? (xMax - x) : (x - xMin)) / (xMax - xMin) * plotW;
+    const py = (y, axis) => top + (axis.max - y) / (axis.max - axis.min) * plotH;
+    const svg = svgNode("svg", { viewBox: `0 0 ${width} ${height}`, class: "curve-svg", role: "img", "aria-label": `${curve.title || "数据曲线"}，横轴 ${xlabel}，纵轴 ${axes.map(a => a.label).join("、")}` });
+    svg.append(svgNode("title", {}, `${curve.title || "数据曲线"}；详细原始数值见下方数据表`));
+    const clipId = `curve-plot-${++curveSequence}`, defs = svgNode('defs'), clip = svgNode('clipPath', { id: clipId });
+    clip.append(svgNode('rect', { x: left, y: top, width: plotW, height: plotH })); defs.append(clip); svg.append(defs);
+    for (let tick = 0; tick <= yTicks; tick++) {
+      const y = top + plotH * tick / yTicks;
+      svg.append(svgNode("line", { x1: left, x2: width - right, y1: y, y2: y, stroke: "#dce5df", "stroke-dasharray": "3 4" }));
+      axes.forEach((axis, index) => svg.append(svgNode("text", { x: left - 9 - 58 * (axes.length - 1 - index), y: y + 3, "text-anchor": "end", fill: axisColor(axis), "font-size": 10, "data-axis": axis.id }, fmt(axis.max - (axis.max - axis.min) * tick / yTicks, 4))));
     }
-    svg.append(svgNode("line", { x1: left, x2: width - right, y1: height - bottom, y2: height - bottom, stroke: "#ccd9d0" }));
-    svg.append(svgNode("line", { x1: left, x2: left, y1: top, y2: height - bottom, stroke: "#ccd9d0" }));
-    svg.append(svgNode("text", { x: left, y: 15, fill: "#7c9486", "font-size": 10 }, curve.y_label || "y"));
-    svg.append(svgNode("text", { x: left + plotW / 2, y: height - 8, fill: "#7c9486", "font-size": 10, "text-anchor": "middle" }, curve.x_label || "x"));
+    for (let tick = 0; tick <= xTicks; tick++) {
+      const x = left + plotW * tick / xTicks;
+      svg.append(svgNode("line", { x1: x, x2: x, y1: top, y2: height - bottom, stroke: "#e8eeea", "stroke-dasharray": "3 4" }));
+      svg.append(svgNode("text", { x, y: height - bottom + 20, "text-anchor": "middle", fill: "#526b5d", "font-size": 10, "data-axis": "x" }, fmt(xMin + (xMax - xMin) * (plot.x_reverse ? 1 - tick / xTicks : tick / xTicks), 3)));
+    }
+    svg.append(svgNode("rect", { x: left, y: top, width: plotW, height: plotH, fill: "none", stroke: "#aabdb0" }));
+    axes.forEach((axis, index) => svg.append(svgNode("text", { x: axes.length === 1 ? left : left - 9 - 58 * (axes.length - 1 - index), y: 18, fill: axisColor(axis), "font-size": 11, "text-anchor": axes.length === 1 ? "start" : "end" }, axes.length === 1 ? axis.label : axis.short_label || axis.label)));
+    svg.append(svgNode("text", { x: left + plotW / 2, y: height - 8, fill: "#526b5d", "font-size": 11, "text-anchor": "middle" }, xlabel));
     series.forEach(item => {
-      if (!item.points.length) return;
-      const path = item.points.map((point, index) => `${index ? "L" : "M"}${px(point.x).toFixed(2)},${py(point.y).toFixed(2)}`).join(" ");
-      svg.append(svgNode("path", { d: path, fill: "none", stroke: item.color, "stroke-width": 2.2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
-      const stride = Math.max(1, Math.ceil(item.points.length / 60));
-      item.points.forEach((point, index) => {
-        if (index % stride && index !== item.points.length - 1) return;
-        const marker = svgNode("circle", { cx: px(point.x), cy: py(point.y), r: item.points.length === 1 ? 3 : 2, fill: "#fff", stroke: item.color, "stroke-width": 1.4 });
-        marker.append(svgNode("title", {}, `${item.name}：${curve.x_label || "x"} ${fmt(point.x)}，${curve.y_label || "y"} ${fmt(point.y)}`));
-        svg.append(marker);
+      const axis = axisFor(item);
+      const path = item.points.map((point, index) => `${index ? "L" : "M"}${px(point.x).toFixed(2)},${py(point.y, axis).toFixed(2)}`).join(" ");
+      svg.append(svgNode("path", { d: path, fill: "none", stroke: item.color, "stroke-width": 2.2, "stroke-linejoin": "round", "stroke-linecap": "round", "data-series": item.name, "data-axis": axis.id, 'clip-path': `url(#${clipId})` }));
+      if (plot.series) return;
+      item.points.forEach(point => {
+        const marker = svgNode("circle", { cx: px(point.x), cy: py(point.y, axis), r: 2, fill: "#fff", stroke: item.color });
+        marker.append(svgNode("title", {}, `${item.name}：${fmt(point.x)}，${fmt(point.y)}`)); svg.append(marker);
       });
     });
-    card.append(svg);
-    const details = el("details", "chart-data");
-    details.append(el("summary", "", `查看曲线数据 · ${points.length} 个有效坐标`));
-    const scroll = el("div", "table-scroll");
-    const table = el("table", "result-table");
-    const head = el("thead"), header = el("tr");
-    ["曲线", curve.x_label || "x", curve.y_label || "y"].forEach(label => header.append(el("th", "", label)));
-    head.append(header);
-    const body = el("tbody");
-    series.forEach(item => item.points.forEach(point => {
-      const row = el("tr");
-      [item.name, fmt(point.x), fmt(point.y)].forEach(value => row.append(el("td", "", value)));
-      body.append(row);
-    }));
-    table.append(head, body);
-    scroll.append(table);
-    details.append(scroll);
-    card.append(details);
+    const viewport = el('div', 'curve-viewport'); viewport.append(svg); card.append(viewport);
+    const details = el("details", "chart-data"), scroll = el("div", "table-scroll"), table = el("table", "result-table"), head = el("thead"), header = el("tr"), body = el("tbody");
+    details.append(el("summary", "", "查看原始采样数据（拟合及显示坐标不改写原始值）"));
+    ["曲线", curve.x_label || "x", curve.y_label || "y"].forEach(label => header.append(el("th", "", label))); head.append(header);
+    rawSeries.forEach(item => validPoints(item.points).forEach(point => { const row = el("tr"); [item.name, fmt(point.x), fmt(point.y)].forEach(value => row.append(el("td", "", value))); body.append(row); }));
+    table.append(head, body); scroll.append(table); details.append(scroll); card.append(details);
     return card;
   }
   async function calculate(event) {
@@ -682,7 +675,7 @@
       $("#material-list").replaceChildren();
       data.items.forEach(material => {
         const trigger = button("", "material-item", () => loadMaterial(material.id, trigger, material.source));
-        trigger.append(el("strong", "", material.name || material.id), el("small", "", `${fmt(material.point_count, 0)} 个数据点`));
+        trigger.append(el("strong", "", material.name || material.id), el("small", "", `B–H ${fmt(material.point_count, 0)} 点 · B–P ${fmt(material.loss_point_count, 0)} 点`));
         trigger.title = sourceText(material.source);
         $("#material-list").append(trigger);
       });
@@ -691,6 +684,34 @@
       $("#material-list").replaceChildren(el("p", "inline-error", `读取失败：${errorText(error)}`));
       state.materialsLoaded = false;
     }
+  }
+  function materialSourceDocument(material, listSource) {
+    const bh = material.curves?.find(curve => curve.id === "bh"), loss = material.curves?.find(curve => curve.id === "loss");
+    if (!bh?.series?.[0]?.points?.length || !loss?.series?.[0]?.points?.length) throw new Error("此材料没有完整的两组原始采样数据，无法复制。");
+    const hUnit = /A\/cm/.test(bh.y_label) ? "A/cm" : /A\/m/.test(bh.y_label) ? "A/m" : null;
+    if (!hUnit || !/\(T\)/.test(bh.x_label) || !/\(T\)/.test(loss.x_label)) throw new Error("此材料的原始 API 单位无法识别，请先核对数据来源。" );
+    const lossUnit = material.loss_unit || (/W\/kg/.test(loss.y_label) ? "W/kg" : /W\/m[3³]/.test(loss.y_label) ? "W/m3" : "kernel_native");
+    return { source: sourceText(material.source || listSource), notes: "从原始材料复制，两组磁密采样分别保留。" + (material.warnings?.length ? "\n" + material.warnings.join("\n") : ""),
+      frequency_hz: material.frequency_hz || "", h_unit: hUnit, loss_unit: lossUnit,
+      bh: bh.series[0].points.map(p => [p.x, p.y]), loss: loss.series[0].points.map(p => [p.x, p.y]) };
+  }
+  function materialSamplingTables(material, listSource) {
+    const container = el("div", "material-source-tables");
+    let doc;
+    try { doc = materialSourceDocument(material, listSource); }
+    catch (error) { container.append(el("p", "muted small", errorText(error))); return container; }
+    container.append(el("p", "material-editor-note", "原版采样表：B1 与 B2 各自对应本表的 H1 与 Pfe。两张表行号不代表同一磁密，不作同行合并。"));
+    for (const key of ["bh", "loss"]) {
+      const details = el("details", "material-source-data"), title = key === "bh" ? "B1 (G) / H1 (A/cm)" : `B2 (G) / ${materialLossLabel(doc.loss_unit)}`;
+      details.append(el("summary", "", `${title} · ${doc[key].length} 个采样点`));
+      const scroll = el("div", "material-table-scroll"), table = el("table", "material-point-table"), head = el("thead"), headRow = el("tr"), body = el("tbody");
+      ["行", key === "bh" ? "B1 (G)" : "B2 (G)", key === "bh" ? "H1 (A/cm)" : materialLossLabel(doc.loss_unit)].forEach(label => { const cell = el("th", "", label); cell.scope = "col"; headRow.append(cell); });
+      head.append(headRow);
+      doc[key].forEach(([b, value], index) => {
+        const row = el("tr"); [index + 1, materialNumber(b * 10000), materialNumber(key === "bh" && doc.h_unit === "A/m" ? value / 100 : value)].forEach(v => row.append(el("td", "", String(v)))); body.append(row);
+      }); table.append(head, body); table.setAttribute("aria-label", title); scroll.append(table); details.append(scroll); container.append(details);
+    }
+    return container;
   }
   async function loadMaterial(id, trigger, listSource) {
     const request = ++state.materialRequest;
@@ -707,6 +728,11 @@
       const content = el("div", "material-curves");
       const warningBox = warningsNode(material.warnings, "材料数据说明");
       if (warningBox) content.append(warningBox);
+      content.append(materialSamplingTables(material, listSource));
+      const copy = button("复制到用户材料编辑器", "button button-small", () => {
+        try { const document = materialSourceDocument(material, listSource); navigate("resources"); fillEntry({ kind: "materials", name: `${material.name || id} 副本`, document }, true); }
+        catch (error) { showToast(errorText(error), "error"); }
+      }); header.append(copy);
       if (Array.isArray(material.curves) && material.curves.length) material.curves.forEach(curve => content.append(renderCurve(curve)));
       else content.append(el("p", "chart-empty", "此材料没有可绘制的曲线数据。"));
       $("#material-detail").replaceChildren(header, content);
@@ -1286,11 +1312,176 @@
     } catch (error) { $("#resource-feedback").textContent = errorText(error); }
     finally { resourceBusy = false; await loadResources(); }
   }
+  const materialTables = {
+    bh: { title: "B1–H1 磁化采样表", b: "B1 (G)", value: "H1 (A/cm)" },
+    loss: { title: "B2–Pfe 损耗采样表", b: "B2 (G)", value: "Pfe" },
+  };
+  const materialNumber = value => Number(Number(value).toPrecision(15));
+  function materialLossLabel(unit = $("#entry-loss-unit").value) {
+    return unit === "kernel_native" ? "Pfe（原表数值，单位待核验）" : `Pfe (${unit === "W/m3" ? "W/m³" : unit})`;
+  }
+  function materialDraftChanged() {
+    $("#material-draft-preview").classList.add("hidden");
+    $("#material-draft-error").classList.add("hidden");
+    $("#material-draft-status").textContent = "参数已修改，请重新预览。";
+  }
+  function updateMaterialTable(key) {
+    const rows = $$("tr", $("#material-rows-" + key));
+    rows.forEach((row, index) => {
+      $("th", row).textContent = index + 1;
+      const inputs = $$("input", row);
+      inputs[0].setAttribute("aria-label", `${materialTables[key].b} 第 ${index + 1} 行`);
+      inputs[1].setAttribute("aria-label", `${materialTables[key].value} 第 ${index + 1} 行`);
+      $("button", row).setAttribute("aria-label", `删除${key === "bh" ? "磁化" : "损耗"}第 ${index + 1} 行`);
+    });
+    $("#material-count-" + key).textContent = `${rows.length} 行 · 独立采样`;
+    $("#material-add-" + key).disabled = rows.length >= 2000;
+  }
+  function addMaterialRow(key, values = ["", ""], refresh = true) {
+    const body = $("#material-rows-" + key);
+    if (body.children.length >= 2000) throw new Error("每张材料表最多支持 2000 行。");
+    const row = el("tr"), index = el("th"); index.scope = "row"; row.append(index);
+    values.forEach(value => {
+      const cell = el("td"), input = el("input", "text-input");
+      input.type = "number"; input.step = "any"; input.min = "0"; input.value = value;
+      input.addEventListener("input", materialDraftChanged); cell.append(input); row.append(cell);
+    });
+    const action = el("td"); action.append(button("删除", "text-button", () => {
+      row.remove(); updateMaterialTable(key); materialDraftChanged();
+    })); row.append(action); body.append(row); if (refresh) updateMaterialTable(key);
+  }
+  function setMaterialRows(key, points, apiPoints = null, hUnit = null) {
+    $("#material-rows-" + key).replaceChildren();
+    (points.length ? points : [["", ""], ["", ""]]).forEach(row => addMaterialRow(key, row, false));
+    if (apiPoints?.length) $$("tr", $("#material-rows-" + key)).forEach((row, index) => {
+      $$("input", row).forEach((input, column) => {
+        input.dataset.apiValue = String(apiPoints[index][column]); input.dataset.displayValue = input.value;
+        if (key === "bh" && column === 1) input.dataset.apiUnit = hUnit;
+      });
+    });
+    updateMaterialTable(key);
+  }
+  function bulkMaterialLabels(key) {
+    const native = $("#material-format-" + key).value === "native";
+    const h = native ? "A/cm" : $("#entry-h-unit").value;
+    $("#material-bulk-label-" + key).textContent = `${key === "bh" ? "B1" : "B2"} (${native ? "G" : "T"})，${key === "bh" ? `H1 (${h})` : materialLossLabel()}`;
+    $("#entry-" + key).placeholder = key === "bh" ? (native ? "5000, 1.2\n5500, 2.4" : `0.5, ${h === "A/m" ? "120" : "1.2"}\n0.55, ${h === "A/m" ? "240" : "2.4"}`) : (native ? "5000, 1\n6000, 2" : "0.5, 1\n0.6, 2");
+  }
+  function materialBulkPending(key) {
+    const pending = Boolean($("#entry-" + key).value.trim());
+    $$("input,button", $("#material-table-" + key)).forEach(node => { node.disabled = pending; });
+    $("#material-add-" + key).disabled = pending || $("#material-rows-" + key).children.length >= 2000;
+    $("#material-bulk-status-" + key).textContent = pending ? "待应用：预览或保存时也会用此批量内容替换本表；另一张表保持独立。" : "每行两列，可用空格、逗号或制表符分隔；不包含表头。";
+  }
+  function makeMaterialEditors() {
+    for (const [key, spec] of Object.entries(materialTables)) {
+      const section = el("section", "material-point-editor"), heading = el("div", "material-table-heading");
+      const title = el("h3", "", spec.title); title.id = "material-heading-" + key;
+      const count = el("span", "muted small"); count.id = "material-count-" + key; heading.append(title, count);
+      const scroll = el("div", "material-table-scroll"), table = el("table", "material-point-table"); table.id = "material-table-" + key;
+      table.setAttribute("aria-labelledby", title.id);
+      const head = el("thead"), headRow = el("tr");
+      ["行", spec.b, key === "loss" ? materialLossLabel() : spec.value, "操作"].forEach((label, index) => {
+        const cell = el("th", "", label); cell.scope = "col"; if (index === 2) cell.id = "material-value-label-" + key; headRow.append(cell);
+      }); head.append(headRow);
+      const body = el("tbody"); body.id = "material-rows-" + key; table.append(head, body); scroll.append(table);
+      const add = button("添加一行", "button button-small", () => { addMaterialRow(key); materialDraftChanged(); }); add.id = "material-add-" + key;
+      const bulk = el("details", "material-bulk"), summary = el("summary", "", "批量替换此表");
+      const formatLabel = el("label", "entry-label", "输入单位"), format = el("select", "text-input"); format.id = "material-format-" + key;
+      [["api", "标准单位格式：B (T)，H 使用所选单位"], ["native", "原版表格格式：B (G)，H (A/cm)"]].forEach(([value, label]) => {
+        const option = el("option", "", key === "loss" ? label.replace(/，H.*/, "，Pfe 保留当前单位") : label); option.value = value; format.append(option);
+      }); format.addEventListener("change", () => { bulkMaterialLabels(key); materialDraftChanged(); }); formatLabel.append(format);
+      const label = el("label", "entry-label"), labelText = el("span"); labelText.id = "material-bulk-label-" + key;
+      const input = el("textarea", "text-input code-input"); input.id = "entry-" + key; input.rows = 5; input.spellcheck = false;
+      input.addEventListener("input", () => { materialBulkPending(key); materialDraftChanged(); }); label.append(labelText, input);
+      const status = el("p", "muted small"); status.id = "material-bulk-status-" + key;
+      const actions = el("div", "feature-actions");
+      actions.append(button("应用到此表", "button button-small", () => {
+        try { applyMaterialBulk(key); $("#material-draft-status").textContent = "批量内容已应用，请预览或保存。"; }
+        catch (error) { materialDraftError(error); }
+      }), button("取消批量输入", "button button-small", () => { input.value = ""; materialBulkPending(key); materialDraftChanged(); }));
+      bulk.append(summary, formatLabel, label, status, actions); section.append(heading, scroll, add, bulk);
+      $("#material-point-editors").append(section); setMaterialRows(key, []); bulkMaterialLabels(key); materialBulkPending(key);
+    }
+  }
+  function validateMaterialPoints(key, points) {
+    const spec = materialTables[key];
+    if (points.length < 2 || points.length > 2000) throw new Error(`${spec.title}须有 2–2000 行。`);
+    points.forEach((row, index) => {
+      if (row.length !== 2 || row.some(value => value === "" || value === null || !Number.isFinite(Number(value)) || Number(value) < 0)) throw new Error(`${spec.title}第 ${index + 1} 行须填入两个非负有限数值。`);
+      if (index && Number(row[0]) <= Number(points[index - 1][0])) throw new Error(`${spec.title}第 ${index + 1} 行的 ${spec.b} 必须严格递增，不能重复。`);
+      if (index && Number(row[1]) < Number(points[index - 1][1])) throw new Error(`${spec.title}第 ${index + 1} 行的 ${spec.value} 必须单调不减。`);
+    });
+    return points.map(row => row.map(Number));
+  }
+  function applyMaterialBulk(key) {
+    const input = $("#entry-" + key);
+    if (!input.value.trim()) return;
+    const native = $("#material-format-" + key).value === "native";
+    const lines = input.value.trim().split(/\r?\n/).filter(line => line.trim());
+    const points = lines.map((line, index) => {
+      const values = line.trim().split(/[\s,，;；]+/);
+      if (values.length !== 2 || values.some(v => !Number.isFinite(Number(v)))) throw new Error(`${materialTables[key].title}批量第 ${index + 1} 行须包含两个有效数字。`);
+      return values.map(Number);
+    });
+    validateMaterialPoints(key, points);
+    const rows = points.map(([b, value]) => [materialNumber(native ? b : b * 10000), materialNumber(key === "bh" && !native && $("#entry-h-unit").value === "A/m" ? value / 100 : value)]);
+    setMaterialRows(key, rows, native ? null : points, $("#entry-h-unit").value); input.value = ""; materialBulkPending(key); materialDraftChanged();
+  }
+  function materialDraftError(error) {
+    $("#material-draft-error").textContent = errorText(error); $("#material-draft-error").classList.remove("hidden");
+    $("#material-draft-preview").classList.add("hidden"); $("#material-draft-status").textContent = "请修正材料数据后重试。";
+  }
+  function resetMaterialEditor(doc = null) {
+    for (const key of Object.keys(materialTables)) {
+      const points = doc?.[key] || [];
+      if (!Array.isArray(points) || points.length > 2000 || points.some(row => !Array.isArray(row) || row.length !== 2 || row.some(v => typeof v !== "number" || !Number.isFinite(v)))) throw new Error("材料 JSON 曲线须为最多 2000 个数值对。");
+      setMaterialRows(key, points.map(([b, value]) => [materialNumber(b * 10000), materialNumber(key === "bh" && doc.h_unit === "A/m" ? value / 100 : value)]), points, doc?.h_unit);
+      $("#entry-" + key).value = ""; $("#material-format-" + key).value = "api"; bulkMaterialLabels(key); materialBulkPending(key);
+    }
+    $("#material-value-label-loss").textContent = materialLossLabel();
+    $("#material-draft-preview").replaceChildren(); $("#material-draft-preview").classList.add("hidden");
+    $("#material-draft-error").classList.add("hidden"); $("#material-draft-status").textContent = "";
+  }
+  function readMaterialDocument() {
+    const result = { frequency_hz: Number($("#entry-frequency").value), h_unit: $("#entry-h-unit").value, loss_unit: $("#entry-loss-unit").value };
+    if (!Number.isFinite(result.frequency_hz) || result.frequency_hz <= 0 || result.frequency_hz > 100000) throw new Error("请填写大于 0 且不超过 100000 Hz 的材料频率。");
+    for (const key of Object.keys(materialTables)) {
+      applyMaterialBulk(key);
+      const rows = validateMaterialPoints(key, $$("tr", $("#material-rows-" + key)).map(row => $$("input", row).map(input => input.value)));
+      const controls = $$("tr", $("#material-rows-" + key)).map(row => $$("input", row));
+      result[key] = rows.map(([b, value], index) => [b / 10000, key === "bh" && result.h_unit === "A/m" ? value * 100 : value].map((converted, column) => {
+        const input = controls[index][column], original = input.dataset;
+        return original.apiValue !== undefined && Number(input.value) === Number(original.displayValue) && (!original.apiUnit || original.apiUnit === result.h_unit)
+          ? Number(original.apiValue) : materialNumber(converted);
+      }));
+      if (result[key].some(row => row.some(value => value > 1e9))) throw new Error(`${materialTables[key].title}换算后超过数值上限 10⁹，请核对输入单位。`);
+    }
+    return result;
+  }
+  function previewMaterialDraft() {
+    try {
+      const doc = readMaterialDocument(), preview = $("#material-draft-preview"); preview.replaceChildren();
+      preview.append(el("p", "material-editor-note", "待保存预览：分别连接每张表的采样点；不增加原点、不外推。"));
+      for (const key of Object.keys(materialTables)) {
+        const unit = key === "bh" ? `H (${doc.h_unit})` : materialLossLabel(doc.loss_unit);
+        const nativePoints = doc[key].map(([b, value]) => ({ x: key === "bh" && doc.h_unit === "A/m" ? value / 100 : value, y: b * 10000 }));
+        preview.append(renderCurve({ id: key, title: materialTables[key].title, x_label: "磁密 B (T)", y_label: unit,
+          series: [{ name: $("#entry-name").value || "待保存材料", points: doc[key].map(([x, y]) => ({ x, y })) }],
+          plot: { x_min: 0, x_max: Math.max(...nativePoints.map(p => p.x), 1), x_label: key === "bh" ? "H1 (A/cm)" : materialLossLabel(doc.loss_unit),
+            y_axes: [{ id: "b", label: materialTables[key].b, min: 0, max: Math.max(...nativePoints.map(p => p.y), 1), color: colors[0] }],
+            series: [{ name: $("#entry-name").value || "待保存材料", axis: "b", color: colors[0], points: nativePoints }], note: "两组采样分别保留；Pfe 不作单位换算。" } }));
+      }
+      preview.classList.remove("hidden"); $("#material-draft-error").classList.add("hidden");
+      $("#material-draft-status").textContent = `磁化 ${doc.bh.length} 点 · 损耗 ${doc.loss.length} 点，尚未保存。`;
+    } catch (error) { materialDraftError(error); }
+  }
   function syncEntryKind() {
     const material = $("#entry-kind").value === "materials";
     $("#entry-model-fields").classList.toggle("hidden", material);
     $("#entry-material-fields").classList.toggle("hidden", !material);
-    $$("input,select,textarea", $("#entry-material-fields")).forEach(node => { node.disabled = !material; });
+    $$("input,select,textarea,button", $("#entry-material-fields")).forEach(node => { node.disabled = !material; });
+    if (material) Object.keys(materialTables).forEach(materialBulkPending);
   }
   function fillEntry(entry = null, copy = false) {
     ++libraryAction;
@@ -1309,19 +1500,11 @@
       else {
         $("#entry-frequency").value = doc.frequency_hz;
         $("#entry-h-unit").value = doc.h_unit; $("#entry-loss-unit").value = doc.loss_unit;
-        for (const key of ["bh", "loss"]) $("#entry-" + key).value = doc[key].map(row => row.join(", ")).join("\n");
       }
     }
+    resetMaterialEditor(entry?.kind === "materials" ? entry.document : null);
     syncEntryKind(); $("#entry-feedback").textContent = "";
     $("#entry-heading").scrollIntoView({ block: "start", behavior: "smooth" });
-  }
-  function parsePoints(selector) {
-    const lines = $(selector).value.trim().split(/\r?\n/).filter(line => line.trim());
-    return lines.map((line, index) => {
-      const parts = line.trim().split(/[\s,，;；]+/);
-      if (parts.length !== 2 || parts.some(value => !Number.isFinite(Number(value)))) throw new Error(`曲线第 ${index + 1} 行须包含两个有效数字。`);
-      return parts.map(Number);
-    });
   }
   async function saveEntry(event) {
     event.preventDefault();
@@ -1330,12 +1513,12 @@
     try {
       const document = { source: $("#entry-source").value.trim(), notes: $("#entry-notes").value };
       if (kind === "models") document.parameters = validParameters(JSON.parse($("#entry-parameters").value));
-      else Object.assign(document, { frequency_hz: Number($("#entry-frequency").value), h_unit: $("#entry-h-unit").value, loss_unit: $("#entry-loss-unit").value, bh: parsePoints("#entry-bh"), loss: parsePoints("#entry-loss") });
+      else Object.assign(document, readMaterialDocument());
       const saved = await api(`/library/${kind}${editing ? "/" + editing.id : ""}`, { method: editing ? "PUT" : "POST", body: JSON.stringify({ name: $("#entry-name").value.trim(), document, ...(editing ? { expected_revision: editing.revision } : {}) }) });
       fillEntry(saved); optimizationConfig = null;
       $("#entry-feedback").textContent = `已保存 v${saved.revision}。${saved.compatibility ? saved.compatibility.compatible ? "曲线满足当前计算接口要求。" : saved.compatibility.reasons.join("；") : ""}`;
       $("#library-kind").value = kind; libraryOffset = 0; await loadLibrary();
-    } catch (error) { $("#entry-feedback").textContent = errorText(error); }
+    } catch (error) { $("#entry-feedback").textContent = errorText(error); if (kind === "materials") materialDraftError(error); }
     finally { $("#entry-fields").disabled = false; }
   }
   function exportEntry(entry) {
@@ -1371,6 +1554,8 @@
       const material = await api(`/materials/${encodeURIComponent(entry.reference)}`);
       if (request !== libraryAction) return;
       preview.classList.remove("hidden"); preview.replaceChildren(el("h3", "", `${entry.name} · v${entry.revision}`));
+      const warning = warningsNode(material.warnings, "材料数据说明"); if (warning) preview.append(warning);
+      preview.append(materialSamplingTables({ ...material, loss_unit: entry.document.loss_unit }, entry.document.source));
       material.curves.forEach(curve => preview.append(renderCurve(curve)));
       preview.scrollIntoView({ block: "start", behavior: "smooth" });
     } catch (error) { if (request === libraryAction) showToast(errorText(error), "error"); }
@@ -1429,6 +1614,11 @@
       $("#library-previous").disabled = libraryOffset === 0; $("#library-next").disabled = libraryOffset + 20 >= data.total;
     } catch (error) { if (request === libraryRequest) $("#library-feedback").textContent = errorText(error); }
   }
+  makeMaterialEditors();
+  $("#preview-material-draft").addEventListener("click", previewMaterialDraft);
+  $("#entry-h-unit").addEventListener("change", () => { Object.keys(materialTables).forEach(bulkMaterialLabels); materialDraftChanged(); });
+  $("#entry-loss-unit").addEventListener("change", () => { $("#material-value-label-loss").textContent = materialLossLabel(); bulkMaterialLabels("loss"); materialDraftChanged(); });
+  $("#entry-frequency").addEventListener("input", materialDraftChanged);
   $("#refresh-resources").addEventListener("click", loadResources);
   $("#import-resources").addEventListener("click", () => changeResources());
   $("#activate-resources").addEventListener("click", () => changeResources(true));

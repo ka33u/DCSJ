@@ -94,6 +94,7 @@ def materials():
 
 
 def material(material_id):
+    from .curves import material_plot
     with connect() as db:
         row = db.execute("SELECT * FROM material_catalog WHERE id=?", (material_id,)).fetchone()
         if row is None:
@@ -127,8 +128,10 @@ def material(material_id):
         "frequency_hz": row["frequency_hz"], "frequency_status": row["frequency_status"],
         "curves": [
             {"id": "bh", "title": "磁化曲线", "x_label": "磁密 B (T)",
-             "y_label": "磁场强度 H (A/m)", "series": [{"name": row["name"], "points": bh}]},
+             "y_label": "磁场强度 H (A/m)", "series": [{"name": row["name"], "points": bh}],
+             "plot": material_plot(bh, 'bh', legacy_origin=True)},
             {"id": "loss", "title": "原始损耗曲线", "x_label": "磁密 B (T)",
-             "y_label": "原表损耗数值（单位待核实）", "series": [{"name": row["name"], "points": loss}]},
+             "y_label": "原表损耗数值（单位待核实）", "series": [{"name": row["name"], "points": loss}],
+             "plot": material_plot(loss, 'loss', legacy_origin=True)},
         ],
     }

@@ -1,10 +1,12 @@
 """Self-contained A4 reports rendered exclusively from immutable calculations."""
 from html import escape
 import math
+import hashlib
 
 from .modeling import geometry
 from .parameters import field_info, InputError
 from .pdf_fonts import status as pdf_status
+from .curves import plot_data
 
 
 def text(value):
@@ -21,31 +23,49 @@ def table(headers, rows):
 
 
 def curve_svg(curve):
-    series = curve.get('series', [])
-    points = [p for s in series for p in s.get('points', [])
-              if math.isfinite(p['x']) and math.isfinite(p['y'])]
-    if not points:
+    plot = plot_data(curve)
+    if not plot:
         return '<p>无有效曲线点</p>'
-    xmin, xmax = min(p['x'] for p in points), max(p['x'] for p in points)
-    ymin, ymax = min(0, min(p['y'] for p in points)), max(p['y'] for p in points)
-    dx, dy = xmax - xmin or 1, ymax - ymin or 1
-    project = lambda p: (55 + (p['x'] - xmin) / dx * 455, 208 - (p['y'] - ymin) / dy * 165)
-    parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 280" role="img">',
+    series, axes = plot['series'], plot['y_axes']
+    axis_by_id = {axis['id']: axis for axis in axes}
+    xmin, xmax = plot['x_min'], plot['x_max']
+    left, right = 25 + 52 * len(axes), 540
+    height = (right - left) / plot['aspect_ratio'] if plot['aspect_ratio'] else 192
+    bottom = 43 + height
+    total_height = bottom + 50 + 14 * len(series)
+    axis_colors = {a['id']: next(s['color'] for s in series if s['axis'] == a['id']) for a in axes}
+    clip_id = 'plot-' + hashlib.sha256(repr(plot).encode()).hexdigest()[:12]
+    def project(point, axis):
+        fraction = (point['x'] - xmin) / (xmax - xmin)
+        return (left + (1 - fraction if plot['x_reverse'] else fraction) * (right - left),
+                bottom - (point['y'] - axis['min']) / (axis['max'] - axis['min']) * height)
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 {total_height}" role="img">',
              '<title>' + text(curve.get('title', '曲线')) + '</title>',
-             '<rect width="560" height="280" fill="white"/>']
-    for i in range(5):
-        y = 208 - 165 * i / 4
-        parts.append(f'<path d="M55 {y}H510" stroke="#d9e2e5"/>')
-        parts.append(f'<text x="49" y="{y + 4}" text-anchor="end">{ymin + dy * i / 4:.3g}</text>')
-        x = 55 + 455 * i / 4
-        parts.append(f'<text x="{x}" y="227" text-anchor="middle">{xmin + dx * i / 4:.3g}</text>')
+             f'<rect width="560" height="{total_height}" fill="white"/>',
+             f'<defs><clipPath id="{clip_id}"><rect x="{left}" y="43" width="{right-left}" height="{height}"/></clipPath></defs>']
+    for i in range(plot['y_ticks'] + 1):
+        y = bottom - height * i / plot['y_ticks']
+        parts.append(f'<path d="M{left} {y}H{right}" stroke="#d9e2e5"/>')
+        for j, axis in enumerate(axes):
+            value = axis['min'] + (axis['max'] - axis['min']) * i / plot['y_ticks']
+            parts.append(f'<text x="{left - 8 - 52 * (len(axes) - 1 - j)}" y="{y + 4}" text-anchor="end" fill="{axis_colors[axis["id"]]}">{value:.3g}</text>')
+    for i in range(plot['x_ticks'] + 1):
+        x = left + (right - left) * i / plot['x_ticks']
+        value = xmin + (xmax - xmin) * (1 - i / plot['x_ticks'] if plot['x_reverse'] else i / plot['x_ticks'])
+        parts.append(f'<path d="M{x} 43V{bottom}" stroke="#d9e2e5"/>')
+        parts.append(f'<text x="{x}" y="{bottom + 17}" text-anchor="middle">{value:.3g}</text>')
+    for j, axis in enumerate(axes):
+        label = axis['label'] if len(axes) == 1 else axis.get('short_label', axis['label'])
+        label_x = left if len(axes) == 1 else left - 8 - 52 * (len(axes) - 1 - j)
+        anchor = 'start' if len(axes) == 1 else 'end'
+        parts.append(f'<text x="{label_x}" y="24" text-anchor="{anchor}" fill="{axis_colors[axis["id"]]}">{text(label)}</text>')
     for i, s in enumerate(series):
-        color = ['#21755a', '#385faa', '#b46a16', '#8d4d91'][i % 4]
-        line = ' '.join(f'{x:.3f},{y:.3f}' for p in s['points'] for x, y in [project(p)])
-        parts.append(f'<polyline points="{line}" stroke="{color}" stroke-width="2" fill="none"/>')
-        parts.append(f'<text x="55" y="{254 + i * 14}" fill="{color}">{text(s["name"])}</text>')
-    parts.append(f'<text x="55" y="20">{text(curve.get("y_label", ""))}</text>')
-    parts.append(f'<text x="510" y="247" text-anchor="end">{text(curve.get("x_label", ""))}</text></svg>')
+        line = ' '.join(f'{x:.3f},{y:.3f}' for p in s['points'] for x, y in [project(p, axis_by_id[s['axis']])])
+        parts.append(f'<polyline points="{line}" stroke="{s["color"]}" stroke-width="2" fill="none" clip-path="url(#{clip_id})"/>')
+        parts.append(f'<text x="25" y="{bottom + 49 + i * 14}" fill="{s["color"]}">{text(s["name"])}</text>')
+    parts.append(f'<text x="{right}" y="{bottom + 33}" text-anchor="end">{text(plot["x_label"])}</text></svg>')
+    if plot['note']:
+        parts.append('<p class="muted">' + text(plot['note']) + '</p>')
     return ''.join(parts)
 
 
@@ -57,7 +77,7 @@ h3{margin:12px 0 0}p{line-height:1.6}small,.muted{color:#526975}header{border-bo
 .tag{letter-spacing:2px;color:#247b62}table{border-collapse:collapse;width:100%;margin:10px 0;font-size:11px;table-layout:fixed}
 th,td{padding:6px;border:1px solid #d8e2e6;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#eef4f2}
 .warning{border-left:3px solid #bb8231;padding:7px 12px;background:#fff9ed}.warning p{margin:3px 0}
-figure{margin:10px 0;break-inside:avoid}svg{width:100%;max-height:90mm;font:10px sans-serif}figcaption{font-weight:600}
+figure{margin:10px 0;break-inside:avoid}svg{width:100%;height:auto;font:10px sans-serif}figcaption{font-weight:600}
 .toolbar{position:sticky;top:0;background:#17323f;color:white;padding:12px;text-align:center;z-index:1}
 button{padding:8px 20px;border:0;border-radius:5px;cursor:pointer}code{overflow-wrap:anywhere;font-size:10px}
 .fingerprints{font-size:10px}.fingerprints p{margin:3px 0}.break{break-before:page}
@@ -94,6 +114,8 @@ def render(snapshot):
     if snapshot.get('curves'):
         content.append('<h2 class="break">性能曲线</h2>')
         for curve in snapshot['curves']:
+            if curve.get('display') is False:
+                continue
             content.append('<figure><figcaption>' + text(curve['title']) + '</figcaption>' + curve_svg(curve) + '</figure>')
     content += ['<h2 class="break">完整输入</h2>', table(['字段', '参数', '输入', '单位'], [
         (k, field_info(k)['label'], value, field_info(k)['unit']) for k, value in p.items()])]

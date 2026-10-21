@@ -20,7 +20,7 @@ def allowed(name):
     if p.parts[0] == 'dcsj':
         return len(p.parts) == 2 and p.suffix == '.py'
     if p.parts[0] == 'tests':
-        return len(p.parts) == 2 and (p.suffix == '.py' or p.name == 'test_frontend.cjs')
+        return len(p.parts) == 2 and (p.suffix == '.py' or p.name in {'test_frontend.cjs', 'test_material_editor.cjs'})
     if p.parts[0] == 'frontend':
         return (len(p.parts) == 2 and p.suffix in {'.html', '.css', '.js'}) or name in {
             'frontend/vendor/swagger-ui-bundle.js', 'frontend/vendor/swagger-ui.css', 'frontend/vendor/LICENSE'}

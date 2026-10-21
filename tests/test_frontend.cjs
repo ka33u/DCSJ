@@ -79,6 +79,32 @@ function records() {
   return { total: 2, items: ['a', 'b'].map(id => ({ id, name: id, created_at: created, power_kw: 12, efficiency: .9 })) };
 }
 
+test('versioned plots use reverse x and separate y scales while raw tables and old snapshots stay intact', async t => {
+  const value = snapshot('a');
+  const raw = [{ name: 'raw I', points: [{ x: .02, y: .4 }, { x: 1, y: 5 }] }];
+  value.curves = [{ title: '双刻度人工曲线', x_label: 's', y_label: '倍数', series: raw,
+    plot: { x_min: 0, x_max: 1, x_reverse: true, aspect_ratio: 1, x_ticks: 10, y_ticks: 10,
+      y_axes: [{ id: 'i', label: 'I', min: 0, max: 10 }, { id: 't', label: 'T', min: 0, max: 5 }],
+      series: [{ name: 'I', axis: 'i', color: '#ff0000', points: [{ x: 1, y: 5 }, { x: 0, y: 0 }] },
+               { name: 'T', axis: 't', color: '#000000', points: [{ x: 1, y: 2.5 }, { x: 0, y: 0 }] }],
+      note: '人工显示端点，不是计算值' } },
+    { title: '历史单轴', x_label: 's', series: raw }, { title: '兼容API分图', display: false, series: raw }];
+  const ui = await app(t, path => path === '/calculations' ? records() : path === '/calculations/a' ? value : undefined);
+  ui.nav('comparisons'); await settle(); ui.find('#calculation-table-body button', '打开快照').click();
+  await until(() => ui.doc.querySelectorAll('#result-content .chart-card').length === 2, 'Visible curves render');
+  const chart = ui.doc.querySelector('#result-content .chart-card');
+  const paths = [...chart.querySelectorAll('path[data-series]')];
+  assert.equal(paths[0].getAttribute('d'), paths[1].getAttribute('d'), 'Half-scale values coincide');
+  const xLabels = [...chart.querySelectorAll('text[data-axis=x]')].map(n => n.textContent);
+  assert.equal(xLabels[0], '1'); assert.equal(xLabels.at(-1), '0');
+  const box = chart.querySelector('clipPath rect');
+  assert.equal(box.getAttribute('width'), box.getAttribute('height'), 'Legacy square plot is preserved');
+  const table = chart.querySelector('.chart-data');
+  assert.equal(table.querySelectorAll('tbody tr').length, 2);
+  assert.ok(table.textContent.includes('0.02') && table.textContent.includes('0.4'));
+  assert.ok(chart.textContent.includes('不是计算值'));
+});
+
 test('a nonempty model catalog renders and loads a design without project actions', async t => {
   const ui = await app(t, path => {
     if (path === '/models') return { total: 1, items: [{ id: 'synthetic-model', model: '人工型号', source: '人工数据' }] };

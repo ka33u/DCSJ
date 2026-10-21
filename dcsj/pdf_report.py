@@ -18,6 +18,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 
 from . import pdf_fonts
 from .execution import BusyError
+from .curves import plot_data
 from .parameters import field_info, validate, InputError, ELEMENT_KEYS
 
 INK = colors.HexColor('#17323f')
@@ -110,41 +111,67 @@ class Curve(Flowable):
     def __init__(self, curve, font):
         super().__init__()
         self.curve, self.font = curve, font
-        self.extra_legend_height = 12 * max(0, len(curve['series']) - 2)
-        self.width, self.height = WIDTH, 238 + self.extra_legend_height
+        try:
+            self.plot = plot_data(curve)
+        except ValueError as error:
+            raise PDFContentError(str(error)) from error
+        self.extra_legend_height = 12 * max(0, len((self.plot or curve)['series']) - 2)
+        self.plot_height = (WIDTH - 26 - 39 * len(self.plot['y_axes'])) / self.plot['aspect_ratio'] if self.plot and self.plot['aspect_ratio'] else 180
+        self.width, self.height = WIDTH, self.plot_height + 90 + self.extra_legend_height
 
     def draw(self):
         c, curve = self.canv, self.curve
-        points = [p for series in curve['series'] for p in series['points']]
-        if not points:
+        plot = self.plot
+        if not plot:
             c.setFont(self.font, 9); c.setFillColor(MUTED)
             c.drawString(43, 180, '此曲线未产生有效采样点，请查看计算提示。')
             return
-        if not all(math.isfinite(p['x']) and math.isfinite(p['y']) for p in points):
-            raise PDFContentError('曲线数据包含非有限数值')
-        xmin, xmax = min(p['x'] for p in points), max(p['x'] for p in points)
-        ymin, ymax = min(0, min(p['y'] for p in points)), max(p['y'] for p in points)
-        dx, dy = xmax - xmin or 1, ymax - ymin or 1
-        left, bottom, width, height = 43, 59 + self.extra_legend_height, WIDTH - 56, 148
+        xmin, xmax = plot['x_min'], plot['x_max']
+        axes = plot['y_axes']
+        axis_by_id = {axis['id']: axis for axis in axes}
+        left, bottom, height = 13 + 39 * len(axes), 59 + self.extra_legend_height, self.plot_height
+        width = WIDTH - left - 13
+        axis_colors = {a['id']: next(s['color'] for s in plot['series'] if s['axis'] == a['id']) for a in axes}
         c.setFont(self.font, 8); c.setFillColor(MUTED)
-        c.drawString(left, 225 + self.extra_legend_height, plain(curve.get('y_label', '')))
-        for index in range(5):
-            y = bottom + height * index / 4
+        for j, axis in enumerate(axes):
+            c.setFillColor(colors.HexColor(axis_colors[axis['id']]))
+            if len(axes) == 1:
+                c.drawString(left, bottom + height + 17, plain(axis['label']))
+            else:
+                c.drawRightString(left - 6 - 39 * (len(axes) - 1 - j), bottom + height + 17,
+                                  plain(axis.get('short_label', axis['label'])))
+        for index in range(plot['y_ticks'] + 1):
+            y = bottom + height * index / plot['y_ticks']
             c.setStrokeColor(colors.HexColor('#dbe5e8')); c.setLineWidth(.4)
             c.line(left, y, left + width, y)
-            c.drawRightString(left - 6, y - 3, f'{ymin + dy * index / 4:.4g}')
-            c.drawCentredString(left + width * index / 4, bottom - 14, f'{xmin + dx * index / 4:.4g}')
-        c.drawRightString(left + width, bottom - 30, plain(curve.get('x_label', '')))
-        for index, series in enumerate(curve['series']):
-            c.setStrokeColor(colors.HexColor(['#26795e', '#385faa', '#b46a16', '#8d4d91'][index % 4])); c.setLineWidth(1.4)
+            for j, axis in enumerate(axes):
+                c.setFillColor(colors.HexColor(axis_colors[axis['id']]))
+                value = axis['min'] + (axis['max'] - axis['min']) * index / plot['y_ticks']
+                c.drawRightString(left - 6 - 39 * (len(axes) - 1 - j), y - 3, f'{value:.4g}')
+        c.setFillColor(MUTED)
+        for index in range(plot['x_ticks'] + 1):
+            x = left + width * index / plot['x_ticks']
+            c.line(x, bottom, x, bottom + height)
+            value = xmin + (xmax - xmin) * (1 - index / plot['x_ticks'] if plot['x_reverse'] else index / plot['x_ticks'])
+            c.drawCentredString(x, bottom - 14, f'{value:.4g}')
+        c.drawRightString(left + width, bottom - 30, plain(plot['x_label']))
+        for index, series in enumerate(plot['series']):
+            axis = axis_by_id[series['axis']]
+            c.setStrokeColor(colors.HexColor(series['color'])); c.setLineWidth(1.4)
             path = c.beginPath()
             for ordinal, point in enumerate(series['points']):
-                x, y = left + (point['x'] - xmin) / dx * width, bottom + (point['y'] - ymin) / dy * height
+                fraction = (point['x'] - xmin) / (xmax - xmin)
+                x = left + (1 - fraction if plot['x_reverse'] else fraction) * width
+                y = bottom + (point['y'] - axis['min']) / (axis['max'] - axis['min']) * height
                 (path.moveTo if ordinal == 0 else path.lineTo)(x, y)
+            c.saveState()
+            clip = c.beginPath(); clip.rect(left, bottom, width, height)
+            c.clipPath(clip, stroke=0, fill=0)
             c.drawPath(path)
+            c.restoreState()
             y = 17 + self.extra_legend_height - index * 12
-            c.line(left, y + 3, left + 17, y + 3)
-            c.setFillColor(INK); c.drawString(left + 23, y, plain(series['name']))
+            c.line(13, y + 3, 30, y + 3)
+            c.setFillColor(INK); c.drawString(36, y, plain(series['name']))
 
 
 def _render(snapshot):
@@ -212,16 +239,21 @@ def _render(snapshot):
     geometry_keys = ['D1', 'Di1', 'Di2', 'g', 'L', 'Q1', 'Q2', 'a', 'ZZ', 'JJ', 'Djj', 'MM', 'Dmm']
     story.append(table(['参数', '输入', '单位'], [(field_info(k)['label'], p.get(k), field_info(k)['unit']) for k in geometry_keys],
                        [WIDTH * .48, WIDTH * .32, WIDTH * .2]))
-    curves = snapshot.get('curves', [])
+    curves = [curve for curve in snapshot.get('curves', []) if curve.get('display') is not False]
     if curves:
         story += [PageBreak(), paragraph('性能曲线', 'h2')]
         for index, curve in enumerate(curves):
             if index and index % 2 == 0:
                 story += [PageBreak(), paragraph('性能曲线（续）', 'h2')]
             # Validate all figure strings before drawing on the canvas.
-            for label in [curve.get('x_label', ''), curve.get('y_label', ''), *(series['name'] for series in curve['series'])]:
+            plot = curve.get('plot', {})
+            for label in [curve.get('x_label', ''), curve.get('y_label', ''), plot.get('x_label', ''),
+                          *(axis['label'] for axis in plot.get('y_axes', [])),
+                          *(series['name'] for series in plot.get('series', curve['series']))]:
                 paragraph(label)
             story.append(KeepTogether([paragraph(curve['title'], 'caption'), Curve(curve, font)]))
+            if plot.get('note'):
+                story.append(paragraph(plot['note'], 'small'))
     story += [PageBreak(), paragraph('完整输入', 'h2'),
               table(['字段', '参数', '输入', '单位'], [(k, field_info(k)['label'], v, field_info(k)['unit']) for k, v in p.items() if k not in ELEMENT_KEYS],
                     [WIDTH * .16, WIDTH * .38, WIDTH * .30, WIDTH * .16])]

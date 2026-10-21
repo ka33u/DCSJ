@@ -41,6 +41,8 @@ def test_geometry_and_input_validation(client, parameters):
 
 
 def test_missing_calculation_resources_are_explicit(client, parameters, monkeypatch):
+    from dcsj import resources
+    monkeypatch.setattr(resources, 'current', lambda: None)
     monkeypatch.setattr(engine, 'KERNEL_SHA256', None)
     assert client.get('/api/v1/status').json()['engine']['status'] == 'unavailable'
     assert client.post('/api/v1/calculate', json={'parameters': parameters}).status_code == 503

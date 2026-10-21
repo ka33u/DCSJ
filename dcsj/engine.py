@@ -14,6 +14,7 @@ from . import __version__
 
 from .numeric_vm import NumericKernelError, run
 from .parameters import ELEMENT_KEYS, INPUT_MAP, OUTPUT_MAP, ROOT, field_info, validate
+from .curves import trend_points, slip_plot
 
 _material_path = ROOT / "data/material_kernel_tables.json"
 MATERIALS = {item["name"]: item for item in json.loads(_material_path.read_text())["materials"]} if _material_path.is_file() else {}
@@ -21,7 +22,7 @@ ENGINE_NAME = "DCSJ Python 数值核心"
 _kernel_path = ROOT / "dcsj/generated/numeric_kernel.json.gz"
 KERNEL_SHA256 = hashlib.sha256(_kernel_path.read_bytes()).hexdigest() if _kernel_path.is_file() else None
 WRAPPER_SHA256 = hashlib.sha256(b"".join((ROOT / "dcsj" / name).read_bytes()
-    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py", "library.py"))).hexdigest()
+    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py", "library.py", "curves.py"))).hexdigest()
 LIMITATIONS = [
     "由原 Fortran 程序的计算指令恢复；使用双精度中间运算和原单精度存储。",
     "已恢复三相异步电动机计算；历史型号保存值可能使用不同版本的材料表。",
@@ -131,16 +132,39 @@ def extract_curves(result, parameters, warnings):
             "y_label": "相对额定值（倍）",
             "series": [{"name": name, "points": [{"x": r[0], "y": r[col]} for r in points]}
                        for name, col in [("电流 / 额定相电流", 1), ("转矩 / 额定转矩", 2)]],
+            'plot': slip_plot(points),
         })
     if parameters["_load_curve"]:
         memory = result["memory"]
         arrays = {key: [memory.f32(address + i * 4) for i in range(9)]
                   for key, address in {
                       "load": 0x4AB89C, "efficiency": 0x4AB830, "pf": 0x4AB80C,
-                      "current": 0x4AB7C4, "slip": 0x4AB7A0,
+                      "current": 0x4AB7C4, "slip": 0x4AB7A0, "input_power": 0x4AB854,
                   }.items()}
         if not all(math.isfinite(x) for values in arrays.values() for x in values):
             raise CalculationError("负荷特性计算包含非有限数值")
+        # Match the decimal input precision of the original graph's text reader.
+        precision = {'load': 2, 'input_power': 2, 'current': 2, 'slip': 4, 'pf': 4, 'efficiency': 4}
+        display_arrays = {key: [round(v, precision[key]) for v in values] for key, values in arrays.items()}
+        specs = [('input_power', '输入功率 P1 (kW)', 'P1', '#db00db',
+                  math.floor(min(display_arrays['input_power']) / 3), math.ceil(max(display_arrays['input_power']) * 1.5)),
+                 ('slip', '转差率 Sn', 'Sn', '#168016', 0, math.ceil(max(display_arrays['slip']) * 300) / 100),
+                 ('current', '相电流 I1 (A)', 'I1', '#0000cc', 0, math.ceil(max(display_arrays['current']) * 2)),
+                 ('pf', '功率因数 cosφ', 'cosφ', '#e00000', 0, 1),
+                 ('efficiency', '效率 η', 'η', '#222222', 0, 1)]
+        curves.append({
+            'id': 'load_characteristic', 'title': '负荷特性（旧版默认趋势线）',
+            'x_label': '负荷 / 额定功率', 'y_label': '数值（单位见曲线名）',
+            'series': [{'name': label, 'points': [{'x': x, 'y': y} for x, y in zip(arrays['load'], arrays[key])]}
+                       for key, label, *_ in specs],
+            'plot': {'x_min': 20, 'x_max': 150, 'x_label': 'P2 / Pn (%)', 'aspect_ratio': 1, 'x_ticks': 13, 'y_ticks': 13,
+                     'y_axes': [{'id': key, 'label': label, 'short_label': short, 'min': low, 'max': high}
+                                for key, label, short, color, low, high in specs],
+                     'series': [{'name': label, 'axis': key, 'color': color, 'points': trend_points(display_arrays['load'], display_arrays[key])}
+                                for key, label, short, color, low, high in specs],
+                     'method': 'quadratic-least-squares', 'input_decimal_places': precision, 'sample_domain': [min(arrays['load']) * 100, max(arrays['load']) * 100],
+                     'note': '按旧版默认规则：9 个计算点作二次最小二乘拟合，显示 20%–150%。30% 以下和 120% 以上为趋势线外推，不是新增计算点。I1 为相电流。'},
+        })
         for curve_id, title, unit, lines in [
             ("load_performance", "负荷特性", "比例",
              [("efficiency", "效率"), ("pf", "功率因数")]),
@@ -148,7 +172,7 @@ def extract_curves(result, parameters, warnings):
             ("load_slip", "负荷与转差率", "转差率 s", [("slip", "转差率")]),
         ]:
             curves.append({
-                "id": curve_id, "title": title, "x_label": "负荷 / 额定功率", "y_label": unit,
+                "id": curve_id, "title": title, "x_label": "负荷 / 额定功率", "y_label": unit, 'display': False,
                 "series": [{"name": label, "points": [{"x": x, "y": y}
                             for x, y in zip(arrays["load"], arrays[key])]}
                            for key, label in lines],
