@@ -89,5 +89,6 @@ def compare(identities, baseline_id=None):
             warnings.append(f"同牌号材料 {name} 数据版本不同或未记录，请确认材料版本后再作同条件比较。")
     return {"baseline_id": baseline_id,
             "schemes": [{"id": s["calculation_id"], "name": s["name"], "created_at": s["created_at"],
-                         "warnings": s["warnings"], "provenance": s["provenance"]} for s in snapshots],
+                         "warnings": list(dict.fromkeys(s.get('warnings', []) + s.get('engine', {}).get('limitations', []))),
+                         "provenance": s["provenance"]} for s in snapshots],
             "metrics": metrics, "parameter_differences": differences, "warnings": warnings}

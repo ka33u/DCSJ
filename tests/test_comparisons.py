@@ -82,18 +82,19 @@ def test_upgrade_and_backup_preserve_comparison_and_original_calculations(client
 
 
 def test_comparison_reports_use_saved_content_and_escape_text(client, snapshot):
+    snapshot['engine']['limitations'] = ['人工计算边界说明']
     saved = comparisons.save('<script>评审</script>', pair(snapshot), notes='<img src="https://example.invalid/private">')
     html = client.get('/comparison-reports/' + saved['id'])
     assert html.status_code == 200 and html.headers['cache-control'] == 'no-store'
     assert '<script>' not in html.text and '<img src=' not in html.text
     assert '&lt;script&gt;' in html.text and 'A4 landscape' in html.text
-    assert saved['id'] in html.text and 'synthetic' in html.text
+    assert saved['id'] in html.text and 'synthetic' in html.text and '人工计算边界说明' in html.text
     response = client.get('/api/v1/comparison-sets/' + saved['id'] + '/report.pdf')
     assert response.status_code == 200 and response.headers['content-type'] == 'application/pdf'
     assert response.headers['cache-control'] == 'no-store'
     reader = PdfReader(BytesIO(response.content))
     content = '\n'.join(page.extract_text() for page in reader.pages)
-    assert '<script>评审</script>' in content and 'synthetic' in content
+    assert '<script>评审</script>' in content and 'synthetic' in content and '人工计算边界说明' in content
     assert saved['id'] in content and '变化的输入参数' in content
     for page in reader.pages:
         assert float(page.mediabox.width) == pytest.approx(841.8898, abs=.01)

@@ -50,8 +50,10 @@ def headers(saved, schemes, first='指标 / 单位'):
 
 
 def warnings(saved):
-    return list(dict.fromkeys([*saved['warnings'],
-        *[f'{s["name"]}：{w}' for s in saved['schemes'] for w in s['warnings']], BOUNDARY]))
+    common = set.intersection(*(set(s['warnings']) for s in saved['schemes']))
+    shared = [f'全部方案：{w}' for w in saved['schemes'][0]['warnings'] if w in common]
+    specific = [f'{s["name"]}：{w}' for s in saved['schemes'] for w in s['warnings'] if w not in common]
+    return list(dict.fromkeys([*saved['warnings'], *shared, *specific, BOUNDARY]))
 
 
 def render_html(saved):
