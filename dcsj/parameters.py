@@ -10,6 +10,12 @@ from .kernel_layout import INPUT_MAP, OUTPUT_MAP
 DICTIONARY_CASEFOLD = {key.casefold(): value for key, value in FIELDS.items()}
 _example_path = ROOT / "data/example.json"
 EXAMPLE = json.loads(_example_path.read_text()) if _example_path.is_file() else None
+
+
+def example_data():
+    from .resources import current, asset
+    package = current()
+    return json.loads(asset('example.json', package).read_text(encoding='utf-8')) if package else EXAMPLE
 ELEMENT_KEYS = [f"{key}{i}" for i in range(1, 10) for key in ("N", "A", "B", "L")]
 INPUT_KEYS = [k for k in INPUT_MAP if k != "_wire_target"] + ELEMENT_KEYS + [
     "SizeX", "Jiefa", "Jueyuan", "CORR", "_wire_target", "_curve", "_load_curve"]
@@ -66,6 +72,7 @@ def field_info(key):
 
 
 def schema():
+    example = example_data()
     fields = []
     for key in INPUT_KEYS:
         info = field_info(key)
@@ -78,8 +85,8 @@ def schema():
         if key in {"CORR", "_curve", "_load_curve"}:
             info.update(type="select", options=[{"value": 0, "label": "关闭"},
                                                 {"value": 1, "label": "开启"}])
-        if EXAMPLE is not None:
-            info["default"] = EXAMPLE["parameters"].get(key, 0)
+        if example is not None:
+            info["default"] = example["parameters"].get(key, 0)
         if key in POSITIVE_KEYS:
             info["min"] = 1 if key in INTEGER_KEYS else 0.000001
         if key in {"ATA", "PF", "kfe"}:

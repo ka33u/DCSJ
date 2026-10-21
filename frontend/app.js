@@ -75,9 +75,9 @@
   function errorText(error) {
     return error instanceof Error ? error.message : asText(error);
   }
-  async function api(path, options = {}) {
+  async function api(path, options = {}, timeoutMs = 60000) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(`/api/v1${path}`, {
         ...options,
@@ -101,7 +101,7 @@
       }
       return body;
     } catch (error) {
-      if (error.name === "AbortError") throw new Error("请求超过 60 秒未完成，请检查服务后重试。");
+      if (error.name === "AbortError") throw new Error(`请求超过 ${timeoutMs / 1000} 秒未完成。操作可能仍在服务端执行，请刷新状态后再重试。`);
       if (error instanceof TypeError) throw new Error("无法连接后端服务。请确认服务已启动，并通过它打开工作台。");
       throw error;
     } finally { clearTimeout(timeout); }
@@ -121,6 +121,7 @@
     if (view === "catalog" && !state.catalog.loaded) loadCatalog();
     if (view === "materials" && !state.materialsLoaded) loadMaterials();
     if (view === "projects") loadProjects();
+    if (view === "resources") { loadResources(); loadLibrary(); }
     if (view === "comparisons") { loadCalculations(); loadSavedComparisons(); }
     if (view === "optimization") { loadOptimizationConfig(); loadOptimizationJobs(); if (selectedJob) watchJob(selectedJob); }
     else clearTimeout(jobPoll);
@@ -581,7 +582,7 @@
       const limitations = Array.isArray(status.engine?.limitations) ? status.engine.limitations : [];
       $("#engine-note p").textContent = limitations.length ? `${limitations.map(item => asText(item).replace(/[。；;\s]+$/u, "")).join("；")}。` : `当前引擎：${engineName}。详细能力以接口返回值与计算提示为准。`;
       renderStatus(status);
-      showNotice(status.engine?.status === "unavailable" ? "当前为源码运行模式：尚未安装私有计算资源。可导入和管理设计，实际计算需要在本机安装授权资源后重启服务。" : "");
+      showNotice(status.engine?.status === "unavailable" ? "尚未安装私有计算资源。请在「资源与用户数据」中导入，完成后即可使用，无需重启服务。" : "");
     } catch (error) {
       $("#connection-dot").className = "status-dot error";
       $("#connection-text").textContent = "服务连接失败";
@@ -1246,6 +1247,208 @@
     });
     table.append(head, body); scroll.append(table); container.append(scroll);
   }
+
+  let resourceState = null, resourceBusy = false, resourceRequest = 0;
+  let libraryOffset = 0, libraryRequest = 0, libraryAction = 0, entryEditing = null;
+  viewNames.resources = "资源与用户数据";
+  function resourceControls() {
+    $("#import-resources").disabled = resourceBusy || !resourceState?.remote_configured;
+    $("#activate-resources").disabled = resourceBusy || !$("#resource-version").value;
+    $("#resource-version").disabled = resourceBusy;
+  }
+  async function loadResources() {
+    const request = ++resourceRequest;
+    try {
+      const data = await api("/resources");
+      if (request !== resourceRequest) return;
+      resourceState = data;
+      const active = data.active;
+      $("#resource-status").textContent = active ? `当前版本 ${active.version} · ${fmt(active.counts.model_versions, 0)} 条型号版本 · ${fmt(active.counts.materials, 0)} 种材料` : "尚未启用版本化资源包；已有本地资源仍可使用。";
+      $("#resource-policy").textContent = `${data.user_data_policy} 仓库：${data.repository} / ${data.ref}。${data.remote_configured ? "服务端已配置读取凭据。" : "一键导入需要管理员先在服务端配置私有仓库只读令牌，详见部署说明。"}${data.catalog_override ? "当前 DCSJ_CATALOG_PATH 覆盖了型号库路径，导入不会替换该路径。" : ""}`;
+      const select = $("#resource-version"); select.replaceChildren();
+      data.installed.forEach(item => { const option = el("option", "", `${item.version} · ${item.package_id.slice(0, 10)}${active?.package_id === item.package_id ? " · 当前" : ""}`); option.value = item.package_id; select.append(option); });
+      if (active) select.value = active.package_id;
+    } catch (error) { $("#resource-feedback").textContent = errorText(error); }
+    resourceControls();
+  }
+  async function changeResources(activate = false) {
+    if (!resourceState || resourceBusy) return;
+    resourceBusy = true; resourceControls();
+    $("#resource-feedback").textContent = activate ? "正在校验并切换版本…" : "正在从私有仓库下载、校验并导入，请稍候…";
+    try {
+      const data = await api(activate ? "/resources/activate" : "/resources/import", { method: "POST", body: JSON.stringify({ expected_package_id: resourceState.active?.package_id || null, ...(activate ? { package_id: $("#resource-version").value } : {}) }) }, 600000);
+      state.catalog.loaded = false; state.materialsLoaded = false; optimizationConfig = null;
+      ++state.catalog.request; ++state.materialRequest;
+      const schema = await api("/schema");
+      state.schema = { ...schema, fields: schema.fields.map(field => ({ ...field, role: field.role === "historical_result" ? "output" : field.role === "unclassified" ? "unknown" : field.role })) };
+      renderEditor(); await Promise.all([loadStatus(), loadSeries()]);
+      $("#resource-feedback").textContent = `${data.changed ? "已启用" : "已是当前版本，无需重复导入"}：${data.version}。手工记录与计算快照均已保留；后续计算使用此资源版本。`;
+    } catch (error) { $("#resource-feedback").textContent = errorText(error); }
+    finally { resourceBusy = false; await loadResources(); }
+  }
+  function syncEntryKind() {
+    const material = $("#entry-kind").value === "materials";
+    $("#entry-model-fields").classList.toggle("hidden", material);
+    $("#entry-material-fields").classList.toggle("hidden", !material);
+    $$("input,select,textarea", $("#entry-material-fields")).forEach(node => { node.disabled = !material; });
+  }
+  function fillEntry(entry = null, copy = false) {
+    ++libraryAction;
+    entryEditing = entry && !copy ? entry : null;
+    $("#entry-form").reset();
+    $("#entry-kind").value = entry?.kind || $("#library-kind").value;
+    $("#entry-kind").disabled = Boolean(entryEditing);
+    $("#entry-heading").textContent = entryEditing ? `编辑 ${entry.name} · v${entry.revision}` : "新增用户记录";
+    $("#save-entry").textContent = entryEditing ? "保存为下一版本" : "保存为新记录";
+    if (entry) {
+      const doc = entry.document;
+      $("#entry-name").value = entry.name;
+      $("#entry-source").value = doc.source;
+      $("#entry-notes").value = doc.notes || "";
+      if (entry.kind === "models") $("#entry-parameters").value = JSON.stringify(doc.parameters, null, 2);
+      else {
+        $("#entry-frequency").value = doc.frequency_hz;
+        $("#entry-h-unit").value = doc.h_unit; $("#entry-loss-unit").value = doc.loss_unit;
+        for (const key of ["bh", "loss"]) $("#entry-" + key).value = doc[key].map(row => row.join(", ")).join("\n");
+      }
+    }
+    syncEntryKind(); $("#entry-feedback").textContent = "";
+    $("#entry-heading").scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+  function parsePoints(selector) {
+    const lines = $(selector).value.trim().split(/\r?\n/).filter(line => line.trim());
+    return lines.map((line, index) => {
+      const parts = line.trim().split(/[\s,，;；]+/);
+      if (parts.length !== 2 || parts.some(value => !Number.isFinite(Number(value)))) throw new Error(`曲线第 ${index + 1} 行须包含两个有效数字。`);
+      return parts.map(Number);
+    });
+  }
+  async function saveEntry(event) {
+    event.preventDefault();
+    const kind = $("#entry-kind").value, editing = entryEditing;
+    $("#entry-fields").disabled = true;
+    try {
+      const document = { source: $("#entry-source").value.trim(), notes: $("#entry-notes").value };
+      if (kind === "models") document.parameters = validParameters(JSON.parse($("#entry-parameters").value));
+      else Object.assign(document, { frequency_hz: Number($("#entry-frequency").value), h_unit: $("#entry-h-unit").value, loss_unit: $("#entry-loss-unit").value, bh: parsePoints("#entry-bh"), loss: parsePoints("#entry-loss") });
+      const saved = await api(`/library/${kind}${editing ? "/" + editing.id : ""}`, { method: editing ? "PUT" : "POST", body: JSON.stringify({ name: $("#entry-name").value.trim(), document, ...(editing ? { expected_revision: editing.revision } : {}) }) });
+      fillEntry(saved); optimizationConfig = null;
+      $("#entry-feedback").textContent = `已保存 v${saved.revision}。${saved.compatibility ? saved.compatibility.compatible ? "曲线满足当前计算接口要求。" : saved.compatibility.reasons.join("；") : ""}`;
+      $("#library-kind").value = kind; libraryOffset = 0; await loadLibrary();
+    } catch (error) { $("#entry-feedback").textContent = errorText(error); }
+    finally { $("#entry-fields").disabled = false; }
+  }
+  function exportEntry(entry) {
+    const data = { format: "dcsj-user-entry", format_version: 1, kind: entry.kind, name: entry.name, document: entry.document, origin: { reference: entry.reference, document_sha256: entry.document_sha256 } };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+    const link = el("a"); link.href = url; link.download = `${entry.name.replace(/[^\p{L}\p{N}._-]/gu, "_")}-v${entry.revision}.json`;
+    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  async function importEntry(event) {
+    const file = event.target.files?.[0]; event.target.value = "";
+    if (!file) return;
+    try {
+      if (file.size > 512 * 1024) throw new Error("用户记录文件不能超过 512 KiB。");
+      const entry = JSON.parse(await file.text());
+      if (entry.format !== "dcsj-user-entry" || entry.format_version !== 1 || !["models", "materials"].includes(entry.kind) || typeof entry.name !== "string" || !entry.document) throw new Error("请选择从用户库导出的 dcsj-user-entry v1 JSON 文件。");
+      fillEntry(entry, true); $("#entry-feedback").textContent = "已读入待保存记录。核对内容后保存为新记录，同名数据不会被覆盖。";
+    } catch (error) { $("#entry-feedback").textContent = errorText(error); }
+  }
+  function useEntry(entry) {
+    if (state.busy) return showToast("请等待当前计算完成。", "warning");
+    if (entry.kind === "models") acceptDesign(entry.document.parameters, entry.name, { path: "用户型号库", description: `${entry.document.source} · ${entry.reference}` }, entry.name);
+    else {
+      if (!entry.compatibility?.compatible) return showToast("此材料暂不兼容当前计算核。", "warning");
+      if (!populated()) return showToast("请先在工作台载入设计。", "warning");
+      if (Number(state.parameters.f) !== entry.document.frequency_hz) return showToast("设计频率与材料曲线频率不一致，请先调整设计频率。", "warning");
+      state.parameters.Paihao = entry.reference; state.invalidInputs.delete("Paihao"); designChanged(); renderEditor(); navigate("workbench");
+      showToast(`已选用 ${entry.name} · v${entry.revision}，请重新计算。`);
+    }
+  }
+  async function previewUserMaterial(entry) {
+    const preview = $("#user-material-preview"), request = ++libraryAction;
+    try {
+      const material = await api(`/materials/${encodeURIComponent(entry.reference)}`);
+      if (request !== libraryAction) return;
+      preview.classList.remove("hidden"); preview.replaceChildren(el("h3", "", `${entry.name} · v${entry.revision}`));
+      material.curves.forEach(curve => preview.append(renderCurve(curve)));
+      preview.scrollIntoView({ block: "start", behavior: "smooth" });
+    } catch (error) { if (request === libraryAction) showToast(errorText(error), "error"); }
+  }
+  async function entryHistory(entry) {
+    const container = $("#history-content"), request = ++libraryAction;
+    container.replaceChildren(el("p", "", "正在加载版本…")); $("#history-dialog").showModal();
+    try {
+      const data = await api(`/library/${entry.kind}/${entry.id}/revisions`);
+      if (request !== libraryAction) return;
+      container.replaceChildren();
+      data.items.forEach(item => {
+        const row = el("div", "history-row");
+        row.append(el("strong", "", `v${item.revision} · ${item.name}`), el("p", "muted", item.created_at));
+        const open = async (use) => {
+          const action = ++libraryAction;
+          try {
+            const old = await api(`/library/${entry.kind}/${entry.id}?revision=${item.revision}`);
+            if (action !== libraryAction) return;
+            if (use) useEntry(old); else fillEntry(old, true);
+            $("#history-dialog").close();
+          } catch (error) { showToast(errorText(error), "error"); }
+        };
+        row.append(button("查看 / 复制此版本", "button button-small", () => open(false)), button("使用此版本", "button button-small", () => open(true))); container.append(row);
+      });
+    } catch (error) { if (request === libraryAction) container.replaceChildren(el("p", "inline-error", errorText(error))); }
+  }
+  async function loadLibrary() {
+    const request = ++libraryRequest, kind = $("#library-kind").value;
+    $("#library-feedback").textContent = "正在读取…";
+    try {
+      const data = await api(`/library/${kind}?limit=20&offset=${libraryOffset}&include_archived=${$("#library-archived").checked}`);
+      if (request !== libraryRequest) return;
+      if (libraryOffset && !data.items.length) { libraryOffset = Math.max(0, libraryOffset - 20); return loadLibrary(); }
+      const container = $("#library-list"); container.replaceChildren();
+      data.items.forEach(entry => {
+        const card = el("article", "user-entry");
+        card.append(el("h3", "", `${entry.name} · v${entry.revision}${entry.archived ? " · 已归档" : ""}`), el("small", "entry-reference", entry.reference), el("p", "muted small", entry.document.source));
+        if (entry.compatibility) card.append(el("p", entry.compatibility.compatible ? "small" : "small field-warning", entry.compatibility.compatible ? "可用于当前计算核（50 Hz）" : entry.compatibility.reasons.join("；")));
+        const actions = el("div", "feature-actions");
+        if (!entry.archived) actions.append(button("编辑", "button button-small", () => fillEntry(entry)));
+        actions.append(button("版本", "button button-small", () => entryHistory(entry)), button("导出 JSON", "button button-small", () => exportEntry(entry)));
+        if (kind === "models" || entry.compatibility?.compatible) actions.append(button(kind === "models" ? "载入工作台" : "用于当前设计", "button button-small", () => useEntry(entry)));
+        if (kind === "models") actions.append(button("快速建模", "button button-small", () => { navigate("modeling"); chooseTemplate({ id: entry.reference, model: entry.name }); }));
+        else actions.append(button("查看曲线", "button button-small", () => previewUserMaterial(entry)));
+        const archiveButton = button(entry.archived ? "恢复" : "归档", "button button-small", async () => {
+          archiveButton.disabled = true;
+          try { await api(`/library/${kind}/${entry.id}/archive`, { method: "POST", body: JSON.stringify({ archived: !entry.archived, expected_revision: entry.revision }) }); optimizationConfig = null; await loadLibrary(); }
+          catch (error) { showToast(errorText(error), "error"); }
+          finally { archiveButton.disabled = false; }
+        });
+        actions.append(archiveButton); card.append(actions); container.append(card);
+      });
+      $("#library-feedback").textContent = data.total ? "" : "暂无用户记录，可在左侧新增或导入。";
+      $("#library-page").textContent = `共 ${data.total} 条 · 第 ${Math.floor(libraryOffset / 20) + 1} 页`;
+      $("#library-previous").disabled = libraryOffset === 0; $("#library-next").disabled = libraryOffset + 20 >= data.total;
+    } catch (error) { if (request === libraryRequest) $("#library-feedback").textContent = errorText(error); }
+  }
+  $("#refresh-resources").addEventListener("click", loadResources);
+  $("#import-resources").addEventListener("click", () => changeResources());
+  $("#activate-resources").addEventListener("click", () => changeResources(true));
+  $("#entry-kind").addEventListener("change", syncEntryKind);
+  $("#entry-form").addEventListener("submit", saveEntry);
+  $("#new-entry").addEventListener("click", () => fillEntry());
+  $("#copy-current-entry").addEventListener("click", () => {
+    if (!populated()) return showToast("请先在工作台载入设计。", "warning");
+    $("#entry-parameters").value = JSON.stringify(state.parameters, null, 2);
+    if (!$("#entry-name").value) $("#entry-name").value = state.name;
+    $("#entry-source").value = sourceText(state.source);
+  });
+  $("#open-entry-import").addEventListener("click", () => $("#entry-file").click());
+  $("#entry-file").addEventListener("change", importEntry);
+  $("#refresh-library").addEventListener("click", loadLibrary);
+  $("#library-kind").addEventListener("change", () => { libraryOffset = 0; ++libraryAction; $("#user-material-preview").classList.add("hidden"); loadLibrary(); });
+  $("#library-archived").addEventListener("change", () => { libraryOffset = 0; loadLibrary(); });
+  $("#library-previous").addEventListener("click", () => { libraryOffset = Math.max(0, libraryOffset - 20); loadLibrary(); });
+  $("#library-next").addEventListener("click", () => { libraryOffset += 20; loadLibrary(); });
+  syncEntryKind();
 
   async function boot() {
     const tasks = await Promise.allSettled([loadStatus(), api("/schema"), loadSeries()]);

@@ -25,6 +25,7 @@
         <button class="nav-item" data-view="comparisons"><span class="nav-icon" aria-hidden="true">⇄</span>方案对比<span class="nav-index">05</span></button>
         <button class="nav-item" data-view="modeling"><span class="nav-icon" aria-hidden="true">◎</span>快速建模<span class="nav-index">06</span></button>
         <button class="nav-item" data-view="optimization"><span class="nav-icon" aria-hidden="true">↗</span>自动寻优<span class="nav-index">07</span></button>
+        <button class="nav-item" data-view="resources"><span class="nav-icon" aria-hidden="true">⊕</span>资源与用户数据<span class="nav-index">08</span></button>
       </nav>
       <div class="sidebar-label secondary">DEVELOPER</div>
       <nav class="navigation" aria-label="开发与说明">
@@ -132,6 +133,27 @@
             </form></section>
           <section class="panel feature-content"><div class="panel-header"><h2>任务记录</h2><button class="text-button" id="refresh-optimization-jobs">刷新</button></div><div id="optimization-jobs"></div></section>
           <section id="optimization-detail" class="panel feature-content hidden" aria-live="polite"></section>
+        </section>
+        <section class="page" id="view-resources" aria-labelledby="resources-title">
+          <div class="page-heading"><div><div class="eyebrow">RESOURCES &amp; USER LIBRARY</div><h1 id="resources-title">资源与用户数据</h1><p>安装私有基础资源，独立维护自己的型号和材料。更新资源不会覆盖用户数据。</p></div><button class="button" id="refresh-resources">刷新</button></div>
+          <section class="panel feature-content"><h2>私有资源包</h2><p id="resource-status" role="status">正在读取资源状态…</p><p id="resource-policy" class="muted"></p><div class="feature-actions"><button class="button button-primary" id="import-resources" disabled>从私有仓库一键导入</button><label>已安装版本 <select class="text-input" id="resource-version"></select></label><button class="button" id="activate-resources" disabled>切换到此版本</button></div><p id="resource-feedback" role="status" class="muted"></p></section>
+          <div class="user-library-layout">
+            <section class="panel feature-content"><h2 id="entry-heading">新增用户记录</h2><p class="muted small">同名记录可以并存。编辑会创建新版本，旧版本保留。</p>
+              <form id="entry-form"><fieldset id="entry-fields">
+                <div class="quick-form"><label>类型<select id="entry-kind" class="text-input"><option value="models">型号参数</option><option value="materials">材料曲线</option></select></label><label>名称<input id="entry-name" class="text-input" maxlength="120" required></label></div>
+                <label class="entry-label">来源<input id="entry-source" class="text-input" maxlength="2000" value="手工录入" required></label><label class="entry-label">备注<textarea id="entry-notes" class="text-input" rows="2" maxlength="4000"></textarea></label>
+                <div id="entry-model-fields"><div class="feature-actions"><button class="button button-small" id="copy-current-entry" type="button">复制工作台参数</button></div><label class="entry-label">完整参数 JSON<textarea id="entry-parameters" class="text-input code-input" rows="12" spellcheck="false" placeholder="粘贴完整参数对象"></textarea></label></div>
+                <div id="entry-material-fields" class="hidden">
+                  <div class="quick-form"><label>频率 Hz<input id="entry-frequency" class="text-input" type="number" step="any" min="0.001" max="100000" value="50"></label><label>磁场强度单位<select id="entry-h-unit" class="text-input"><option>A/m</option><option>A/cm</option></select></label><label>损耗单位<select id="entry-loss-unit" class="text-input"><option value="W/kg">W/kg</option><option value="W/m3">W/m³</option><option value="kernel_native">原计算核数值（已确认）</option></select></label></div>
+                  <p class="muted small">每行输入两列数字，用空格、逗号或制表符分隔。磁密 B 单位为 T，须严格递增；H 和损耗须非负、单调不减。</p>
+                  <label class="entry-label">B–H 磁化曲线<textarea id="entry-bh" class="text-input code-input" rows="8" spellcheck="false" placeholder="B, H"></textarea></label><label class="entry-label">B–损耗曲线<textarea id="entry-loss" class="text-input code-input" rows="8" spellcheck="false" placeholder="B, 损耗"></textarea></label>
+                  <p class="notice">W/kg、W/m³ 曲线可保存和绘图。只有已确认采用原计算核损耗数值、50 Hz、两条曲线均覆盖 0.5–1.88 T 的材料可用于当前计算；不外推，不自动猜测损耗换算。</p>
+                </div>
+                <div class="feature-actions"><button id="save-entry" class="button button-primary" type="submit">保存为新记录</button><button id="new-entry" class="button" type="button">新建 / 取消编辑</button><button id="open-entry-import" class="button" type="button">导入用户 JSON</button></div>
+              </fieldset></form><p id="entry-feedback" role="status"></p><input type="file" id="entry-file" accept="application/json,.json" hidden>
+            </section>
+            <section class="panel feature-content"><h2>用户库</h2><div class="feature-actions"><label>类型<select id="library-kind" class="text-input"><option value="models">型号参数</option><option value="materials">材料曲线</option></select></label><label><input type="checkbox" id="library-archived"> 显示归档</label><button id="refresh-library" class="button">刷新列表</button></div><p id="library-feedback" role="status"></p><div id="library-list"></div><div class="pagination"><span id="library-page"></span><div><button id="library-previous" class="button button-small" disabled>上一页</button><button id="library-next" class="button button-small" disabled>下一页</button></div></div><div id="user-material-preview" class="hidden"></div></section>
+          </div>
         </section>
         <section class="page" id="view-about" aria-labelledby="about-title">
           <div class="page-heading"><div><div class="eyebrow">ENGINE &amp; PROVENANCE</div><h1 id="about-title">分析与实现状态</h1><p>明确区分恢复的数据、重新实现的计算和尚未确认的能力。</p></div><a class="button button-primary" href="/docs" target="_blank" rel="noopener">打开 API 文档 ↗</a></div>

@@ -9,10 +9,10 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import __version__, catalog, projects, calculations, comparisons, modeling
+from . import __version__, catalog, projects, calculations, comparisons, modeling, resources, library
 from .execution import BusyError, compute
 from .storage import ConflictError, NotFoundError
-from .parameters import EXAMPLE, ROOT, InputError, schema, validate
+from .parameters import ROOT, InputError, schema, validate, example_data
 from .engine import CalculationUnavailableError
 from . import jobs, optimization
 from . import pdf_fonts
@@ -124,6 +124,34 @@ class QuickModelInput(BaseModel):
         description="可选转子外径 D2（mm）。按 g=(Di1-D2)/2 联动气隙；此时 changes 不得包含 g。")
 
 
+class LibraryInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1, max_length=120)
+    document: dict
+    expected_revision: int | None = Field(default=None, ge=1)
+
+    @field_validator('name')
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError('名称不能为空')
+        return value.strip()
+
+
+class ResourceImportInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    expected_package_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
+
+
+class ResourceActivateInput(ResourceImportInput):
+    package_id: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+@app.exception_handler(resources.ResourceError)
+async def resource_error(request, error):
+    return JSONResponse({'detail': str(error)}, status_code=422)
+
+
 @app.exception_handler(NotFoundError)
 async def not_found_error(request, error):
     return JSONResponse({"detail": str(error)}, status_code=404)
@@ -198,9 +226,10 @@ def get_schema():
 
 @app.get("/api/v1/example", tags=["设计"])
 def example():
-    if EXAMPLE is None:
+    data = example_data()
+    if data is None:
         raise HTTPException(404, "未安装私有示例，请导入自己的设计 JSON 或安装本地型号库。")
-    return EXAMPLE
+    return data
 
 
 @app.get("/api/v1/series", tags=["型号库"])
@@ -250,10 +279,69 @@ def get_materials():
 
 @app.get("/api/v1/materials/{material_id}", tags=["材料库"])
 def get_material(material_id: str):
+    if material_id.startswith('user-material:'):
+        return library.material(material_id)
     result = catalog.material(material_id)
     if result is None:
         raise HTTPException(404, "材料不存在")
     return result
+
+
+@app.get('/api/v1/resources', tags=['资源与用户数据'])
+def resource_status():
+    return resources.status()
+
+
+@app.post('/api/v1/resources/import', tags=['资源与用户数据'])
+def import_private_resources(body: ResourceImportInput):
+    return resources.import_remote(body.expected_package_id)
+
+
+@app.post('/api/v1/resources/activate', tags=['资源与用户数据'])
+def activate_resource_version(body: ResourceActivateInput):
+    with resources.import_slot():
+        return resources.activate(body.package_id, body.expected_package_id)
+
+
+@app.get('/api/v1/library/{kind}', tags=['资源与用户数据'])
+def list_user_entries(kind: str, include_archived: bool = False,
+                      limit: Annotated[int, Query(ge=1, le=200)] = 50,
+                      offset: Annotated[int, Query(ge=0, le=100000)] = 0):
+    return library.list_entries(kind, include_archived, limit, offset)
+
+
+@app.get('/api/v1/library-schema', tags=['资源与用户数据'])
+def user_library_schema():
+    """用户 document 字段的 JSON Schema；材料单位及点数组校验见各字段说明。"""
+    return {'models': library.ModelDocument.model_json_schema(),
+            'materials': library.MaterialDocument.model_json_schema()}
+
+
+@app.post('/api/v1/library/{kind}', tags=['资源与用户数据'], status_code=201)
+def save_user_entry(kind: str, body: LibraryInput):
+    return library.save(kind, body.name, body.document, expected_revision=body.expected_revision)
+
+
+@app.get('/api/v1/library/{kind}/{identity}', tags=['资源与用户数据'])
+def get_user_entry(kind: str, identity: str, revision: Annotated[int | None, Query(ge=1)] = None):
+    return library.get(kind, identity, revision)
+
+
+@app.put('/api/v1/library/{kind}/{identity}', tags=['资源与用户数据'])
+def update_user_entry(kind: str, identity: str, body: LibraryInput):
+    if body.expected_revision is None:
+        raise HTTPException(422, '更新用户数据必须指定 expected_revision')
+    return library.save(kind, body.name, body.document, identity, body.expected_revision)
+
+
+@app.get('/api/v1/library/{kind}/{identity}/revisions', tags=['资源与用户数据'])
+def user_entry_revisions(kind: str, identity: str):
+    return library.revisions(kind, identity)
+
+
+@app.post('/api/v1/library/{kind}/{identity}/archive', tags=['资源与用户数据'])
+def archive_user_entry(kind: str, identity: str, body: ArchiveInput):
+    return library.archive(kind, identity, body.expected_revision, body.archived)
 
 
 @app.get("/api/v1/projects", tags=["保存的设计"])

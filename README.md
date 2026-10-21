@@ -25,6 +25,7 @@ python run.py
 ## 功能
 
 - 参数编辑、JSON 设计交换、可选的本地型号与材料库。
+- 私有资源一键导入、校验、版本切换；独立用户型号和材料曲线库，历史版本、同名并存及单位兼容检查。
 - 输入校验、电磁计算、性能曲线和明确的计算状态。
 - 方案版本历史、并发修改冲突保护、归档与恢复。
 - 不可变计算记录；API 支持多方案指标、变化参数及基准差值对比。
@@ -39,6 +40,7 @@ python run.py
 `POST /api/v1/calculate` 接收 `{"parameters": {...}}`，成功后生成独立计算记录。
 `POST /api/v1/comparisons` 接收 `calculation_ids` 列表及可选 `baseline_id`。
 `POST /api/v1/comparison-sets` 在上述参数中增加 `name` 和可选 `notes`，保存对比；`GET /api/v1/comparison-sets` 分页列出已存记录，`GET /api/v1/comparison-sets/{id}` 返回固定结果。
+`GET /api/v1/resources` 查看已安装资源，`POST /api/v1/resources/import` 从私有仓库导入。用户库 API 为 `/api/v1/library/{models|materials}`，文档结构见 `/api/v1/library-schema`；详情见 [资源与用户库说明](data/README.md)。
 完整请求、响应和校验规则以 `/docs` 为准。
 
 保存项目允许未完成的草稿；计算时会严格校验。输入 `Ufai` 是绕组相电压。尺寸预览是设计辅助图，不能直接用于加工。
@@ -102,7 +104,7 @@ python scripts/backup.py restore .runtime/restored.sqlite --source .runtime/back
 
 ## 部署
 
-Docker 用户可运行 `docker compose up --build -d`。配置默认只映射 `127.0.0.1:8767`，以非 root 用户运行，并将设计库保存在命名卷中。镜像仅复制源码和空表结构。容器部署仍需在本机将授权资源分别只读挂载到 `/app/data/catalog.sqlite`、`/app/data/material_kernel_tables.json` 及 `/app/dcsj/generated/numeric_kernel.json.gz` 后才能进行实际计算；可选挂载 `/app/data/example.json`。
+Docker 用户可运行 `docker compose up --build -d`。配置默认只映射 `127.0.0.1:8767`，以非 root 用户运行，并将设计库保存在命名卷中。镜像仅复制源码和空表结构。服务端配置私有资源仓库的只读令牌后，可在「资源与用户数据」中一键导入，无需重建镜像或重启；资源与独立用户库都存入持久卷。离线导入、版本切换、手工材料曲线格式及旧路径兼容见 [资源与用户库说明](data/README.md)。
 
 当前服务是单工作站/可信本地使用模式，不包含多租户权限、计费或商用许可证管理。若部署给多用户，须先在反向代理配置身份认证、TLS 和访问控制；不要直接将无认证 API 暴露到公网。升级前备份设计库，运行测试并保留旧版源码及计算资源；启动会自动迁移旧版设计表，旧版本参数会保留。
 

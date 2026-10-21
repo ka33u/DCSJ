@@ -23,9 +23,9 @@ class NumericKernelLimitError(NumericKernelError):
     """The numerical program exceeded its declared execution budget."""
 
 
-@lru_cache(maxsize=1)
-def _program():
-    path = Path(__file__).with_name("generated") / "numeric_kernel.json.gz"
+@lru_cache(maxsize=4)
+def _program(path=None):
+    path = Path(path) if path else Path(__file__).with_name("generated") / "numeric_kernel.json.gz"
     program = json.loads(gzip.decompress(path.read_bytes()))
     program["code"] = {row[0]: (row[1], row[2], row[3]) for row in program.pop("instructions")}
     program["function_names"] = {f["address"]: f["name"] for f in program["functions"]}
@@ -407,11 +407,11 @@ class _VM:
             raise NumericKernelError(f"Unsupported decoded operation {op} at {old_pc:#x}")
 
 
-def run(memory_overrides: dict[int, float | bytes], *, max_steps: int = 2000000):
+def run(memory_overrides: dict[int, float | bytes], *, max_steps: int = 2000000, program_path=None):
     """Run one isolated computation, rejecting unmodeled calls and budget overruns."""
     if not isinstance(max_steps, int) or not 1 <= max_steps <= 50000000:
         raise NumericKernelError("max_steps must be an integer from 1 to 50000000")
-    program = _program()
+    program = _program(program_path)
     vm = _VM(program, memory_overrides)
     code = program["code"]
     names = program["function_names"]

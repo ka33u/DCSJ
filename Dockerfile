@@ -4,7 +4,7 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && useradd --create-home --uid 10001 dcsj
 COPY dcsj/*.py ./dcsj/
-COPY scripts/install_pdf_font.py ./scripts/
+COPY scripts/install_pdf_font.py scripts/import_resources.py ./scripts/
 RUN python scripts/install_pdf_font.py && chmod 0644 /app/fonts/DCSJPdfSans.ttf /app/fonts/OFL.txt
 COPY frontend/ ./frontend/
 COPY data/schema.sql data/README.md ./data/

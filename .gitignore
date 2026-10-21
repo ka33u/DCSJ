@@ -26,5 +26,7 @@ scripts/*
 !scripts/install_pdf_font.py
 !scripts/check_public_scope.py
 !scripts/check_dependencies.py
+!scripts/build_resources.py
+!scripts/import_resources.py
 output/
 tmp/

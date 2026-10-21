@@ -8,7 +8,7 @@ from .catalog_bundle import catalog_path
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "data/catalog.sqlite"
-from .engine import MATERIALS as KERNEL_MATERIALS
+from .engine import available_materials
 
 
 @contextmanager
@@ -62,6 +62,9 @@ def models(q="", series_name="", limit=30, offset=0, history=False):
 
 
 def model(record_id):
+    if record_id.startswith('user-model:'):
+        from .library import model as user_model
+        return user_model(record_id)
     with connect() as db:
         row = db.execute("SELECT * FROM model_catalog WHERE record_id=?", (record_id,)).fetchone()
     if row is None:
@@ -77,13 +80,14 @@ def model(record_id):
 
 
 def materials():
+    kernel_materials = available_materials()
     with connect() as db:
         items = [dict(r) for r in db.execute(
             "SELECT id,name,source_file AS source,bh_point_count AS point_count,"
             "loss_point_count,frequency_hz,frequency_status,loss_unit_status "
             "FROM material_catalog WHERE is_primary=1 ORDER BY name")]
     for item in items:
-        if not item["point_count"] and item["name"] in KERNEL_MATERIALS:
+        if not item["point_count"] and item["name"] in kernel_materials:
             item["point_count"], item["loss_point_count"] = 49, 42
             item["curve_origin"] = "recovered_embedded_table"
     return items
@@ -102,7 +106,7 @@ def material(material_id):
     loss = [{"x": r["b_tesla"], "y": r["loss_value_source"]} for r in points if r["curve_type"] == "loss"]
     warnings = []
     if not bh:
-        recovered = KERNEL_MATERIALS.get(row["name"])
+        recovered = available_materials().get(row["name"])
         if recovered:
             # ATB / PFB use a shared piecewise uniform induction axis (kG → T).
             bh_axis = [0.5 + i * .05 for i in range(15)] + [1.22 + i * .02 for i in range(34)]

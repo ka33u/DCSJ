@@ -8,7 +8,7 @@ import sqlite3
 import threading
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _migration_lock = threading.Lock()
 _initialized = set()
 
@@ -86,6 +86,12 @@ def _migrate(db, path):
                 "notes TEXT NOT NULL, baseline_id TEXT NOT NULL REFERENCES calculations(id), "
                 "result TEXT NOT NULL, created_at TEXT NOT NULL)",
                 "CREATE INDEX IF NOT EXISTS comparison_sets_created ON comparison_sets(created_at DESC)",
+                "CREATE TABLE IF NOT EXISTS library_entries (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, "
+                "revision INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS library_revisions (entry_id TEXT NOT NULL REFERENCES library_entries(id), "
+                "revision INTEGER NOT NULL, name TEXT NOT NULL, document TEXT NOT NULL, created_at TEXT NOT NULL, "
+                "PRIMARY KEY(entry_id,revision))",
+                "CREATE INDEX IF NOT EXISTS library_kind ON library_entries(kind,archived,updated_at DESC)",
             ]:
                 db.execute(statement)
             db.execute("INSERT OR IGNORE INTO project_revisions "

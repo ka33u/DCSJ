@@ -3,7 +3,22 @@ import math
 import random
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .parameters import INTEGER_KEYS, validate
-from .engine import MATERIALS
+from .engine import available_materials
+
+
+def available_choices():
+    from .library import material_choices
+    return set(available_materials()) | set(material_choices())
+
+
+def allowed_material(reference):
+    if reference in available_materials():
+        return True
+    from .library import from_reference
+    try:
+        return from_reference(reference, 'materials')['compatibility']['compatible']
+    except ValueError:
+        return False
 
 # Rating, prices, empirical loss factors and target efficiency are deliberately fixed.
 VARIABLES = {
@@ -34,7 +49,7 @@ class Variable(BaseModel):
         if self.key not in VARIABLES:
             raise ValueError('寻优只允许修改几何、绕组与材料变量，不允许修改额定值、价格或经验系数')
         if self.key == 'Paihao':
-            if not self.choices or any(x not in MATERIALS for x in self.choices):
+            if not self.choices or any(not allowed_material(x) for x in self.choices):
                 raise ValueError('请选择本机已安装的材料牌号')
             if len(set(self.choices)) != len(self.choices):
                 raise ValueError('材料候选不能重复')
@@ -100,7 +115,7 @@ class SearchInput(BaseModel):
 def config():
     return {'variables': [{'key': k, 'label': v, 'integer': k in DISCRETE} for k, v in VARIABLES.items()],
             'objectives': [{'id': k, 'metric': v[0], 'direction': v[1], 'label': v[2]} for k, v in OBJECTIVES.items()],
-            'constraint_metrics': sorted(CONSTRAINTS), 'materials': sorted(MATERIALS),
+            'constraint_metrics': sorted(CONSTRAINTS), 'materials': sorted(available_choices()),
             'max_evaluations': 128,
             'method': '固定随机种子的分层采样 + 局部扰动，使用真实数值核逐项评估；不保证全局最优。'}
 

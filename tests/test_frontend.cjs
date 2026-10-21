@@ -349,3 +349,79 @@ test('saving a comparison freezes the displayed selection and reopens after a fr
   assert.equal(reopened.doc.querySelector('#comparison-count').textContent, '已选 2 / 8');
   assert.ok(reopened.doc.querySelector('#comparison-result a[href="/api/v1/comparison-sets/review-1/report.pdf"]'));
 });
+
+function resourceStatus() {
+  return { active: null, installed: [], remote_configured: true, repository: 'synthetic/private', ref: 'main', user_data_policy: 'Test independent data' };
+}
+function userEntry(kind, changes = {}) {
+  return { id: 'ul_test', kind, name: '同名人工记录', revision: 2, archived: 0, reference: 'user-test@2',
+    document: kind === 'models' ? { parameters, source: '人工来源', notes: '' } : { source: '人工来源', notes: '', frequency_hz: 50, h_unit: 'A/m', loss_unit: 'W/kg', bh: [[.5, 10], [1.88, 200]], loss: [[.5, 1], [1.88, 3]] },
+    compatibility: kind === 'materials' ? { compatible: false, reasons: ['损耗单位未映射'] } : undefined, ...changes };
+}
+
+test('one-click resource import sends active-version guard and preserves an open draft', async t => {
+  const data = resourceStatus(), pending = deferred();
+  const ui = await app(t, (path, request) => {
+    if (path === '/example') return { name: '当前草稿', parameters };
+    if (path === '/resources') return data;
+    if (path.startsWith('/library/')) return { items: [], total: 0 };
+    if (path === '/resources/import') {
+      assert.deepEqual(request.body, { expected_package_id: null });
+      return pending.promise;
+    }
+  });
+  ui.doc.querySelector('#load-example').click(); await settle();
+  ui.doc.querySelector('[data-key="kW"]').value = '15';
+  ui.doc.querySelector('[data-key="kW"]').dispatchEvent(new ui.w.Event('input', { bubbles: true }));
+  ui.nav('resources'); await settle();
+  ui.doc.querySelector('#import-resources').click();
+  assert.equal(ui.doc.querySelector('#import-resources').disabled, true);
+  data.active = { package_id: 'a'.repeat(64), version: 'synthetic.1', counts: { model_versions: 0, materials: 0 } }; data.installed.push(data.active);
+  pending.release({ ...data.active, changed: true });
+  await until(() => ui.doc.querySelector('#resource-feedback').textContent.includes('已启用'), 'Import completes');
+  assert.equal(JSON.parse(ui.doc.querySelector('#raw-parameters').textContent).kW, 15);
+  assert.equal(ui.doc.querySelector('#current-design').textContent, '当前草稿');
+});
+
+test('editing a manual model sends its revision and retains duplicate-name identities', async t => {
+  const first = userEntry('models'), second = userEntry('models', { id: 'ul_second', reference: 'user-second@2' });
+  const ui = await app(t, (path, request) => {
+    if (path === '/resources') return resourceStatus();
+    if (path === '/library/models') return { items: [first, second], total: 2 };
+    if (path === '/library/models/ul_test' && request.method === 'PUT') {
+      assert.equal(request.body.expected_revision, 2); assert.equal(request.body.document.parameters.kW, 18);
+      return { ...first, revision: 3, document: request.body.document };
+    }
+  });
+  ui.nav('resources'); await settle();
+  assert.equal(ui.doc.querySelectorAll('#library-list article').length, 2);
+  ui.find('#library-list button', '编辑').click();
+  assert.equal(ui.doc.querySelector('#entry-kind').disabled, true);
+  ui.doc.querySelector('#entry-parameters').value = JSON.stringify({ ...parameters, kW: 18 });
+  ui.doc.querySelector('#entry-form').dispatchEvent(new ui.w.Event('submit', { cancelable: true }));
+  await until(() => ui.doc.querySelector('#entry-feedback').textContent.includes('v3'), 'New revision saved');
+  assert.equal(ui.calls.filter(call => call.method === 'POST').length, 0, 'Editing is not mistaken for creating');
+});
+
+test('material form keeps explicit units and incompatible materials have no compute action', async t => {
+  let saved;
+  const ui = await app(t, (path, request) => {
+    if (path === '/resources') return resourceStatus();
+    if (path === '/library/models') return { items: [], total: 0 };
+    if (path === '/library/materials') {
+      if (request.method === 'POST') { saved = userEntry('materials', { ...request.body, revision: 1 }); return saved; }
+      return { items: saved ? [saved] : [], total: saved ? 1 : 0 };
+    }
+  });
+  ui.nav('resources'); await settle();
+  const select = ui.doc.querySelector('#entry-kind'); select.value = 'materials'; select.dispatchEvent(new ui.w.Event('change'));
+  ui.doc.querySelector('#entry-name').value = '手工曲线';
+  ui.doc.querySelector('#entry-bh').value = '0.5, 10\n1.88, 200';
+  ui.doc.querySelector('#entry-loss').value = '0.5 1\n1.88 3';
+  ui.doc.querySelector('#entry-form').dispatchEvent(new ui.w.Event('submit', { cancelable: true }));
+  await until(() => ui.doc.querySelector('#library-list').textContent.includes('损耗单位未映射'), 'Incompatible curve is saved for management');
+  assert.equal(saved.document.loss_unit, 'W/kg'); assert.equal(saved.document.h_unit, 'A/m');
+  assert.deepEqual(saved.document.bh, [[.5, 10], [1.88, 200]]);
+  assert.equal([...ui.doc.querySelectorAll('#library-list button')].some(x => x.textContent === '用于当前设计'), false);
+  assert.ok(ui.find('#library-list button', '查看曲线'));
+});

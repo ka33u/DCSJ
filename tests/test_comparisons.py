@@ -72,7 +72,7 @@ def test_upgrade_and_backup_preserve_comparison_and_original_calculations(client
     storage._initialized.clear()
     saved = comparisons.save('升级后保存', ids)
     with storage.connect() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 3
+        assert db.execute('PRAGMA user_version').fetchone()[0] == storage.SCHEMA_VERSION
         assert db.execute('SELECT count(*) FROM calculations').fetchone()[0] == 2
     info = backup(storage.database_path(), tmp_path / 'backup.sqlite')
     restore(tmp_path / 'backup.sqlite', tmp_path / 'restored.sqlite', info['sha256'])

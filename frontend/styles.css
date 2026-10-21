@@ -12,3 +12,8 @@
 .report-links{display:inline-flex;gap:7px;flex-wrap:wrap;align-items:center}
 .quick-linkage{margin:18px 0 8px}#quick-gap-note{margin-bottom:18px}#quick-fields input[readonly]{background:#f1f5f3;color:#526b62}
 .comparison-save-form{display:grid;gap:12px;margin:18px 0;max-width:640px}.comparison-save-form label{display:grid;gap:6px}.comparison-save-form textarea{font:inherit;resize:vertical;min-height:72px}.comparison-save-form button{justify-self:start}.comparison-notes{white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* Versioned private resources and independent user library. */
+.user-library-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px;margin-top:22px;align-items:start}
+#entry-fields{border:0;padding:0;margin:0;min-width:0}.entry-label{display:block;margin:14px 0}.entry-label .text-input{display:block;width:100%;margin-top:6px}.code-input{font-family:ui-monospace,SFMono-Regular,monospace;font-size:12px;resize:vertical;line-height:1.6}.user-entry{padding:18px 0;border-bottom:1px solid var(--border,#dfe5e3)}.user-entry h3{margin:0 0 8px}.entry-reference{display:block;overflow-wrap:anywhere;color:#6b7775}.user-entry .feature-actions{gap:6px}#entry-feedback{white-space:pre-line;overflow-wrap:anywhere}#resource-feedback{white-space:pre-line}#resource-version{max-width:100%}
+@media(max-width:1200px){.user-library-layout{grid-template-columns:minmax(0,1fr)}}

@@ -9,6 +9,7 @@ import math
 import struct
 import time
 from pathlib import Path
+from functools import lru_cache
 from . import __version__
 
 from .numeric_vm import NumericKernelError, run
@@ -20,7 +21,7 @@ ENGINE_NAME = "DCSJ Python 数值核心"
 _kernel_path = ROOT / "dcsj/generated/numeric_kernel.json.gz"
 KERNEL_SHA256 = hashlib.sha256(_kernel_path.read_bytes()).hexdigest() if _kernel_path.is_file() else None
 WRAPPER_SHA256 = hashlib.sha256(b"".join((ROOT / "dcsj" / name).read_bytes()
-    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py"))).hexdigest()
+    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py", "library.py"))).hexdigest()
 LIMITATIONS = [
     "由原 Fortran 程序的计算指令恢复；使用双精度中间运算和原单精度存储。",
     "已恢复三相异步电动机计算；历史型号保存值可能使用不同版本的材料表。",
@@ -36,15 +37,41 @@ class CalculationUnavailableError(RuntimeError):
     pass
 
 
-def engine_status():
+@lru_cache(maxsize=4)
+def _package_context(identity, root):
+    path = Path(root)
+    material_data = json.loads((path / 'material_kernel_tables.json').read_text(encoding='utf-8'))
+    manifest = json.loads((path / 'manifest.json').read_text(encoding='utf-8'))
+    return {'materials': {item['name']: item for item in material_data['materials']},
+            'kernel_sha256': manifest['files']['numeric_kernel.json.gz']['sha256'],
+            'kernel_path': path / 'numeric_kernel.json.gz', 'package_id': identity,
+            'package_version': manifest['version']}
+
+
+def resource_context():
+    from . import resources
+    package = resources.current()
+    if package:
+        return _package_context(package['package_id'], str(resources.directory() / package['package_id']))
+    return {'materials': MATERIALS, 'kernel_sha256': KERNEL_SHA256, 'kernel_path': _kernel_path,
+            'package_id': None, 'package_version': 'legacy-local'}
+
+
+def available_materials():
+    return resource_context()['materials']
+
+
+def engine_status(context=None):
+    context = context or resource_context()
     missing = []
-    if not KERNEL_SHA256:
+    if not context['kernel_sha256']:
         missing.append("dcsj/generated/numeric_kernel.json.gz")
-    if not MATERIALS:
+    if not context['materials']:
         missing.append("data/material_kernel_tables.json")
     return {"name": ENGINE_NAME, "status": "unavailable" if missing else "recovered",
             "missing_assets": missing,
-            "version": __version__, "kernel_sha256": KERNEL_SHA256,
+            "version": __version__, "kernel_sha256": context['kernel_sha256'],
+            "resource_package": context['package_id'], "resource_version": context['package_version'],
             "implementation": "pure-python-numeric-ir", "limitations": LIMITATIONS,
             "native_runtime_required": False}
 
@@ -53,9 +80,13 @@ def f32(value):
     return struct.unpack("<f", struct.pack("<f", value))[0]
 
 
-def prepare_memory(parameters):
+def prepare_memory(parameters, context=None):
     p = parameters
-    material = MATERIALS.get(p["Paihao"])
+    context = context or resource_context()
+    material = context['materials'].get(p["Paihao"])
+    if p['Paihao'].startswith('user-material:'):
+        from .library import calculation_material
+        material = calculation_material(p['Paihao'], p['f'], context['materials'])
     if material is None:
         raise CalculationError(f"未知硅钢片牌号 {p['Paihao']}；请从材料库选择已恢复的牌号。")
     memory = {addr: f32(p[key]) for key, addr in INPUT_MAP.items() if key != "Paihao"}
@@ -126,13 +157,14 @@ def extract_curves(result, parameters, warnings):
 
 
 def calculate_design(values):
-    if engine_status()["missing_assets"]:
-        raise CalculationUnavailableError("计算资源尚未安装，请在本机安装授权的私有计算资源后重启服务。")
+    context = resource_context()
+    if engine_status(context)["missing_assets"]:
+        raise CalculationUnavailableError("计算资源尚未安装，请在资源管理中导入授权的私有资源包。")
     p = validate(values)
-    memory, material = prepare_memory(p)
+    memory, material = prepare_memory(p, context)
     started = time.perf_counter()
     try:
-        result = run(memory, max_steps=15_000_000)
+        result = run(memory, max_steps=15_000_000, program_path=str(context['kernel_path']))
     except NumericKernelError as error:
         raise CalculationError(
             "当前参数未能完成计算，请检查槽形、绕组及材料参数。数值核心诊断：" + str(error)
@@ -144,6 +176,8 @@ def calculate_design(values):
     if not 0 < output["ATA1"] <= 1 or not 0 < output["PF1"] <= 1:
         raise CalculationError("当前参数产生了超出物理范围的效率或功率因数，请检查输入。")
     warnings = []
+    if material['kind'] == 'user_native':
+        warnings.append('本次使用用户材料的固定版本；损耗以原计算核数值输入，曲线在原采样轴内线性插值，仍需独立工程校核。')
     if material["kind"] == "mdb_custom":
         warnings.append("本次使用原数据库硅钢曲线，损耗数据沿用原表数值。")
     if p["f"] != 50:
@@ -168,7 +202,7 @@ def calculate_design(values):
         info["group"] = "计算结果"
         metrics.append({**info, "value": value})
     return {
-        "engine": engine_status(),
+        "engine": engine_status(context),
         "metrics": metrics, "values": output, "warnings": warnings,
         "curves": curves, "inputs": p,
         "trace": [
@@ -179,10 +213,14 @@ def calculate_design(values):
         ],
         "provenance": {
             "engine_version": __version__,
-            "kernel_sha256": KERNEL_SHA256, "wrapper_sha256": WRAPPER_SHA256,
+            "kernel_sha256": context['kernel_sha256'], "wrapper_sha256": WRAPPER_SHA256,
+            "resource_package": context['package_id'], "resource_version": context['package_version'],
             "material_sha256": hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest(),
             "input_sha256": hashlib.sha256(json.dumps(p, sort_keys=True).encode()).hexdigest(),
             "material": material["name"], "steps": result["steps"],
+            "user_material_reference": material.get('user_reference'),
+            "user_material_document_sha256": material.get('user_document_sha256'),
+            "user_material_source": material.get('user_source'),
             "elapsed_seconds": time.perf_counter() - started,
             "precision": result["precision"],
         },

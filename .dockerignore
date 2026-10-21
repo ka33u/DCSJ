@@ -6,6 +6,7 @@
 !dcsj/*.py
 !scripts/
 !scripts/install_pdf_font.py
+!scripts/import_resources.py
 !frontend/
 !frontend/**
 !data/

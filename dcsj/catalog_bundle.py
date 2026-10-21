@@ -20,14 +20,22 @@ def digest(path):
     return value.hexdigest()
 
 
-@lru_cache(maxsize=1)
 def catalog_path():
+    from .resources import current, asset
     override = os.getenv("DCSJ_CATALOG_PATH")
     if override:
         path = Path(override).resolve()
         if not path.is_file():
             raise RuntimeError("DCSJ_CATALOG_PATH does not point to a file")
         return path
+    package = current()
+    if package:
+        return asset('catalog.sqlite', package)
+    return _legacy_catalog_path()
+
+
+@lru_cache(maxsize=1)
+def _legacy_catalog_path():
     source = ROOT / "data/catalog.sqlite"
     if source.exists():
         return source
@@ -71,3 +79,6 @@ def catalog_path():
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+catalog_path.cache_clear = _legacy_catalog_path.cache_clear
