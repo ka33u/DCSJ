@@ -70,3 +70,11 @@ def test_calculation_cannot_claim_unrelated_project_revision(client, parameters,
     response = client.post('/api/v1/calculate', json={
         'parameters': snapshot['inputs'], 'project_id': saved['id'], 'project_revision': 1})
     assert response.status_code == 409
+
+
+def test_same_grade_material_version_changes_are_disclosed(client, snapshot):
+    first = calculations.save(snapshot)
+    snapshot['provenance']['material_sha256'] = 'changed synthetic material metadata'
+    second = calculations.save(snapshot)
+    result = calculations.compare([first['calculation_id'], second['calculation_id']])
+    assert any('同牌号材料' in warning for warning in result['warnings'])

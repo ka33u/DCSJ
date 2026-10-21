@@ -180,7 +180,7 @@ def calculate_design(values):
         "provenance": {
             "engine_version": __version__,
             "kernel_sha256": KERNEL_SHA256, "wrapper_sha256": WRAPPER_SHA256,
-            "material_sha256": hashlib.sha256(json.dumps(material["const_values"]).encode()).hexdigest(),
+            "material_sha256": hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest(),
             "input_sha256": hashlib.sha256(json.dumps(p, sort_keys=True).encode()).hexdigest(),
             "material": material["name"], "steps": result["steps"],
             "elapsed_seconds": time.perf_counter() - started,

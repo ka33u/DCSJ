@@ -76,6 +76,13 @@ def compare(identities, baseline_id=None):
     fingerprints = {tuple(s.get("provenance", {}).get(key) for key in ("kernel_sha256", "wrapper_sha256")) for s in snapshots}
     if len(fingerprints) > 1 or any(None in fingerprint for fingerprint in fingerprints):
         warnings.append("计算核心版本不同或早期记录未保存版本指纹，建议统一重算后比较。")
+    material_versions = {}
+    for snapshot in snapshots:
+        material_versions.setdefault(snapshot['inputs'].get('Paihao'), set()).add(
+            snapshot.get('provenance', {}).get('material_sha256'))
+    for name, versions in material_versions.items():
+        if len(versions) > 1:
+            warnings.append(f"同牌号材料 {name} 使用了不同版本的数据，请确认材料版本后再作同条件比较。")
     return {"baseline_id": baseline_id,
             "schemes": [{"id": s["calculation_id"], "name": s["name"], "created_at": s["created_at"],
                          "warnings": s["warnings"], "provenance": s["provenance"]} for s in snapshots],
