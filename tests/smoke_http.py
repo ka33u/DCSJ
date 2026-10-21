@@ -21,7 +21,9 @@ for attempt in range(30):
     try:
         status = request('/api/v1/status')
         break
-    except (URLError, TimeoutError):
+    # Docker may accept the forwarded TCP connection before Uvicorn is ready,
+    # then reset it. Retry only the bounded readiness phase, not API assertions.
+    except (URLError, OSError):
         if attempt == 29:
             raise
         time.sleep(1)
