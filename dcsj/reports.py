@@ -4,6 +4,7 @@ import math
 
 from .modeling import geometry
 from .parameters import field_info, InputError
+from .pdf_fonts import status as pdf_status
 
 
 def text(value):
@@ -70,6 +71,8 @@ button{padding:8px 20px;border:0;border-radius:5px;cursor:pointer}code{overflow-
 def render(snapshot):
     p, v = snapshot['inputs'], snapshot['values']
     title = snapshot['name']
+    pdf_link = (f'<a href="/api/v1/calculations/{escape(snapshot["calculation_id"])}/report.pdf" '
+                'style="color:white;margin-left:18px">下载 PDF</a>') if pdf_status()['available'] else ''
     content = [f'<header><span class="tag">DCSJ / ENGINEERING REPORT</span><h1>{text(title)}</h1>',
                '<p>电磁设计计算报告 · 固定计算快照</p>',
                f'<small>记录：{text(snapshot["calculation_id"])}<br>计算时间（UTC）：{text(snapshot["created_at"])}',
@@ -102,5 +105,5 @@ def render(snapshot):
     content.append('</div><p class="muted">本报告读取保存的输入和结果，不使用工作台中后来修改的参数。</p>')
     return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' + \
         '<title>' + text(title) + ' · DCSJ 报告</title><style>' + STYLE + '</style></head><body>' + \
-        '<div class="toolbar"><button type="button" onclick="window.print()">打印 / 保存 PDF</button>　A4 · 建议关闭浏览器默认页眉页脚</div>' + \
+        '<div class="toolbar"><button type="button" onclick="window.print()">网页打印</button>' + pdf_link + '　A4 · 建议关闭浏览器默认页眉页脚</div>' + \
         '<main>' + ''.join(content) + '</main></body></html>'

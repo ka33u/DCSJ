@@ -1,9 +1,11 @@
 FROM python:3.12-slim
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DCSJ_DATA_DIR=/app/.runtime
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DCSJ_DATA_DIR=/app/.runtime DCSJ_PDF_FONT=/app/fonts/DCSJPdfSans.ttf
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && useradd --create-home --uid 10001 dcsj
 COPY dcsj/*.py ./dcsj/
+COPY scripts/install_pdf_font.py ./scripts/
+RUN python scripts/install_pdf_font.py
 COPY frontend/ ./frontend/
 COPY data/schema.sql data/README.md ./data/
 COPY run.py ./

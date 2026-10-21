@@ -20,7 +20,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: python -m pip install -r requirements.txt pytest==9.1.1 httpx==0.28.1
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python scripts/install_pdf_font.py
       - run: python -m pytest -q
       - run: python scripts/check_public_scope.py
       - run: node --check frontend/app.js
@@ -31,6 +32,16 @@ jobs:
       - run: docker build -t dcsj-smoke .
       - run: docker run -d --name dcsj-smoke --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges --mount source=dcsj-smoke-data,target=/app/.runtime -p 127.0.0.1:8768:8767 dcsj-smoke
       - run: test "$(docker exec dcsj-smoke id -u)" = 10001
+      - run: |
+          docker exec -i dcsj-smoke python - <<'PY'
+          from dcsj.pdf_report import render
+          data = render({"name": "容器中文打印验证", "calculation_id": "synthetic-container-check",
+                         "created_at": "2026-01-01T00:00:00Z", "inputs": {"SizeX": "人工测试数据"},
+                         "values": {"ATA1": 0.9}, "warnings": ["人工测试结果，不是电机预测。"],
+                         "curves": [], "provenance": {}})
+          assert data.startswith(b"%PDF-") and b"/FontFile2" in data
+          print("Read-only container generated an embedded-font Chinese PDF:", len(data), "bytes")
+          PY
       - run: python tests/smoke_http.py http://127.0.0.1:8768 create /tmp/dcsj-smoke-id
       - run: docker restart dcsj-smoke
       - run: python tests/smoke_http.py http://127.0.0.1:8768 verify /tmp/dcsj-smoke-id

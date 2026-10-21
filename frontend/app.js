@@ -814,10 +814,17 @@
     } catch (error) { showToast(errorText(error), "error"); }
   }
   function reportLink(id) {
-    const link = el("a", "button button-small", "打印报告 ↗");
+    const links = el("span", "report-links");
+    const link = el("a", "button button-small", "网页打印 ↗");
     link.href = `/reports/${encodeURIComponent(id)}`;
     link.target = "_blank"; link.rel = "noopener";
-    return link;
+    links.append(link);
+    if (state.status?.reports?.pdf?.available) {
+      const pdf = el("a", "button button-small", "下载 PDF");
+      pdf.href = `/api/v1/calculations/${encodeURIComponent(id)}/report.pdf`;
+      links.append(pdf);
+    }
+    return links;
   }
   async function showHistory(project) {
     const container = $("#history-content");

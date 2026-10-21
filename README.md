@@ -12,6 +12,7 @@ python -m venv .venv
 source .venv/bin/activate
 # Windows PowerShell 使用 .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+python scripts/install_pdf_font.py
 python run.py
 ```
 
@@ -42,6 +43,7 @@ python run.py
 
 ```bash
 python -m pip install -r requirements-dev.txt
+python scripts/install_pdf_font.py
 python -m pytest -q
 python scripts/check_public_scope.py
 python scripts/package_release.py
@@ -61,7 +63,11 @@ python scripts/package_release.py
 
 取消在当前一次计算结束后生效。任务和候选存入设计数据库；异常退出后失去心跳的任务会在约 30 秒内标记为中断，保留已有结果，可按原配置重新运行。每个数据库同时执行一个寻优任务，交互计算与寻优共享两个计算席位，最多排队八个任务。
 
-结果页、对比列表与寻优候选均有「打印报告」入口。报告从固定快照生成 A4 页面，包含额定条件、输入、输出、曲线、尺寸图、警告及版本指纹；使用浏览器打印或保存 PDF。
+结果页、对比列表与寻优候选提供「网页打印」和「下载 PDF」。两种报告均从固定快照生成，包含额定条件、完整输入、完整输出、曲线、尺寸图、警告及版本指纹。PDF 直接由本机服务生成，嵌入中文字体和矢量图，并处理 A4 分页、重复表头及页码，不依赖浏览器打印设置。
+
+首次运行 `python scripts/install_pdf_font.py` 会从固定版本的 Noto 官方仓库下载字体和许可证、核对 SHA-256，再生成本地常规字重实例。字体缓存默认在 `.runtime/fonts/`，不进入公开仓库。已有字体通过校验后可完全离线重用；PDF 生成过程没有网络请求。`start.command`、`start.bat` 会尝试安装，Docker 构建会预装。也可通过 `DCSJ_PDF_FONT` 指定具有所需字形及嵌入许可的 TrueType 字体。缺少字体时 PDF 接口返回 503，网页打印仍可使用；字体不支持输入字符时返回明确错误，避免静默输出方框。
+
+PDF API：`GET /api/v1/calculations/{id}/report.pdf`。服务每次只生成一份 PDF，繁忙时返回 429；下载响应不缓存设计资料。
 
 ## 备份与恢复
 

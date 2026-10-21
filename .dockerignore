@@ -4,6 +4,8 @@
 !run.py
 !dcsj/
 !dcsj/*.py
+!scripts/
+!scripts/install_pdf_font.py
 !frontend/
 !frontend/**
 !data/

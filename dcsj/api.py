@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import __version__, catalog, projects, calculations, modeling
@@ -15,6 +15,8 @@ from .storage import ConflictError, NotFoundError
 from .parameters import EXAMPLE, ROOT, InputError, schema, validate
 from .engine import CalculationUnavailableError
 from . import jobs, optimization
+from . import pdf_fonts
+from .pdf_report import PDFUnavailableError, PDFContentError
 
 
 @asynccontextmanager
@@ -122,6 +124,16 @@ async def unavailable_error(request, error):
     return JSONResponse({"detail": str(error)}, status_code=503)
 
 
+@app.exception_handler(PDFUnavailableError)
+async def pdf_unavailable_error(request, error):
+    return JSONResponse({"detail": str(error)}, status_code=503)
+
+
+@app.exception_handler(PDFContentError)
+async def pdf_content_error(request, error):
+    return JSONResponse({"detail": str(error)}, status_code=422)
+
+
 @app.exception_handler(ConflictError)
 async def conflict_error(request, error):
     return JSONResponse({"detail": str(error)}, status_code=409)
@@ -161,7 +173,7 @@ async def input_error(request, error):
 def status():
     from .engine import engine_status
     return {"name": "DCSJ 电磁设计工作台", "version": __version__,
-            "catalog": catalog.stats(), "engine": engine_status()}
+            "catalog": catalog.stats(), "engine": engine_status(), "reports": {"pdf": pdf_fonts.status()}}
 
 
 @app.get("/api/v1/schema", tags=["设计"])
@@ -276,6 +288,18 @@ def list_calculations(limit: Annotated[int, Query(ge=1, le=100)] = 30,
 @app.get("/api/v1/calculations/{calculation_id}", tags=["计算记录与对比"])
 def get_calculation(calculation_id: str):
     return calculations.get(calculation_id)
+
+
+@app.get("/api/v1/calculations/{calculation_id}/report.pdf", response_class=Response,
+         responses={200: {"content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}}}},
+         tags=["打印报告"])
+def download_report(calculation_id: str):
+    from .pdf_report import render
+    snapshot = calculations.get(calculation_id)
+    return Response(render(snapshot), media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="DCSJ-{snapshot["calculation_id"]}.pdf"',
+        "Cache-Control": "no-store",
+    })
 
 
 @app.get("/reports/{calculation_id}", response_class=HTMLResponse, tags=["打印报告"])

@@ -5,3 +5,6 @@
 - REA / rea-agents：本地分析阶段使用的工具，上游 https://github.com/morluto/rea ，不是运行依赖，不随源码打包。
 
 原软件、型号、材料、分析记录及恢复的私有计算资源不在本公开仓库中。本项目没有为这些原始资源声明新的开源许可证。
+
+- ReportLab、fontTools：PDF 生成及本地静态字体实例处理，版本固定在 `requirements.txt`。
+- Noto Sans SC：PDF 中文字形来源，SIL Open Font License 1.1；上游为 https://github.com/notofonts/noto-cjk 。安装脚本固定上游提交和 SHA-256，在本地生成名为 DCSJ PDF Sans 的常规字重实例，并保存原许可证。字体文件不进入公开源码仓库；PDF 嵌入所需字形子集。[上游许可证](https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/LICENSE)

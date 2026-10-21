@@ -29,6 +29,7 @@ for attempt in range(30):
         time.sleep(1)
 assert status['engine']['status'] == 'unavailable'
 assert status['catalog']['model_count'] == 0
+assert status['reports']['pdf']['available'], 'Container must include the installed PDF font'
 if mode == 'create':
     saved = request('/api/v1/projects', {'name': 'Container smoke draft', 'parameters': {'kW': 12}})
     state_path.write_text(saved['id'])

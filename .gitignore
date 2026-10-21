@@ -23,4 +23,7 @@ scripts/*
 !scripts/bundle_catalog.py
 !scripts/package_release.py
 !scripts/backup.py
+!scripts/install_pdf_font.py
 !scripts/check_public_scope.py
+output/
+tmp/
