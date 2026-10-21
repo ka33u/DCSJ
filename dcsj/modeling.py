@@ -41,7 +41,7 @@ def templates(power_kw, poles, frequency_hz=50, phase_voltage=380, limit=12):
             "warnings": ["模板用于建立设计起点，额定值接近不代表几何、温升或机械性能已经符合要求。"]}
 
 
-def build(model_id, changes):
+def build(model_id, changes, rotor_outer_mm=None):
     original = catalog.model(model_id)
     if original is None:
         raise NotFoundError("模板型号不存在")
@@ -49,14 +49,32 @@ def build(model_id, changes):
     if unknown:
         raise InputError([{"field": key, "message": "此字段请在完整参数编辑器中修改"} for key in sorted(unknown)])
     before = validate(original["parameters"])
-    after = validate({**before, **changes})
+    candidate = {**before, **changes}
+    linkages = []
+    if rotor_outer_mm is not None:
+        if "g" in changes:
+            raise InputError([{"field": "g", "message": "转子外径联动与直接指定气隙不能同时使用"}])
+        dimensions = {"Di1": candidate["Di1"], "rotor_outer_mm": rotor_outer_mm}
+        for key, raw in dimensions.items():
+            try:
+                value = float(raw)
+                if isinstance(raw, bool) or not math.isfinite(value) or not 0 < value <= 1e9:
+                    raise ValueError
+                dimensions[key] = value
+            except (ValueError, TypeError):
+                raise InputError([{"field": key, "message": "尺寸必须是大于 0 且不超过 10⁹ 的有限数值"}]) from None
+        candidate["g"] = (dimensions["Di1"] - dimensions["rotor_outer_mm"]) / 2
+        linkages.append({"target": "g", "formula": "g = (Di1 - D2) / 2",
+                         "inputs": {"Di1": dimensions["Di1"], "D2": dimensions["rotor_outer_mm"]},
+                         "value": candidate["g"], "unit": "mm"})
+    after = validate(candidate)
     differences = [{**field_info(key), "before": before[key], "after": after[key]}
-                   for key in QUICK_FIELDS if after[key] != before[key]]
+                   for key in sorted(QUICK_FIELDS) if after[key] != before[key]]
     warnings = ["本次保留了模板的槽形、绕组等完整输入；任何改动都需要重新计算并核验。"]
     if any(key in changes and after[key] != before[key] for key in ("kW", "f", "Ufai", "Jiefa")):
         warnings.append("额定条件已变更，绕组与几何尺寸未作未经验证的自动推算。")
     return {"name": after["SizeX"], "parameters": after, "source": original["source"],
-            "template_id": model_id, "changes": differences, "warnings": warnings,
+            "template_id": model_id, "changes": differences, "linkages": linkages, "warnings": warnings,
             "geometry": geometry(after)}
 
 

@@ -116,7 +116,10 @@
             <label>频率 Hz<input class="text-input" id="template-frequency" type="number" min="1" max="1000" step="any" value="50" required></label>
             <label>相电压 V<input class="text-input" id="template-voltage" type="number" min="1" max="50000" step="any" value="230" required></label>
             <button class="button button-primary" type="submit">寻找模板</button></form><div id="template-list" class="template-list"></div></section>
-          <section id="quick-editor" class="panel feature-content hidden"><h2 id="quick-template-name">模板参数</h2><p class="muted">仅应用明确修改的值。不会自动猜测槽形与绕组。</p><form id="quick-model-form"><div id="quick-fields" class="quick-form"></div><div class="feature-actions"><button class="button" type="submit">校验并预览</button><button class="button button-primary" type="button" id="apply-quick-model" disabled>载入工作台</button></div></form></section>
+          <section id="quick-editor" class="panel feature-content hidden"><h2 id="quick-template-name">模板参数</h2><p class="muted">修改参数后校验并预览，再载入工作台重新计算。</p><form id="quick-model-form">
+            <div class="quick-form quick-linkage"><label>气隙输入方式<select class="text-input" id="quick-gap-mode"><option value="gap">直接输入气隙 g</option><option value="rotor">由转子外径 D2 联动气隙</option></select></label><label id="quick-rotor-field" class="hidden">转子外径 D2 · mm<input class="text-input" id="quick-rotor-diameter" type="number" min="0.000001" max="1000000000" step="any" disabled aria-describedby="quick-gap-note"></label></div>
+            <p id="quick-gap-note" class="muted small" aria-live="polite">直接编辑气隙；其他尺寸保持各自输入值。</p>
+            <div id="quick-fields" class="quick-form"></div><div class="feature-actions"><button class="button" type="submit">校验并预览</button><button class="button button-primary" type="button" id="apply-quick-model" disabled>载入工作台</button></div></form></section>
           <section id="geometry-preview" class="panel feature-content hidden" aria-live="polite"></section>
         </section>
         <section class="page" id="view-optimization" aria-labelledby="optimization-title">

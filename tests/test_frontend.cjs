@@ -252,6 +252,61 @@ test('quick modeling applies only the current validated preview and ignores stal
   assert.equal(ui.doc.querySelector('#result-badge').textContent, '等待计算');
 });
 
+test('rotor diameter linkage updates the gap, invalidates stale previews and can return to direct input', async t => {
+  const base = { ...parameters, Di1: 180, Di2: 50, D1: 300, g: .6, L: 160 };
+  const pending = deferred(); let count = 0;
+  const preview = body => ({ name: '联动方案', parameters: { ...base, ...body.changes,
+    g: body.rotor_outer_mm === undefined ? body.changes.g : (body.changes.Di1 - body.rotor_outer_mm) / 2 },
+    source: '人工模板', geometry: { svg: '<svg xmlns="http://www.w3.org/2000/svg"/>', warnings: [] }, changes: [], warnings: [],
+    linkages: body.rotor_outer_mm === undefined ? [] : [{ target: 'g', formula: 'g = (Di1 - D2) / 2',
+      inputs: { Di1: body.changes.Di1, D2: body.rotor_outer_mm }, value: 1.8, unit: 'mm' }] });
+  const ui = await app(t, (path, request) => {
+    if (path === '/modeling/templates') return { warnings: [], items: [{ id: 'm', model: '人工模板' }] };
+    if (path === '/models/m') return { id: 'm', parameters: base };
+    if (path === '/modeling/preview') return ++count === 1 ? pending.promise : preview(request.body);
+  });
+  ui.nav('modeling');
+  ui.doc.querySelector('#template-search').dispatchEvent(new ui.w.Event('submit', { cancelable: true }));
+  await until(() => ui.doc.querySelector('#template-list button'), 'Template is listed');
+  ui.find('#template-list button', '选用模板').click();
+  await until(() => ui.doc.querySelector('#quick-fields input[data-key="g"]'), 'Editor opens');
+  const mode = ui.doc.querySelector('#quick-gap-mode'), rotor = ui.doc.querySelector('#quick-rotor-diameter');
+  const gap = ui.doc.querySelector('#quick-fields input[data-key="g"]');
+  const bore = ui.doc.querySelector('#quick-fields input[data-key="Di1"]');
+  const submit = () => ui.doc.querySelector('#quick-model-form').dispatchEvent(new ui.w.Event('submit', { cancelable: true }));
+  const changeMode = value => { mode.value = value; mode.dispatchEvent(new ui.w.Event('change')); };
+  assert.equal(gap.readOnly, false); assert.equal(rotor.disabled, true);
+  changeMode('rotor');
+  assert.equal(gap.readOnly, true); assert.equal(rotor.value, '178.8');
+  rotor.value = '178.4'; rotor.dispatchEvent(new ui.w.Event('input'));
+  assert.ok(Math.abs(Number(gap.value) - .8) < 1e-10);
+  bore.value = '182'; bore.dispatchEvent(new ui.w.Event('input'));
+  assert.ok(Math.abs(Number(gap.value) - 1.8) < 1e-10);
+  submit();
+  const sent = ui.calls.find(call => call.url.pathname.endsWith('/modeling/preview')).body;
+  assert.equal(sent.rotor_outer_mm, 178.4);
+  assert.equal(Object.hasOwn(sent.changes, 'g'), false, 'Server receives one source of truth for the gap');
+  changeMode('gap');
+  pending.release(preview(sent)); await settle();
+  assert.equal(ui.doc.querySelector('#apply-quick-model').disabled, true, 'Switching input mode invalidates pending preview');
+  assert.equal(gap.readOnly, false); assert.equal(rotor.disabled, true);
+  gap.value = '1.8'; gap.dispatchEvent(new ui.w.Event('input')); submit();
+  await until(() => !ui.doc.querySelector('#apply-quick-model').disabled, 'Direct mode validates');
+  const direct = ui.calls.filter(call => call.url.pathname.endsWith('/modeling/preview')).at(-1).body;
+  assert.equal(Object.hasOwn(direct, 'rotor_outer_mm'), false); assert.equal(direct.changes.g, 1.8);
+  changeMode('rotor');
+  assert.equal(ui.doc.querySelector('#apply-quick-model').disabled, true);
+  assert.match(ui.doc.querySelector('#geometry-preview').textContent, /参数已更改/);
+  rotor.value = '182'; rotor.dispatchEvent(new ui.w.Event('input'));
+  assert.equal(rotor.validity.valid, false, 'A zero gap cannot be submitted');
+  rotor.value = '178.4'; rotor.dispatchEvent(new ui.w.Event('input'));
+  assert.equal(rotor.validity.valid, true); submit();
+  await until(() => !ui.doc.querySelector('#apply-quick-model').disabled, 'Linked mode validates');
+  assert.match(ui.doc.querySelector('#geometry-preview').textContent, /g = \(Di1 - D2\) \/ 2/);
+  ui.doc.querySelector('#apply-quick-model').click();
+  assert.ok(Math.abs(JSON.parse(ui.doc.querySelector('#raw-parameters').textContent).g - 1.8) < 1e-10);
+});
+
 test('saving a comparison freezes the displayed selection and reopens after a fresh page load', async t => {
   let saved;
   const result = { baseline_id: 'b', warnings: [], metrics: [], parameter_differences: [],

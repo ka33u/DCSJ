@@ -1035,8 +1035,37 @@
     } catch (error) { if (request === templateRequest) container.replaceChildren(el("p", "inline-error", errorText(error))); }
   }
   let quickRequest = 0;
+  function invalidateQuickPreview() {
+    ++quickRequest; state.quickPreview = null;
+    $("#apply-quick-model").disabled = true;
+    const preview = $("#geometry-preview");
+    if (!preview.classList.contains("hidden")) preview.replaceChildren(el("p", "muted", "参数已更改，请重新校验并预览。"));
+  }
+  function syncQuickGap() {
+    const gap = $('#quick-fields input[data-key="g"]');
+    if (!gap) return;
+    const linked = $("#quick-gap-mode").value === "rotor", rotor = $("#quick-rotor-diameter");
+    gap.readOnly = linked; rotor.disabled = !linked; rotor.required = linked;
+    $("#quick-rotor-field").classList.toggle("hidden", !linked);
+    rotor.setCustomValidity("");
+    if (!linked) {
+      $("#quick-gap-note").textContent = "直接编辑气隙；其他尺寸保持各自输入值。";
+      return;
+    }
+    const bore = $('#quick-fields input[data-key="Di1"]'), shaft = $('#quick-fields input[data-key="Di2"]');
+    const hasValues = bore.value !== "" && rotor.value !== "";
+    const diameter = Number(rotor.value), boreValue = Number(bore.value), derived = (boreValue - diameter) / 2;
+    gap.value = hasValues && Number.isFinite(derived) ? String(derived) : "";
+    const valid = hasValues && Number.isFinite(derived) && diameter > 0 && diameter < boreValue &&
+      shaft.value !== "" && diameter > Number(shaft.value);
+    if (!valid) rotor.setCustomValidity("转子外径须大于轴孔直径、小于定子内径；请检查尺寸。横截面必须保留正气隙。");
+    $("#quick-gap-note").textContent = valid
+      ? `g = (Di1 − D2) / 2 = (${fmt(boreValue)} − ${fmt(diameter)}) / 2 = ${fmt(derived)} mm。修改定子内径时保持 D2，重新计算气隙。`
+      : "输入有效的定子内径与转子外径后，按 g = (Di1 − D2) / 2 计算气隙；轴孔直径须小于转子外径。";
+  }
   async function chooseTemplate(item) {
-    const request = ++quickRequest;
+    invalidateQuickPreview();
+    const request = quickRequest;
     try {
       const model = await api(`/models/${item.id}`);
       if (request !== quickRequest) return;
@@ -1047,18 +1076,21 @@
       const keys = ["SizeX", "kW", "f", "Ufai", "Jiefa", "Paihao", "D1", "Di1", "Di2", "g", "L", "Q1", "Q2", "ZZ", "a", "JJ", "Djj", "MM", "Dmm"];
       keys.forEach(key => {
         const field = state.schema.fields.find(f => f.key === key) || { label: key };
-        const label = el("label", "", `${field.label} (${key})`), input = el("input", "text-input");
+        const label = el("label", "", `${field.label} (${key})${field.unit ? ` · ${field.unit}` : ""}`), input = el("input", "text-input");
         input.value = model.parameters[key] ?? ""; input.dataset.key = key;
         input.type = ["SizeX", "Jiefa", "Paihao"].includes(key) ? "text" : "number";
         input.step = "any"; input.required = true;
-        input.addEventListener("input", () => { ++quickRequest; state.quickPreview = null; $("#apply-quick-model").disabled = true; });
+        input.addEventListener("input", () => { syncQuickGap(); invalidateQuickPreview(); });
         label.append(input); container.append(label);
       });
+      $("#quick-gap-mode").value = "gap";
+      $("#quick-rotor-diameter").value = "";
+      syncQuickGap();
       $("#quick-editor").classList.remove("hidden");
       $("#quick-editor").scrollIntoView({ block: "start", behavior: "smooth" });
     } catch (error) { showToast(errorText(error), "error"); }
   }
-  function showGeometry(data, changes = [], warnings = []) {
+  function showGeometry(data, changes = [], warnings = [], linkages = []) {
     const container = $("#geometry-preview"); container.classList.remove("hidden"); container.replaceChildren(el("h2", "", "尺寸与变更预览"));
     const image = el("img", "geometry-image");
     image.alt = "铁心尺寸与槽位示意图";
@@ -1066,6 +1098,9 @@
     image.onload = image.onerror = () => URL.revokeObjectURL(url); image.src = url;
     container.append(image);
     const box = warningsNode([...warnings, ...data.warnings], "使用说明"); if (box) container.append(box);
+    if (linkages.length) container.append(featureTable(["联动公式", "输入尺寸", "派生值"], linkages.map(link => [
+      link.formula, Object.entries(link.inputs).map(([key, value]) => `${key} = ${fmt(value)} ${link.unit}`).join("；"),
+      `${link.target} = ${fmt(link.value)} ${link.unit}`])));
     if (changes.length) container.append(featureTable(["参数", "模板值", "当前值"], changes.map(change => [change.label, fmt(change.before), fmt(change.after)])));
     container.scrollIntoView({ block: "start", behavior: "smooth" });
   }
@@ -1074,10 +1109,15 @@
     const request = ++quickRequest;
     try {
       const changes = Object.fromEntries($$("#quick-fields input").map(input => [input.dataset.key, input.type === "number" ? Number(input.value) : input.value]));
-      const item = await api("/modeling/preview", { method: "POST", body: JSON.stringify({ model_id: state.quickTemplate.id, changes }) });
+      const body = { model_id: state.quickTemplate.id, changes };
+      if ($("#quick-gap-mode").value === "rotor") {
+        delete changes.g;
+        body.rotor_outer_mm = Number($("#quick-rotor-diameter").value);
+      }
+      const item = await api("/modeling/preview", { method: "POST", body: JSON.stringify(body) });
       if (request !== quickRequest) return;
       state.quickPreview = item; $("#apply-quick-model").disabled = false;
-      showGeometry(item.geometry, item.changes, item.warnings);
+      showGeometry(item.geometry, item.changes, item.warnings, item.linkages);
     } catch (error) { if (request === quickRequest) showToast(errorText(error), "error"); }
   }
 
@@ -1256,6 +1296,14 @@
   $("#calculation-next").addEventListener("click", () => { state.calculationOffset += 20; loadCalculations(); });
   $("#template-search").addEventListener("submit", searchTemplates);
   $("#quick-model-form").addEventListener("submit", previewQuickModel);
+  $("#quick-gap-mode").addEventListener("change", () => {
+    if ($("#quick-gap-mode").value === "rotor") {
+      const bore = $('#quick-fields input[data-key="Di1"]'), gap = $('#quick-fields input[data-key="g"]');
+      $("#quick-rotor-diameter").value = bore?.value && gap?.value ? String(Number(bore.value) - 2 * Number(gap.value)) : "";
+    }
+    syncQuickGap(); invalidateQuickPreview();
+  });
+  $("#quick-rotor-diameter").addEventListener("input", () => { syncQuickGap(); invalidateQuickPreview(); });
   $("#apply-quick-model").addEventListener("click", () => {
     if (!state.quickPreview || state.busy) return;
     const item = state.quickPreview;

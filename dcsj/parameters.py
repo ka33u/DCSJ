@@ -149,7 +149,7 @@ def validate(values):
         if key == "_wire_target" and not 0 <= number < 1:
             issues.append({"field": key, "message": "必须在 [0, 1) 范围"})
     if all(key in clean for key in ("D1", "Di1", "Di2", "g")):
-        if not 0 <= clean["Di2"] < clean["Di1"] - 2 * clean["g"] < clean["D1"]:
+        if not 0 <= clean["Di2"] < clean["Di1"] - 2 * clean["g"] < clean["Di1"] < clean["D1"]:
             issues.append({"field": "Di1", "message": "须满足轴孔直径 < 转子外径 < 定子内径 < 定子外径"})
     if clean.get("p", 2) % 2:
         issues.append({"field": "p", "message": "极数必须为偶数"})

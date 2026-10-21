@@ -119,6 +119,9 @@ class QuickModelInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model_id: str = Field(min_length=1, max_length=100)
     changes: dict[str, str | float | int | None] = Field(default_factory=dict)
+    rotor_outer_mm: float | None = Field(
+        default=None, gt=0, le=1e9, allow_inf_nan=False, strict=True,
+        description="可选转子外径 D2（mm）。按 g=(Di1-D2)/2 联动气隙；此时 changes 不得包含 g。")
 
 
 @app.exception_handler(NotFoundError)
@@ -370,7 +373,7 @@ def model_templates(power_kw: Annotated[float, Query(gt=0, le=100000, allow_inf_
 
 @app.post("/api/v1/modeling/preview", tags=["快速建模"])
 def quick_model(body: QuickModelInput):
-    return modeling.build(body.model_id, body.changes)
+    return modeling.build(body.model_id, body.changes, body.rotor_outer_mm)
 
 
 @app.post("/api/v1/geometry/preview", tags=["快速建模"])
