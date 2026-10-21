@@ -1,6 +1,6 @@
 # DCSJ 电磁设计工作台
 
-面向三相异步电动机设计的中文网页工作台，提供版本化 HTTP API 和离线接口文档。支持 macOS、Windows 和 Linux，使用 Python 3.12。
+面向三相异步电动机设计的中文网页工作台，提供版本化 HTTP API 和离线接口文档。支持 macOS、Windows 和 Linux，要求 Python 3.12 或更新版本；CI 使用 Python 3.12 验证。
 
 本仓库只发布应用源码、通用测试和部署说明。**不包含型号库、材料数据、原软件、分析资料及私有计算资源。** 全新克隆可启动界面、API、方案管理；实际电磁计算需要在本机安装授权的私有资源，见 [安装资源说明](data/README.md)。
 
@@ -17,6 +17,8 @@ python run.py
 ```
 
 工作台：http://127.0.0.1:8767 ，API 文档：http://127.0.0.1:8767/docs 。也可使用 `start.command` 或 `start.bat`。
+
+启动脚本会核对 `requirements.txt` 中每个依赖的固定版本，缺失或不一致时安装对应版本；再次启动且版本一致时跳过安装。首次安装及升级依赖需要网络。已有 `.venv` 若使用低于 3.12 的 Python，会明确报错并停止；请先安装受支持的 Python，再重命名旧 `.venv` 并重新创建虚拟环境，设计数据无需搬动。
 
 设计、计算记录保存在 `.runtime/projects.sqlite`，与只读型号库分开。通过 `DCSJ_DATA_DIR` 改变运行数据目录，或通过 `DCSJ_PROJECTS_DB` 单独指定设计数据库路径。服务默认只监听本机，适合个人工作站。
 
@@ -49,11 +51,14 @@ python scripts/install_pdf_font.py
 python -m pytest -q
 npm ci --ignore-scripts --registry=https://registry.npmjs.org
 npm test
+python tests/smoke_startup.py
 python scripts/check_public_scope.py
 python scripts/package_release.py
 ```
 
 公共测试使用人工构造的测试输入，不携带真实型号或材料数据。前端测试需要 Node.js 24.15 以上的 24.x 版本或 26 及以上版本，通过 jsdom 执行实际 HTML 和脚本，检查型号载入、项目版本与归档、快照切换和异步请求顺序；不连接真实服务，也不替代浏览器布局和打印验收。运行应用本身无需 Node.js。私有数值验证仅在安装相应本地资源后运行。CI 覆盖 Windows、macOS 和 Linux；打包脚本只收录通过路径检查的 Git 源码文件。
+
+`smoke_startup.py` 在包含中文和空格的临时源码目录运行对应平台的真实启动脚本：创建新虚拟环境、安装依赖、通过 HTTP 保存及修改人工方案，然后重启并核对版本历史。测试使用独立设计库和已安装的字体，需要安装依赖的网络权限，不读取工作站的设计数据库。
 
 已有数值核仍需实际电机及第三方计算校核，材料损耗单位和最大转矩估计差异有待工程确认。当前版本不宣称完成商用认证或全部设计空间验证。第三方组件见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
@@ -96,3 +101,5 @@ python scripts/backup.py restore .runtime/restored.sqlite --source .runtime/back
 Docker 用户可运行 `docker compose up --build -d`。配置默认只映射 `127.0.0.1:8767`，以非 root 用户运行，并将设计库保存在命名卷中。镜像仅复制源码和空表结构。容器部署仍需在本机将授权资源分别只读挂载到 `/app/data/catalog.sqlite`、`/app/data/material_kernel_tables.json` 及 `/app/dcsj/generated/numeric_kernel.json.gz` 后才能进行实际计算；可选挂载 `/app/data/example.json`。
 
 当前服务是单工作站/可信本地使用模式，不包含多租户权限、计费或商用许可证管理。若部署给多用户，须先在反向代理配置身份认证、TLS 和访问控制；不要直接将无认证 API 暴露到公网。升级前备份设计库，运行测试并保留旧版源码及计算资源；启动会自动迁移旧版设计表，旧版本参数会保留。
+
+程序拒绝打开结构版本高于自身支持版本的设计库，不会将其版本号降级。需要回退应用时，应将升级前备份恢复到新路径再切换；新版本创建的数据仍保留在原数据库中。备份及恢复的 SHA-256 校验采用分块读取，避免大设计库占用等量内存。

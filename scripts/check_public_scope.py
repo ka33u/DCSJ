@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TOP_FILES = {'README.md', 'ROADMAP.md', 'THIRD_PARTY.md', '.gitignore', '.env.example',
              'requirements.txt', 'requirements-dev.txt', 'run.py', 'start.command', 'start.bat',
              'Dockerfile', '.dockerignore', 'compose.yaml', 'package.json', 'package-lock.json'}
-SCRIPTS = {'bundle_catalog.py', 'package_release.py', 'check_public_scope.py', 'backup.py', 'install_pdf_font.py'}
+SCRIPTS = {'bundle_catalog.py', 'package_release.py', 'check_public_scope.py', 'backup.py', 'install_pdf_font.py', 'check_dependencies.py'}
 
 
 def allowed(name):

@@ -1,11 +1,15 @@
 """Consistent SQLite backup with integrity verification; never overwrites a file."""
 from contextlib import closing
 import hashlib
-import json
 import os
 from pathlib import Path
 import sqlite3
 import tempfile
+
+
+def digest(path):
+    with Path(path).open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
 def backup(source, destination):
@@ -29,7 +33,7 @@ def backup(source, destination):
         # Hard link creation is atomic and fails if another process created the target.
         os.link(temporary, destination)
         info = {'file': destination.name, 'bytes': destination.stat().st_size,
-                'sha256': hashlib.sha256(destination.read_bytes()).hexdigest(), 'quick_check': 'ok'}
+                'sha256': digest(destination), 'quick_check': 'ok'}
         return info
     finally:
         if temporary is not None:
@@ -39,6 +43,6 @@ def backup(source, destination):
 def restore(source, destination, expected_sha256=None):
     """Restore to a NEW path only; deployment switches paths after stopping the service."""
     source = Path(source)
-    if expected_sha256 and hashlib.sha256(source.read_bytes()).hexdigest() != expected_sha256:
+    if expected_sha256 and digest(source) != expected_sha256:
         raise ValueError('备份文件校验和不匹配')
     return backup(source, destination)

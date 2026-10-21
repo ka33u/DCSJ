@@ -8,6 +8,7 @@ import sqlite3
 import threading
 
 ROOT = Path(__file__).resolve().parents[1]
+SCHEMA_VERSION = 3
 _migration_lock = threading.Lock()
 _initialized = set()
 
@@ -18,6 +19,19 @@ class NotFoundError(ValueError):
 
 class ConflictError(ValueError):
     pass
+
+
+class UnsupportedDatabaseVersion(RuntimeError):
+    pass
+
+
+def _check_version(db):
+    version = db.execute('PRAGMA user_version').fetchone()[0]
+    if version > SCHEMA_VERSION:
+        raise UnsupportedDatabaseVersion(
+            f'设计库结构版本 {version} 高于当前程序支持的 {SCHEMA_VERSION}。'
+            '请使用对应的新版本程序，或将升级前备份恢复到新路径；当前程序不会降级此数据库。')
+    return version
 
 
 def now():
@@ -36,10 +50,11 @@ def database_path():
 def _migrate(db, path):
     identity = (str(path.resolve()), path.stat().st_ino)
     with _migration_lock:
-        if identity in _initialized:
+        if _check_version(db) == SCHEMA_VERSION and identity in _initialized:
             return
         db.execute("BEGIN IMMEDIATE")
         try:
+            _check_version(db)
             db.execute("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
                        "parameters TEXT NOT NULL, updated_at TEXT NOT NULL)")
             fields = {row[1] for row in db.execute("PRAGMA table_info(projects)")}
@@ -75,7 +90,7 @@ def _migrate(db, path):
                 db.execute(statement)
             db.execute("INSERT OR IGNORE INTO project_revisions "
                        "SELECT id,revision,name,parameters,notes,updated_at FROM projects")
-            db.execute("PRAGMA user_version=3")
+            db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             db.commit()
             _initialized.add(identity)
         except BaseException:
@@ -90,6 +105,7 @@ def connect(path=None):
     db = sqlite3.connect(path, timeout=15)
     db.row_factory = sqlite3.Row
     try:
+        _check_version(db)
         db.execute("PRAGMA foreign_keys=ON")
         db.execute("PRAGMA journal_mode=WAL")
         _migrate(db, path)

@@ -27,6 +27,7 @@ jobs:
       - run: node --check frontend/app.js
       - run: npm ci --ignore-scripts --registry=https://registry.npmjs.org
       - run: npm test
+      - run: python tests/smoke_startup.py
   container:
     runs-on: ubuntu-latest
     steps:
