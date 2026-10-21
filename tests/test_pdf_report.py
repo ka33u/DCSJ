@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pypdf import PdfReader
 
-from dcsj import calculations, pdf_fonts, pdf_report
+from dcsj import calculations, pdf_fonts, pdf_report, reports
 from dcsj.storage import now
 
 
@@ -68,9 +68,47 @@ def test_long_text_and_curve_content_survive_pagination(snapshot):
          'series': [{'name': f'系列 {i}', 'points': [{'x': 0, 'y': i}, {'x': 1, 'y': i + 1}]} for i in range(4)]},
         {'title': '未收敛曲线', 'x_label': '转差率', 'y_label': '倍数', 'series': [{'name': '转矩', 'points': []}]}]
     reader, text = pdf_text(pdf_report.render(value))
-    assert re.sub(r'\s+', '', text).count('长说明内容') == 150
+    assert '长说明内容' not in text
+    # A repeated phrase may cross a page header in the full-input table.
+    assert text.count('含') == 36
     assert '系列 3' in text and '未产生有效采样点' in text
     assert '计算来源与版本' in text and len(reader.pages) < 15
+
+
+def test_compact_first_page_shows_targets_slots_and_distinct_torque_peak(snapshot):
+    value = saved_snapshot(snapshot)
+    value['created_at'] = '2026-01-01T20:00:00+00:00'
+    value['inputs'].update(ATA=.85, PF=.75, IST=7, TST=2, TM=2.5,
+                           b01=3, hs0=1, bs1=6, bs2=8, zs1=30,
+                           zc=2, bc02=2, hr0=1, br1=5, br2=3, zs2=20)
+    value['values'].update(ATA1=.9, PF1=.8, IST1=6, TST1=2.2, TM1=2.7, Gal=8.12345)
+    value['engine']['limitations'] = ['不应输出的边界内容']
+    value['curves'] = [{'id': 'slip', 'title': '合成测试曲线', 'x_label': 's', 'y_label': '倍数',
+                        'series': [{'name': '电流', 'points': [{'x': 1, 'y': 6}]},
+                                   {'name': '转矩', 'points': [{'x': .4, 'y': 3.1}, {'x': 1, 'y': 2.2}]}]}]
+    reader, text = pdf_text(pdf_report.render(value))
+    first = reader.pages[0].extract_text()
+    for label in ('额定条件', '铁心与槽型', '绕组与导线', '设计目标与计算结果', '运行与电磁指标',
+                  'b01=3', 'br2=3', '最大转矩（原公式）', '转矩曲线采样峰值', 's=0.4', '8.12345 kg',
+                  '2026-01-02 04:00:00'):
+        assert label in first
+    assert re.search(r'效率 η\s+85\s+90\s+\+5\s+%', first)
+    assert re.search(r'最大转矩（原公式）\s+2.5\s+2.7\s+\+0.2\s+倍', first)
+    html = reports.render(value)
+    assert '<td>效率 η</td><td>85</td><td>90</td><td>+5</td><td>%</td>' in html
+    assert '<td>转矩曲线采样峰值</td><td>—</td><td>3.1</td><td>s=0.4</td>' in html
+    assert 'viewBox="0 0 180 170"' in html
+    for excluded in ('适用边界与计算提示', '不应输出的边界内容', value['warnings'][0], '计算结果须经工程校核'):
+        assert excluded not in html and excluded not in text
+
+
+def test_missing_design_targets_remain_blank_in_summary(snapshot):
+    value = saved_snapshot(snapshot)
+    del value['inputs']['ATA']
+    del value['values']['PF1']
+    html = reports.render(value)
+    assert '<td>效率 η</td><td>—</td><td>90</td><td>—</td>' in html
+    assert '<td>功率因数 cosφ</td><td>0.8</td><td>—</td><td>—</td>' in html
 
 
 def test_unsupported_characters_fail_instead_of_silent_missing_glyph(snapshot):

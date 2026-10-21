@@ -3,7 +3,6 @@ from functools import lru_cache
 from html import escape
 from io import BytesIO
 import hashlib
-import math
 import re
 import threading
 
@@ -19,7 +18,9 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from . import pdf_fonts
 from .execution import BusyError
 from .curves import plot_data
-from .parameters import field_info, validate, InputError, ELEMENT_KEYS
+from .parameters import field_info, ELEMENT_KEYS
+from . import report_summary as summary
+from .slot_diagrams import slot_drawings
 
 INK = colors.HexColor('#17323f')
 TEAL = colors.HexColor('#26795e')
@@ -74,37 +75,35 @@ def _font():
     return _load_font(str(path.resolve()), stat.st_mtime_ns, stat.st_size)
 
 
-class Geometry(Flowable):
-    def __init__(self, parameters, font):
+class Slot(Flowable):
+    def __init__(self, panel, font):
         super().__init__()
-        self.p, self.font = validate(parameters), font
-        self.width, self.height = WIDTH, 225
+        self.panel, self.font = panel, font
+        self.width, self.height = panel['width'], panel['height']
 
     def draw(self):
-        p, c = self.p, self.canv
-        outer, bore = p['D1'] / 2, p['Di1'] / 2
-        rotor, shaft = bore - p['g'], p['Di2'] / 2
-        scale = 93 / outer
-        cx, cy = 125, 112
-        for radius, fill, stroke in [(outer, '#dfe8ed', '#657b87'), (bore, '#ffffff', '#657b87'),
-                                      (rotor, '#d8e9df', '#2e7960'), (shaft, '#ffffff', '#2e7960')]:
-            c.setFillColor(colors.HexColor(fill)); c.setStrokeColor(colors.HexColor(stroke))
-            c.circle(cx, cy, radius * scale, fill=1, stroke=1)
-        for count, radius, depth, color in [
-            (int(p['Q1']), bore, min(p['hs0'] + p['hs12'], outer - bore) * .8, '#647c9c'),
-            (int(p['Q2']), rotor, -min(p['hr12'] + p['hr3'], rotor - shaft) * .65, '#b77c42')]:
-            if count > 240:
-                continue
-            c.setStrokeColor(colors.HexColor(color)); c.setLineWidth(1.2)
-            for index in range(count):
-                angle = 2 * math.pi * index / count
-                c.line(cx + radius * scale * math.cos(angle), cy + radius * scale * math.sin(angle),
-                       cx + (radius + depth) * scale * math.cos(angle), cy + (radius + depth) * scale * math.sin(angle))
-        c.setFillColor(INK); c.setFont(self.font, 10)
-        rows = [('D1', p['D1']), ('Di1', p['Di1']), ('D2', rotor * 2), ('Di2', p['Di2']),
-                ('g', p['g']), ('L', p['L']), ('Q1', p['Q1']), ('Q2', p['Q2'])]
-        for index, (key, value) in enumerate(rows):
-            c.drawString(285, 199 - index * 24, f'{key} = {value:g}' + ('' if key.startswith('Q') else ' mm'))
+        c, panel = self.canv, self.panel
+        c.saveState()
+        for item in panel['paths']:
+            path = c.beginPath()
+            for op, *coords in item['commands']:
+                coords = [self.height - n if i % 2 else n for i, n in enumerate(coords)]
+                {'M': path.moveTo, 'L': path.lineTo, 'C': path.curveTo, 'Z': path.close}[op](*coords)
+            c.setStrokeColor(colors.HexColor(item['stroke'])); c.setLineWidth(.85)
+            fill = item.get('fill', 'none')
+            if fill != 'none':
+                c.setFillColor(colors.HexColor(fill))
+            c.drawPath(path, stroke=1, fill=int(fill != 'none'))
+        for line in panel['lines']:
+            c.setStrokeColor(colors.HexColor(line.get('stroke', '#687984'))); c.setLineWidth(.45)
+            c.setDash(line.get('dash', []))
+            c.line(line['x1'], self.height-line['y1'], line['x2'], self.height-line['y2'])
+        c.setDash([]); c.setFillColor(INK)
+        for item in panel['texts']:
+            c.setFont(self.font, item.get('size', 6.5))
+            draw = {'start': c.drawString, 'middle': c.drawCentredString, 'end': c.drawRightString}[item.get('anchor', 'start')]
+            draw(item['x'], self.height-item['y'], item['text'])
+        c.restoreState()
 
 
 class Curve(Flowable):
@@ -124,7 +123,7 @@ class Curve(Flowable):
         plot = self.plot
         if not plot:
             c.setFont(self.font, 9); c.setFillColor(MUTED)
-            c.drawString(43, 180, '此曲线未产生有效采样点，请查看计算提示。')
+            c.drawString(43, 180, '此曲线未产生有效采样点。')
             return
         xmin, xmax = plot['x_min'], plot['x_max']
         axes = plot['y_axes']
@@ -179,16 +178,18 @@ def _render(snapshot):
     styles = {
         'body': ParagraphStyle('body', fontName=font, fontSize=8.4, leading=12.8, textColor=INK,
                                spaceAfter=5, wordWrap='CJK', splitLongWords=True),
-        'title': ParagraphStyle('title', fontName=font, fontSize=23, leading=30, textColor=INK,
-                                spaceAfter=10, wordWrap='CJK', keepWithNext=True),
+        'title': ParagraphStyle('title', fontName=font, fontSize=16, leading=21, textColor=INK,
+                                spaceAfter=4, wordWrap='CJK', keepWithNext=True),
         'h2': ParagraphStyle('h2', fontName=font, fontSize=13.5, leading=19, textColor=TEAL,
                              spaceBefore=13, spaceAfter=9, wordWrap='CJK', keepWithNext=True),
         'caption': ParagraphStyle('caption', fontName=font, fontSize=9, leading=13, textColor=INK,
                                   spaceBefore=10, spaceAfter=4, wordWrap='CJK', keepWithNext=True),
         'cell': ParagraphStyle('cell', fontName=font, fontSize=7.4, leading=10.8, textColor=INK,
                                wordWrap='CJK', splitLongWords=True),
-        'warning': ParagraphStyle('warning', fontName=font, fontSize=8, leading=12, textColor=colors.HexColor('#72501e'),
-                                  backColor=colors.HexColor('#fff9ed'), borderPadding=6, spaceAfter=8, wordWrap='CJK'),
+        'sh2': ParagraphStyle('sh2', fontName=font, fontSize=10, leading=13, textColor=TEAL,
+                              spaceBefore=7, spaceAfter=3, wordWrap='CJK', keepWithNext=True),
+        'compact': ParagraphStyle('compact', fontName=font, fontSize=7.2, leading=10, textColor=INK,
+                                  wordWrap='CJK', splitLongWords=True),
         'small': ParagraphStyle('small', fontName=font, fontSize=7.4, leading=10.5, textColor=MUTED,
                                 spaceAfter=4, wordWrap='CJK', splitLongWords=True),
     }
@@ -196,49 +197,49 @@ def _render(snapshot):
     def paragraph(value, style='body'):
         return checked_paragraph(value, styles[style], cmap)
 
-    def table(headers, rows, widths):
-        grid = [[paragraph(h, 'cell') for h in headers]] + [[paragraph(v, 'cell') for v in row] for row in rows]
-        result = Table(grid, colWidths=widths, repeatRows=1, splitInRow=1, hAlign='LEFT')
+    def table(headers, rows, widths, compact=False):
+        style = 'compact' if compact else 'cell'
+        grid = ([[paragraph(h, style) for h in headers]] if headers else []) + [[paragraph(v, style) for v in row] for row in rows]
+        result = Table(grid, colWidths=widths, repeatRows=int(bool(headers)), splitInRow=1, hAlign='LEFT')
         result.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), PALE), ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6), ('RIGHTPADDING', (0, 0), (-1, -1), 6),
-            ('TOPPADDING', (0, 0), (-1, -1), 3.5), ('BOTTOMPADDING', (0, 0), (-1, -1), 3.5),
-            ('LINEBELOW', (0, 0), (-1, 0), .7, TEAL),
-            ('LINEBELOW', (0, 1), (-1, -1), .3, colors.HexColor('#dce5e8')),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4 if compact else 6), ('RIGHTPADDING', (0, 0), (-1, -1), 4 if compact else 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 2 if compact else 3.5), ('BOTTOMPADDING', (0, 0), (-1, -1), 2 if compact else 3.5),
+            ('LINEBELOW', (0, 0), (-1, -1), .3, colors.HexColor('#dce5e8')),
         ]))
+        if headers:
+            result.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), PALE), ('LINEBELOW', (0, 0), (-1, 0), .7, TEAL)]))
         return result
 
-    def paired_table(keys, data):
-        cells = [(field_info(k)['label'], data[k], field_info(k)['unit']) for k in keys if k in data]
-        rows = [(*cells[i], *(cells[i + 1] if i + 1 < len(cells) else ('', '', ''))) for i in range(0, len(cells), 2)]
-        return table(['参数 / 指标', '数值', '单位'] * 2, rows,
-                     [WIDTH * .205, WIDTH * .215, WIDTH * .08] * 2)
+    def summary_table(items):
+        result = table([], summary.grid(items), [WIDTH * .18, WIDTH * (1/3 - .18)] * 3, compact=True)
+        result.setStyle(TableStyle([('BACKGROUND', (col, 0), (col, -1), colors.HexColor('#f4f7f6')) for col in (0, 2, 4)]))
+        return result
 
     p, values = snapshot['inputs'], snapshot['values']
-    story = [paragraph('DCSJ / ENGINEERING REPORT', 'small'), paragraph(snapshot['name'], 'title'),
-             paragraph('电磁设计计算报告 - 固定计算快照'),
-             paragraph('记录 ID：' + snapshot['calculation_id'], 'small'),
-             paragraph('计算时间（UTC）：' + snapshot['created_at'], 'small'),
-             paragraph('关联设计版本：' + plain(snapshot.get('project_revision')), 'small')]
-    story.append(paragraph('额定条件', 'h2'))
-    keys = ['SizeX', 'kW', 'p', 'f', 'Ufai', 'Jiefa', 'Paihao', 'Jueyuan']
-    story.append(paired_table(keys, p))
-    story.append(paragraph('关键性能', 'h2'))
-    keys = ['ATA1', 'PF1', 'I1', 'n', 'Sn', 'TST1', 'TM1', 'IST1', 'CostFx', 'Pcu', 'Pal', 'Pfe', 'Pfw1', 'Ps1']
-    story.append(paired_table(keys, values))
-    story.append(paragraph('适用边界与计算提示', 'h2'))
-    warnings = list(dict.fromkeys(snapshot.get('warnings', []) + snapshot.get('engine', {}).get('limitations', []) +
-                                 ['计算结果须经工程校核；尺寸预览不能直接用于加工。']))
-    story.extend(paragraph(warning, 'warning') for warning in warnings)
-    story += [PageBreak(), paragraph('铁心与尺寸', 'h2')]
-    try:
-        story.append(Geometry(p, font))
-        story.append(paragraph('铁心尺寸按比例绘制，槽位为示意；图中尺寸单位为 mm。', 'small'))
-    except InputError:
-        story.append(paragraph('此历史记录不满足当前几何校验，保留原记录，不绘制尺寸图。', 'warning'))
-    geometry_keys = ['D1', 'Di1', 'Di2', 'g', 'L', 'Q1', 'Q2', 'a', 'ZZ', 'JJ', 'Djj', 'MM', 'Dmm']
-    story.append(table(['参数', '输入', '单位'], [(field_info(k)['label'], p.get(k), field_info(k)['unit']) for k in geometry_keys],
-                       [WIDTH * .48, WIDTH * .32, WIDTH * .2]))
+    story = [paragraph('DCSJ / 电磁设计计算报告', 'small'), paragraph(snapshot['name'], 'title'),
+             paragraph('计算时间（北京时间）：' + summary.local_time(snapshot['created_at']) +
+                       '    设计版本：' + summary.number(snapshot.get('project_revision')), 'small'),
+             paragraph('额定条件', 'sh2'), paragraph('型号：' + summary.number(p.get('SizeX')), 'compact'),
+             summary_table(summary.ratings(p)), paragraph('铁心与槽型', 'sh2')]
+    panels = slot_drawings(p)
+    for panel in panels:
+        for item in panel['texts']:
+            paragraph(item['text'])
+    dims = table([], [(label, value + (' ' + unit if unit else '')) for label, value, unit in summary.dimensions(p)],
+                 [(WIDTH-360)*.55, (WIDTH-360)*.45], compact=True)
+    figures = Table([[*(Slot(panel, font) for panel in panels), dims]], colWidths=[180, 180, WIDTH-360], hAlign='LEFT')
+    figures.setStyle(TableStyle([
+        ('LEFTPADDING', (0, 0), (-1, -1), 0), ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('BOX', (0, 0), (-1, -1), .4, colors.HexColor('#dce5e8')),
+        ('INNERGRID', (0, 0), (-1, -1), .3, colors.HexColor('#dce5e8'))]))
+    story += [figures, paragraph('绕组与导线', 'sh2'), summary_table(summary.windings(p, values)),
+              paragraph('设计目标与计算结果', 'sh2'),
+              table(['指标', '设计目标', '计算结果', '差值 / 峰值位置', '单位'], summary.targets(snapshot),
+                    [WIDTH*.30, WIDTH*.18, WIDTH*.18, WIDTH*.24, WIDTH*.10], compact=True),
+              paragraph('差值＝计算结果−设计目标；效率与槽满率的差值单位为百分点。s 表示峰值处转差率。', 'small'),
+              paragraph('运行与电磁指标', 'sh2'), summary_table(summary.performance(values))]
     curves = [curve for curve in snapshot.get('curves', []) if curve.get('display') is not False]
     if curves:
         story += [PageBreak(), paragraph('性能曲线', 'h2')]
@@ -265,7 +266,7 @@ def _render(snapshot):
     story += [PageBreak(), paragraph('完整计算输出', 'h2'),
               table(['字段', '指标', '计算值', '单位'], [(k, field_info(k)['label'], v, field_info(k)['unit']) for k, v in values.items()],
                     [WIDTH * .16, WIDTH * .42, WIDTH * .26, WIDTH * .16])]
-    provenance = [paragraph('计算来源与版本', 'h2')]
+    provenance = [paragraph('计算来源与版本', 'h2'), paragraph('记录 ID：' + snapshot['calculation_id'], 'small')]
     for key, value in snapshot.get('provenance', {}).items():
         provenance.append(paragraph(key + '：' + plain(value)))
     provenance.append(paragraph('报告直接读取保存的输入和结果，不使用工作台中后来修改的参数。数值以最多 8 位有效数字展示；完整精度可通过计算记录 API 获取。', 'small'))
