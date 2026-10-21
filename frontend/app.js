@@ -130,6 +130,7 @@
     $("#design-state").replaceChildren(el("span", `status-dot ${tone}`), document.createTextNode(text));
   }
   function designChanged() {
+    ++modelRequest;
     state.revision += 1;
     state.dirty = true;
     $("#raw-parameters").textContent = JSON.stringify(state.parameters, null, 2);
@@ -158,8 +159,10 @@
     return Object.fromEntries(entries);
   }
   function acceptDesign(parameters, name, source, model = "") {
+    const accepted = validParameters(parameters);
+    ++modelRequest;
     state.project = null;
-    state.parameters = validParameters(parameters);
+    state.parameters = accepted;
     state.name = String(name || "未命名设计");
     state.model = String(model || parameters.SizeX || parameters.Model || parameters.model || "");
     state.source = source || null;
@@ -369,7 +372,9 @@
     const curves = Array.isArray(result.curves) ? result.curves : [];
     const warnings = Array.isArray(result.warnings) ? result.warnings : [];
     const meta = el("div", "result-meta");
-    meta.append(el("span", "", `引擎：${asText(result.engine?.name || result.engine || "未提供")}`), el("span", "", `本次计算 · ${new Date().toLocaleTimeString("zh-CN")}`));
+    const calculatedAt = result.created_at ? new Date(result.created_at) : null;
+    const timeLabel = calculatedAt && !Number.isNaN(calculatedAt.getTime()) ? calculatedAt.toLocaleString("zh-CN") : "未记录";
+    meta.append(el("span", "", `引擎：${asText(result.engine?.name || result.engine || "未提供")}`), el("span", "", `计算时间 · ${timeLabel}`));
     container.append(meta);
     if (result.calculation_id) {
       const actions = el("div", "feature-actions");
@@ -623,12 +628,7 @@
         const action = el("td");
         const trigger = button("载入设计 →", "text-button", () => loadModel(item.id, trigger));
         trigger.setAttribute("aria-label", `载入型号 ${item.model || item.id}`);
-        action.append(trigger, button("版本", "text-button", () => showHistory(project)), button(project.archived ? "恢复" : "归档", "text-button", async () => {
-          try {
-            await api(`/projects/${project.id}/archive`, { method: "POST", body: JSON.stringify({ archived: !project.archived, expected_revision: project.revision }) });
-            loadProjects();
-          } catch (error) { showToast(errorText(error), "error"); }
-        }));
+        action.append(trigger);
         row.append(action);
         $("#model-table-body").append(row);
       });
@@ -713,11 +713,14 @@
       if (request === state.materialRequest) $("#material-detail").replaceChildren(el("p", "inline-error", errorText(error)));
     }
   }
+  let projectsRequest = 0;
   async function loadProjects() {
+    const request = ++projectsRequest;
     $("#projects-feedback").textContent = "正在读取已保存设计…";
     $("#project-table-body").replaceChildren();
     try {
       const data = await api(`/projects?include_archived=${$("#include-archived").checked}`);
+      if (request !== projectsRequest) return;
       if (!Array.isArray(data.items)) throw new Error("设计接口没有返回 items 数组。");
       $("#projects-feedback").textContent = data.items.length ? "" : "还没有保存的设计。在工作台中载入参数后，点击「保存设计」。";
       data.items.forEach(project => {
@@ -738,11 +741,21 @@
           } catch (error) { showToast(errorText(error), "error"); }
           finally { trigger.disabled = false; }
         });
-        action.append(trigger);
+        action.append(trigger, button("版本", "text-button", () => showHistory(project)));
+        const archive = button(project.archived ? "恢复" : "归档", "text-button", async () => {
+          archive.disabled = true;
+          try {
+            const saved = await api(`/projects/${encodeURIComponent(project.id)}/archive`, { method: "POST", body: JSON.stringify({ archived: !project.archived, expected_revision: project.revision }) });
+            if (state.project?.id === saved.id) state.project = { ...state.project, archived: saved.archived };
+            await loadProjects();
+          } catch (error) { showToast(errorText(error), "error"); }
+          finally { archive.disabled = false; }
+        });
+        action.append(archive);
         row.append(action);
         $("#project-table-body").append(row);
       });
-    } catch (error) { $("#projects-feedback").textContent = `读取失败：${errorText(error)}`; }
+    } catch (error) { if (request === projectsRequest) $("#projects-feedback").textContent = `读取失败：${errorText(error)}`; }
   }
   function openSaveDialog() {
     if (!populated()) return showToast("请先载入设计参数。", "warning");
@@ -836,13 +849,17 @@
       data.items.forEach(item => {
         const row = el("div", "history-entry");
         row.append(el("strong", "", `v${item.revision} · ${item.name}`), el("p", "muted", `${item.created_at} ${item.notes || ""}`), button("以此版本另建方案", "button button-small", async () => {
+          let request, applying = false;
           try {
             if (state.busy) throw new Error("请等待当前计算完成。");
+            request = ++modelRequest;
             const revision = await api(`/projects/${project.id}/revisions/${item.revision}`);
+            if (request !== modelRequest) return;
+            applying = true;
             acceptDesign(revision.parameters, `${revision.name} · v${item.revision} 副本`, `版本 ${project.id} / ${item.revision}`);
             state.dirty = true;
             $("#history-dialog").close();
-          } catch (error) { showToast(errorText(error), "error"); }
+          } catch (error) { if (applying || request === undefined || request === modelRequest) showToast(errorText(error), "error"); }
         }));
         container.append(row);
       });
@@ -893,13 +910,17 @@
     } catch (error) { if (request === calculationsRequest) $("#calculations-feedback").textContent = errorText(error); }
   }
   async function openSnapshot(id) {
+    let request, applying = false;
     try {
       if (state.busy) throw new Error("请等待当前计算完成。");
-      const item = await api(`/calculations/${id}`);
+      request = ++modelRequest;
+      const item = await api(`/calculations/${encodeURIComponent(id)}`);
+      if (request !== modelRequest) return;
+      applying = true;
       acceptDesign(item.inputs, item.name, `计算快照 ${id}`);
       state.result = item; state.resultRevision = state.revision;
       renderResults(item);
-    } catch (error) { showToast(errorText(error), "error"); }
+    } catch (error) { if (applying || request === undefined || request === modelRequest) showToast(errorText(error), "error"); }
   }
   function featureTable(headers, rows) {
     const scroll = el("div", "table-scroll"), table = el("table", "data-table");

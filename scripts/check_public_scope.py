@@ -5,7 +5,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 TOP_FILES = {'README.md', 'ROADMAP.md', 'THIRD_PARTY.md', '.gitignore', '.env.example',
              'requirements.txt', 'requirements-dev.txt', 'run.py', 'start.command', 'start.bat',
-             'Dockerfile', '.dockerignore', 'compose.yaml'}
+             'Dockerfile', '.dockerignore', 'compose.yaml', 'package.json', 'package-lock.json'}
 SCRIPTS = {'bundle_catalog.py', 'package_release.py', 'check_public_scope.py', 'backup.py', 'install_pdf_font.py'}
 
 
@@ -20,7 +20,7 @@ def allowed(name):
     if p.parts[0] == 'dcsj':
         return len(p.parts) == 2 and p.suffix == '.py'
     if p.parts[0] == 'tests':
-        return len(p.parts) == 2 and p.suffix == '.py'
+        return len(p.parts) == 2 and (p.suffix == '.py' or p.name == 'test_frontend.cjs')
     if p.parts[0] == 'frontend':
         return (len(p.parts) == 2 and p.suffix in {'.html', '.css', '.js'}) or name in {
             'frontend/vendor/swagger-ui-bundle.js', 'frontend/vendor/swagger-ui.css', 'frontend/vendor/LICENSE'}

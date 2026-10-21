@@ -45,11 +45,13 @@ python run.py
 python -m pip install -r requirements-dev.txt
 python scripts/install_pdf_font.py
 python -m pytest -q
+npm ci --ignore-scripts --registry=https://registry.npmjs.org
+npm test
 python scripts/check_public_scope.py
 python scripts/package_release.py
 ```
 
-公共测试使用人工构造的测试输入，不携带真实型号或材料数据。私有数值验证仅在安装相应本地资源后运行。CI 覆盖 Windows、macOS 和 Linux；打包脚本只收录通过路径检查的 Git 源码文件。
+公共测试使用人工构造的测试输入，不携带真实型号或材料数据。前端测试需要 Node.js 24.15 以上的 24.x 版本或 26 及以上版本，通过 jsdom 执行实际 HTML 和脚本，检查型号载入、项目版本与归档、快照切换和异步请求顺序；不连接真实服务，也不替代浏览器布局和打印验收。运行应用本身无需 Node.js。私有数值验证仅在安装相应本地资源后运行。CI 覆盖 Windows、macOS 和 Linux；打包脚本只收录通过路径检查的 Git 源码文件。
 
 已有数值核仍需实际电机及第三方计算校核，材料损耗单位和最大转矩估计差异有待工程确认。当前版本不宣称完成商用认证或全部设计空间验证。第三方组件见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
