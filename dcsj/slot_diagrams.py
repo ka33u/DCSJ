@@ -1,10 +1,11 @@
 """Compact slot sketches from verified legacy geometry, shared by PDF and SVG.
 
 Conventional trapezoids use physical proportions and flat or semicircular ends.
-Other shapes retain their input dimensions instead of guessed outlines.
+Special closed-slot or incomplete geometries retain their input dimensions.
 """
 from html import escape
 import math
+from .rotor_profiles import rotor_profile
 
 
 _WIDTH, _HEIGHT = 180, 170
@@ -168,13 +169,75 @@ def _stator(params):
     return panel
 
 
+def _label_positions(values, low=34, high=109, gap=8):
+    """Move close callouts apart while preserving their order and leader lines."""
+    result = []
+    for index, value in enumerate(values):
+        value = min(max(value, low+gap*index), high-gap*(len(values)-1-index))
+        result.append(max(value, result[-1]+gap) if result else value)
+    return result
+
+
+def _draw_rotor_profile(params, title, name, profile):
+    panel = _panel('rotor', title, name+' · 尺寸示意 · mm', True)
+    commands = profile['commands']
+    xs = [x for command in commands for x in command[1::2]]
+    left, right = min(xs), max(xs)
+    has_heading = bool(profile.get('value_heading'))
+    scale = min(64/(right-left), (66 if has_heading else 74)/profile['depth'])
+    mid = (left+right)/2
+
+    def point(x, y):
+        return (76+(x-mid)*scale, 36+y*scale)
+
+    path = [[command[0], *[value for xy in zip(command[1::2], command[2::2]) for value in point(*xy)]] for command in commands]
+    panel['paths'].append({'commands': path, 'stroke': _INK, 'fill': 'none'})
+    mouth_left, mouth_right = (point(x, 0)[0] for x in profile['mouth'])
+    _line(panel, 39, 36, mouth_left, 36)
+    _line(panel, mouth_right, 36, 113, 36)
+
+    widths = sorted(profile['widths'], key=lambda item: item[3])
+    positions = _label_positions([point(0, y)[1] for _, _, _, y in widths], high=101 if has_heading else 109)
+    for (label, x1, x2, y), label_y in zip(widths, positions):
+        x1, py = point(x1, y); x2 = point(x2, y)[0]
+        _line(panel, x1, py, x2, py)
+        for x in (x1, x2):
+            _line(panel, x, py-1.8, x, py+1.8)
+        _line(panel, x1-1, py, 35, label_y)
+        _text(panel, 32, label_y+2, label, 6, 'end')
+
+    heights = sorted(profile['heights'], key=lambda item: (item[1]+item[2])/2)
+    positions = _label_positions([point(0, (y1+y2)/2)[1] for _, y1, y2 in heights], high=101 if has_heading else 109)
+    for (label, y1, y2), label_y in zip(heights, positions):
+        y1, y2 = point(0, y1)[1], point(0, y2)[1]
+        _line(panel, 129, y1, 129, y2)
+        for y in (y1, y2):
+            _line(panel, 125, y, 132, y)
+        _line(panel, 132, (y1+y2)/2, 136, label_y)
+        _text(panel, 138, label_y+2, label, 6)
+
+    keys = profile.get('value_keys', ('bc02','hr0','br1','br2','br3','br4','hr12','hr3','zs2'))
+    if profile.get('value_heading'):
+        _text(panel, 5, 114, profile['value_heading'], 6)
+    items = profile.get('value_items', [f'{"b02" if key == "bc02" else key}={_display(params.get(key))}' +
+                                        ('°' if key == 'zs2' else '') for key in keys])
+    for index, value in enumerate(items):
+        _text(panel, 5+87*(index%2), 122+10*(index//2), value, 6.5)
+    panel['geometry'] = {**profile['geometry'], 'scale': scale}
+    return panel
+
+
 def _rotor(params):
     zc = _number(params.get('zc'))
     zc_label = _display(params.get('zc'))
     name = _ROTOR_NAMES.get(zc, '自定义槽' if zc is not None and zc > 20 else '槽型尺寸')
     title = f'转子槽 zc={zc_label}'
+    profile = rotor_profile(params)
+    if profile:
+        return _draw_rotor_profile(params, title, name, profile)
     if zc is not None and zc > 20:
-        panel = _panel('rotor', title, '元素号 / 上宽 / 下宽 / 高 · mm', False)
+        closed = (_number(params.get('bc02')) or 0) < 0
+        panel = _panel('rotor', title, '闭口槽 · 元素尺寸表' if closed else '元素号 / 上宽 / 下宽 / 高 · mm', False)
         row = 0
         for i in range(1, 10):
             n = params.get(f'n{i}')
@@ -196,9 +259,11 @@ def _rotor(params):
         if valid:
             valid = (w1-b)*math.tan(math.radians(angle))/2 <= h12
     if not valid:
+        reason = ('闭口槽' if (_number(params.get('bc02')) or 0) < 0 else
+                  '负槽口高度' if (_number(params.get('hr0')) or 0) < 0 else name)
         return _fallback('rotor', title, params,
                          ('bc02','hr0','zs2','br1','br2','br3','br4','hr12','hr3','hr4'),
-                         f'{name} · 尺寸表')
+                         f'{reason} · 尺寸表')
     panel = _panel('rotor', title, f'{name} · 尺寸示意 · mm', True)
     _slot_outline(panel, opening=b, neck=h0, shoulder_width=w1, end_width=w2,
                   body_height=h12, angle=angle, round_end=zc == 2, stator=False)

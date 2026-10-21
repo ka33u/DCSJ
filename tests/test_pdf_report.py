@@ -111,6 +111,24 @@ def test_missing_design_targets_remain_blank_in_summary(snapshot):
     assert '<td>功率因数 cosφ</td><td>0.8</td><td>—</td><td>—</td>' in html
 
 
+@pytest.mark.parametrize('zc,extra,label', [
+    (4, {'zs2':-25}, 'br3=7.2'),
+    (6, {'zs2':0}, 'hr12=3.2'),
+    (22, {'N1':4,'A1':0,'B1':4,'L1':2,'N2':1,'A2':6,'B2':3,'L2':12}, '1: 4/0/4/2'),
+])
+def test_extended_slot_diagrams_fit_both_report_formats(snapshot, zc, extra, label):
+    value = saved_snapshot(snapshot)
+    value['inputs'].update(dict(zc=zc,bc02=1.2,hr0=.8,zs2=25,br1=5.6,br2=2.1,br3=7.2,
+                                br4=3.4,hr12=3.2,hr3=24) | extra)
+    reader, text = pdf_text(pdf_report.render(value))
+    first = reader.pages[0].extract_text()
+    assert label in first and '运行与电磁指标' in first and '铝重量' in first
+    assert '尺寸表' not in first.split('转子槽')[1].split('绕组与导线')[0]
+    html = reports.render(value)
+    assert label in html and '适用边界与计算提示' not in html
+    assert '完整输入' in text and '计算来源与版本' in text
+
+
 def test_unsupported_characters_fail_instead_of_silent_missing_glyph(snapshot):
     value = saved_snapshot(snapshot)
     value['name'] = 'unsupported \U0010fffd'
