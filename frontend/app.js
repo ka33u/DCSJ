@@ -11,6 +11,7 @@
     name: "",
     model: "",
     source: null,
+    baseModelId: null,
     group: "",
     result: null,
     revision: 0,
@@ -159,10 +160,11 @@
     }
     return Object.fromEntries(entries);
   }
-  function acceptDesign(parameters, name, source, model = "") {
+  function acceptDesign(parameters, name, source, model = "", baseModelId = null) {
     const accepted = validParameters(parameters);
     ++modelRequest;
     state.project = null;
+    state.baseModelId = baseModelId;
     state.parameters = accepted;
     state.name = String(name || "未命名设计");
     state.model = String(model || parameters.SizeX || parameters.Model || parameters.model || "");
@@ -441,6 +443,7 @@
   function renderCurve(curve) {
     const card = el("div", "chart-card");
     card.append(el("h3", "chart-title", curve.title || "数据曲线"));
+    if (curve.authoritative === false) card.append(el("p", "chart-explanation", "曲线用于观察趋势；设计校核与寻优使用计算结果 IST1、TST1、TM1。"));
     const plot = curve.plot || {}, rawSeries = Array.isArray(curve.series) ? curve.series : [];
     let invalidCount = 0;
     const validPoints = points => (Array.isArray(points) ? points : []).filter(point => {
@@ -537,7 +540,7 @@
     $("#result-badge").textContent = "计算中";
     $("#result-badge").className = "badge neutral";
     try {
-      const result = await api("/calculate", { method: "POST", body: JSON.stringify({ parameters: state.parameters, name: state.name, ...(state.project && !state.dirty ? { project_id: state.project.id, project_revision: state.project.revision } : {}) }) });
+      const result = await api("/calculate", { method: "POST", body: JSON.stringify({ parameters: state.parameters, name: state.name, base_model_id: state.baseModelId, ...(state.project && !state.dirty ? { project_id: state.project.id, project_revision: state.project.revision } : {}) }) });
       if (!result || !Array.isArray(result.metrics)) throw new Error("计算接口没有返回约定的 metrics 数组，请检查后端接口。");
       state.result = result;
       state.resultRevision = revision;
@@ -657,7 +660,7 @@
     try {
       const model = await api(`/models/${encodeURIComponent(id)}`);
       if (request !== modelRequest) return;
-      acceptDesign(model.parameters, model.model || String(id), model.source, model.model || "");
+      acceptDesign(model.parameters, model.model || String(id), model.source, model.model || "", model.id);
       showToast(`已载入 ${model.model || id}，来源信息显示在参数区。`);
     } catch (error) { showToast(errorText(error), "error"); }
     finally { trigger.disabled = false; trigger.textContent = "载入设计 →"; }
@@ -773,7 +776,7 @@
           try {
             const design = await api(`/projects/${encodeURIComponent(project.id)}`);
             if (request !== modelRequest) return;
-            acceptDesign(design.parameters, design.name, design.source || `已保存设计 · ${design.id}`, design.model || "");
+            acceptDesign(design.parameters, design.name, design.source || `已保存设计 · ${design.id}`, design.model || "", design.lineage?.id || design.base_model_id || null);
             state.project = design;
             showToast(`已打开设计：${design.name} · v${design.revision}`);
           } catch (error) { showToast(errorText(error), "error"); }
@@ -814,7 +817,7 @@
     const revision = state.revision;
     try {
       const updating = state.project && !$("#save-as-new").checked;
-      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, parameters: state.parameters, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
+      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, parameters: state.parameters, base_model_id: state.baseModelId, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
       if (!saved.id) throw new Error("服务未返回设计 ID，无法确认是否保存成功。");
       if (revision === state.revision) {
         state.project = saved;
@@ -832,7 +835,7 @@
   }
   function exportDesign() {
     if (!populated()) return showToast("请先载入设计参数。", "warning");
-    const documentData = { format: "dcsj-design", version: 1, name: state.name, model: state.model, source: state.source, parameters: state.parameters, exported_at: new Date().toISOString() };
+    const documentData = { format: "dcsj-design", version: 1, name: state.name, model: state.model, source: state.source, base_model_id: state.baseModelId, parameters: state.parameters, exported_at: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(documentData, null, 2)], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = el("a");
@@ -860,7 +863,7 @@
       const params = validParameters(design.parameters);
       if (state.busy) throw new Error("计算正在进行，请在完成后重新导入设计。");
       ++modelRequest;
-      acceptDesign(params, design.name || file.name.replace(/\.json$/i, ""), design.source || `导入文件：${file.name}`, design.model || "");
+      acceptDesign(params, design.name || file.name.replace(/\.json$/i, ""), design.source || `导入文件：${file.name}`, design.model || "", design.lineage?.id || design.base_model_id || null);
       showToast("设计参数已导入。请重新运行计算检查结果。");
     } catch (error) { showToast(errorText(error), "error"); }
   }
@@ -894,7 +897,7 @@
             const revision = await api(`/projects/${project.id}/revisions/${item.revision}`);
             if (request !== modelRequest) return;
             applying = true;
-            acceptDesign(revision.parameters, `${revision.name} · v${item.revision} 副本`, `版本 ${project.id} / ${item.revision}`);
+            acceptDesign(revision.parameters, `${revision.name} · v${item.revision} 副本`, `版本 ${project.id} / ${item.revision}`, "", revision.lineage?.id || null);
             state.dirty = true;
             $("#history-dialog").close();
           } catch (error) { if (applying || request === undefined || request === modelRequest) showToast(errorText(error), "error"); }
@@ -955,7 +958,7 @@
       const item = await api(`/calculations/${encodeURIComponent(id)}`);
       if (request !== modelRequest) return;
       applying = true;
-      acceptDesign(item.inputs, item.name, `计算快照 ${id}`);
+      acceptDesign(item.inputs, item.name, `计算快照 ${id}`, "", item.provenance?.base_model?.id || null);
       state.result = item; state.resultRevision = state.revision;
       renderResults(item);
     } catch (error) { if (applying || request === undefined || request === modelRequest) showToast(errorText(error), "error"); }
@@ -1507,7 +1510,7 @@
       $("#entry-name").value = entry.name;
       $("#entry-source").value = doc.source;
       $("#entry-notes").value = doc.notes || "";
-      if (entry.kind === "models") $("#entry-parameters").value = JSON.stringify(doc.parameters, null, 2);
+      if (entry.kind === "models") $("#entry-parameters").value = JSON.stringify(entry.input_parameters || doc.parameters, null, 2);
       else {
         $("#entry-frequency").value = doc.frequency_hz;
         $("#entry-h-unit").value = doc.h_unit; $("#entry-loss-unit").value = doc.loss_unit;
@@ -1550,7 +1553,7 @@
   }
   function useEntry(entry) {
     if (state.busy) return showToast("请等待当前计算完成。", "warning");
-    if (entry.kind === "models") acceptDesign(entry.document.parameters, entry.name, { path: "用户型号库", description: `${entry.document.source} · ${entry.reference}` }, entry.name);
+    if (entry.kind === "models") acceptDesign(entry.input_parameters || entry.document.parameters, entry.name, { path: "用户型号库", description: `${entry.document.source} · ${entry.reference}` }, entry.name, entry.reference);
     else {
       if (!entry.compatibility?.compatible) return showToast("此材料暂不兼容当前计算核。", "warning");
       if (!populated()) return showToast("请先在工作台载入设计。", "warning");
@@ -1711,7 +1714,7 @@
   $("#apply-quick-model").addEventListener("click", () => {
     if (!state.quickPreview || state.busy) return;
     const item = state.quickPreview;
-    acceptDesign(item.parameters, item.name, item.source);
+    acceptDesign(item.parameters, item.name, item.source, "", item.template_id || null);
     state.dirty = true;
     showToast("已载入模板修改，请重新计算。");
   });

@@ -3,13 +3,18 @@ import json
 import uuid
 
 from .storage import ConflictError, NotFoundError, audit, connect, dumps, now
+from .parameters import input_parameters
 
 
 def _project(row):
     if row is None:
         return None
     result = dict(row)
-    result['parameters'] = json.loads(result['parameters'])
+    raw = json.loads(result['parameters'])
+    result['parameters'] = input_parameters(raw)
+    if raw != result['parameters']:
+        result['raw_parameters'] = raw
+    result['lineage'] = json.loads(result.get('lineage') or '{}')
     return result
 
 
@@ -25,32 +30,33 @@ def get_project(project_id):
         return _project(db.execute('SELECT * FROM projects WHERE id=?', (project_id,)).fetchone())
 
 
-def save_project(name, parameters, notes=''):
+def save_project(name, parameters, notes='', lineage=None):
     project_id, timestamp = str(uuid.uuid4()), now()
     encoded = dumps(parameters)
     with connect() as db:
-        db.execute('INSERT INTO projects(id,name,parameters,updated_at,created_at,revision,notes) '
-                   'VALUES (?,?,?,?,?,1,?)', (project_id, name, encoded, timestamp, timestamp, notes))
-        db.execute('INSERT INTO project_revisions VALUES (?,1,?,?,?,?)',
-                   (project_id, name, encoded, notes, timestamp))
+        db.execute('INSERT INTO projects(id,name,parameters,updated_at,created_at,revision,notes,lineage) '
+                   'VALUES (?,?,?,?,?,1,?,?)', (project_id, name, encoded, timestamp, timestamp, notes, dumps(lineage or {})))
+        db.execute('INSERT INTO project_revisions(project_id,revision,name,parameters,notes,created_at,lineage) VALUES (?,1,?,?,?,?,?)',
+                   (project_id, name, encoded, notes, timestamp, dumps(lineage or {})))
         audit(db, 'project.created', project_id, {'revision': 1})
     return get_project(project_id)
 
 
-def update_project(project_id, expected_revision, name, parameters, notes=''):
+def update_project(project_id, expected_revision, name, parameters, notes='', lineage=None):
     timestamp, encoded = now(), dumps(parameters)
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT revision,archived FROM projects WHERE id=?', (project_id,)).fetchone()
+        row = db.execute('SELECT revision,archived,lineage FROM projects WHERE id=?', (project_id,)).fetchone()
         if row is None:
             raise NotFoundError('设计不存在')
         if row['revision'] != expected_revision or row['archived']:
             raise ConflictError('设计已有新版本或已归档，请重新打开后再保存；当前修改可以另存为新设计。')
         revision = expected_revision + 1
-        db.execute('UPDATE projects SET name=?,parameters=?,notes=?,updated_at=?,revision=? WHERE id=?',
-                   (name, encoded, notes, timestamp, revision, project_id))
-        db.execute('INSERT INTO project_revisions VALUES (?,?,?,?,?,?)',
-                   (project_id, revision, name, encoded, notes, timestamp))
+        origin = row['lineage'] if lineage is None else dumps(lineage)
+        db.execute('UPDATE projects SET name=?,parameters=?,notes=?,updated_at=?,revision=?,lineage=? WHERE id=?',
+                   (name, encoded, notes, timestamp, revision, origin, project_id))
+        db.execute('INSERT INTO project_revisions(project_id,revision,name,parameters,notes,created_at,lineage) VALUES (?,?,?,?,?,?,?)',
+                   (project_id, revision, name, encoded, notes, timestamp, origin))
         audit(db, 'project.updated', project_id, {'revision': revision})
     return get_project(project_id)
 

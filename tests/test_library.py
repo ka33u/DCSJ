@@ -15,6 +15,8 @@ def material_document(**changes):
 def test_model_revision_conflicts_and_duplicate_names(client, parameters):
     parameters['UnknownField'] = 37
     body = {'name': 'Same synthetic name', 'document': {'parameters': parameters, 'source': 'Manual test'}}
+    assert client.post('/api/v1/library/models', json=body).status_code == 422
+    parameters.pop('UnknownField')
     first = client.post('/api/v1/library/models', json=body).json()
     second = client.post('/api/v1/library/models', json=body).json()
     assert first['id'] != second['id'] and first['revision'] == 1
@@ -23,7 +25,7 @@ def test_model_revision_conflicts_and_duplicate_names(client, parameters):
     assert updated.status_code == 200 and updated.json()['revision'] == 2
     assert client.put('/api/v1/library/models/' + first['id'], json={**body, 'expected_revision': 1}).status_code == 409
     old = library.from_reference(first['reference'], 'models')
-    assert old['document']['parameters']['L'] == 160 and old['document']['parameters']['UnknownField'] == 37
+    assert old['document']['parameters']['L'] == 160
     assert client.get('/api/v1/models/' + first['reference']).json()['parameters']['L'] == 160
     assert len(client.get('/api/v1/library/models/' + first['id'] + '/revisions').json()['items']) == 2
     assert client.get('/api/v1/library/models?limit=1&offset=1').json()['total'] == 2
@@ -92,5 +94,5 @@ def test_schema_three_upgrade_preserves_existing_design_and_history(tmp_path, mo
     assert projects.get_project(project['id'])['parameters'] == parameters
     assert library.get('materials', entry['id'])['revision'] == 1
     with storage.connect() as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 4
+        assert db.execute('PRAGMA user_version').fetchone()[0] == storage.SCHEMA_VERSION
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []

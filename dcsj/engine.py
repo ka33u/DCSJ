@@ -15,6 +15,7 @@ from . import __version__
 from .numeric_vm import NumericKernelError, run
 from .parameters import ELEMENT_KEYS, INPUT_MAP, OUTPUT_MAP, ROOT, field_info, validate
 from .curves import trend_points, slip_plot
+from . import semantics
 
 _material_path = ROOT / "data/material_kernel_tables.json"
 MATERIALS = {item["name"]: item for item in json.loads(_material_path.read_text())["materials"]} if _material_path.is_file() else {}
@@ -22,7 +23,7 @@ ENGINE_NAME = "DCSJ Python 数值核心"
 _kernel_path = ROOT / "dcsj/generated/numeric_kernel.json.gz"
 KERNEL_SHA256 = hashlib.sha256(_kernel_path.read_bytes()).hexdigest() if _kernel_path.is_file() else None
 WRAPPER_SHA256 = hashlib.sha256(b"".join((ROOT / "dcsj" / name).read_bytes()
-    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py", "library.py", "curves.py"))).hexdigest()
+    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py", "library.py", "curves.py", "semantics.py"))).hexdigest()
 LIMITATIONS = [
     "由原 Fortran 程序的计算指令恢复；使用双精度中间运算和原单精度存储。",
     "已恢复三相异步电动机计算；历史型号保存值可能使用不同版本的材料表。",
@@ -93,11 +94,8 @@ def prepare_memory(parameters, context=None):
     memory = {addr: f32(p[key]) for key, addr in INPUT_MAP.items() if key != "Paihao"}
     memory[INPUT_MAP["Paihao"]] = float(material["slot"])
     # MAIN normalizes absolute mechanical/stray loss before the selected entry.
-    for key in ("pfw", "ps"):
-        value = f32(p[key])
-        if value > 1:
-            value = f32(value / f32(p["kW"]) / 1000)
-        memory[INPUT_MAP[key]] = value
+    for key, resolved in semantics.losses(p).items():
+        memory[INPUT_MAP[key]] = resolved['kernel_pu']
     offset = 0
     for address, count in [(0x4B0740, 142), (0x4B05C0, 96),
                            (0x4AFEA0, 245), (0x4B0274, 210)]:
@@ -212,6 +210,16 @@ def calculate_design(values):
             "保留原计算值，最大转矩指标需另行核验。"
         )
     curves = extract_curves(result, p, warnings)
+    metadata = semantics.result_metadata(p, output, material, curves)
+    warnings.append('ATA、PF、IST 是原版迭代初值并参与计算；仅变更设计要求请使用对应 *_req 字段。')
+    for key, resolved in metadata['loss_semantics'].items():
+        if resolved['mode'] == 'legacy':
+            warnings.append(f"{key}={p[key]:g} 按 {resolved['resolved_unit']} 解析，额定点损耗 {resolved['rated_w']:.7g} W。")
+    if p['f'] != 50:
+        model = metadata['material_semantics']['loss_frequency_model']
+        warnings.append(f"铁耗沿用原核 (f/50)^1.33 折算，本次因子 {model['factor']:.7g}；源表实测频率未获验证。")
+        if not p.get('pfw_ref_rpm'):
+            warnings.append('机械损耗未按转速自动折算；可按已知参考同步转速设置 pfw_ref_rpm。')
     slip_curve = next((c for c in curves if c["id"] == "slip"), None)
     if slip_curve and slip_curve["series"][1]["points"]:
         peak = max(point["y"] for point in slip_curve["series"][1]["points"])
@@ -220,18 +228,16 @@ def calculate_design(values):
                 f"转矩曲线峰值 {peak:.4g} 倍与原最大转矩输出 {output['TM1']:.4g} 倍不同；"
                 "两者来自原程序的不同计算路径，不能相互替代。"
             )
-    metrics = []
-    for key, value in output.items():
-        info = field_info(key)
-        info["group"] = "计算结果"
-        metrics.append({**info, "value": value})
+    metrics = [semantics.metric_info(key, value) for key, value in output.items()]
     return {
-        "engine": engine_status(context),
+        **metadata, "engine": engine_status(context),
         "metrics": metrics, "values": output, "warnings": warnings,
         "curves": curves, "inputs": p,
         "trace": [
             f"材料：{material['name']}；常量组 {material['slot']}。",
-            "pfw/ps 大于 1 时作为 W 输入，否则作为额定功率比例输入。",
+            *[f"{key} 输入单位 {entry['resolved_unit']}；额定点损耗 {entry['rated_w']:.7g} W；"
+              f"转速折算因子 {entry['speed_scaling']['factor']:.7g}。"
+              for key, entry in metadata['loss_semantics'].items()],
             f"执行 {result['steps']:,} 条恢复指令，耗时 {time.perf_counter() - started:.3f} 秒。",
             "所有结果由本次输入重新计算，未使用型号库中的历史结果列。",
         ],
@@ -241,6 +247,9 @@ def calculate_design(values):
             "resource_package": context['package_id'], "resource_version": context['package_version'],
             "material_sha256": hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest(),
             "input_sha256": hashlib.sha256(json.dumps(p, sort_keys=True).encode()).hexdigest(),
+            **metadata['input_fingerprints'],
+            'loss_semantics': metadata['loss_semantics'],
+            'material_semantics': metadata['material_semantics'],
             "material": material["name"], "steps": result["steps"],
             "user_material_reference": material.get('user_reference'),
             "user_material_document_sha256": material.get('user_document_sha256'),

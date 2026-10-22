@@ -13,6 +13,12 @@ def save(name, identities, baseline_id=None, notes=''):
     result['comparison_version'] = 1
     result['application_version'] = __version__
     with connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        # Coordinate with deletion: every referenced snapshot must still exist
+        # after obtaining the write lock, including non-baseline schemes.
+        for calculation_id in identities:
+            if not db.execute('SELECT 1 FROM calculations WHERE id=?', (calculation_id,)).fetchone():
+                raise NotFoundError('对比中的计算记录已删除')
         db.execute('INSERT INTO comparison_sets VALUES (?,?,?,?,?,?)',
                    (identity, name, notes, result['baseline_id'], dumps(result), timestamp))
         audit(db, 'comparison.saved', identity, {'calculation_ids': identities, 'baseline_id': result['baseline_id']})

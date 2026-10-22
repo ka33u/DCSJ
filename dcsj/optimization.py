@@ -106,7 +106,7 @@ class SearchInput(BaseModel):
             raise ValueError('搜索变量不能重复')
         if len({c.metric for c in self.constraints}) != len(self.constraints):
             raise ValueError('同一指标的约束请写在一项中')
-        self.parameters = validate(self.parameters)
+        self.parameters = validate(self.parameters, strict=True)
         if self.parameters['_wire_target'] != 0:
             raise ValueError('寻优前请将目标槽满率设为 0，以固定线规，避免内核覆盖搜索变量')
         return self

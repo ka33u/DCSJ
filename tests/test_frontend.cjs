@@ -478,3 +478,31 @@ test('material form keeps explicit units and incompatible materials have no comp
   assert.equal([...ui.doc.querySelectorAll('#library-list button')].some(x => x.textContent === '用于当前设计'), false);
   assert.ok(ui.find('#library-list button', '查看曲线'));
 });
+
+test('catalog lineage follows calculation and save, then resets on unrelated design', async t => {
+  const ui = await app(t, (path, request) => {
+    if (path === '/models') return { total: 1, items: [{ id: 'base-1', model: '来源型号', source: 'test' }] };
+    if (path === '/models/base-1') return { id: 'base-1', model: '来源型号', parameters, source: 'test' };
+    if (path === '/calculate') return snapshot('calc');
+    if (path === '/projects' && request.method === 'POST') return { id: 'p', name: request.body.name, revision: 1, lineage: { id: request.body.base_model_id } };
+    if (path === '/example') return { name: '独立示例', parameters };
+  });
+  ui.nav('catalog');
+  await until(() => ui.doc.querySelectorAll('#model-table-body button').length, 'Catalog loaded');
+  ui.find('#model-table-body button', '载入设计 →').click();
+  await until(() => ui.doc.querySelector('#current-design').textContent === '来源型号', 'Source model loaded');
+  ui.doc.querySelector('#calculate-button').click();
+  await until(() => ui.calls.some(c => c.url.pathname.endsWith('/calculate')), 'Calculation sent');
+  assert.equal(ui.calls.find(c => c.url.pathname.endsWith('/calculate')).body.base_model_id, 'base-1');
+  await settle();
+  ui.doc.querySelector('#save-design').click();
+  ui.doc.querySelector('#save-form').dispatchEvent(new ui.w.Event('submit', { bubbles: true, cancelable: true }));
+  await until(() => ui.calls.some(c => c.url.pathname.endsWith('/projects') && c.method === 'POST'), 'Save sent');
+  assert.equal(ui.calls.find(c => c.url.pathname.endsWith('/projects') && c.method === 'POST').body.base_model_id, 'base-1');
+  await settle();
+  ui.doc.querySelector('#load-example').click();
+  await until(() => ui.doc.querySelector('#current-design').textContent === '独立示例', 'Example loaded');
+  ui.doc.querySelector('#calculate-button').click();
+  await until(() => ui.calls.filter(c => c.url.pathname.endsWith('/calculate')).length === 2, 'Second calculation sent');
+  assert.equal(ui.calls.filter(c => c.url.pathname.endsWith('/calculate'))[1].body.base_model_id, null);
+});

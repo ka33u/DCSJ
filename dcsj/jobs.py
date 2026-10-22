@@ -152,6 +152,7 @@ class Worker:
                 if not in_region(request, parameters):
                     violations.append('基准方案位于指定搜索范围或步长网格之外，仅作为参考。')
                 objective, improved = search.consider(parameters, values, not violations)
+                result['provenance']['optimization_job_id'] = identity
                 saved = calculations.save(result, f'{request.name} / {ordinal}', database=self.database)
                 calculation_id = saved['calculation_id']
                 completed += 1

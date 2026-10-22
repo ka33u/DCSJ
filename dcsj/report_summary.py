@@ -23,6 +23,9 @@ def local_time(value):
         return str(value)
 
 
+CURVE_NOTE = '曲线用于观察趋势；设计校核与寻优使用计算结果 IST1、TST1、TM1，曲线采样值单独列示。'
+
+
 def targets(snapshot):
     p, v = snapshot['inputs'], snapshot['values']
     specs = [('效率 η', 'ATA', 'ATA1', 100, '%'),
@@ -34,7 +37,7 @@ def targets(snapshot):
         specs.append(('槽满率', '_wire_target', 'Sf', 100, '%'))
     rows = []
     for label, target_key, result_key, factor, unit in specs:
-        target, result = p.get(target_key), v.get(result_key)
+        target, result = p.get(target_key + '_req', p.get(target_key)), v.get(result_key)
         target = target * factor if finite(target) else None
         result = result * factor if finite(result) else None
         delta = result - target if result is not None and target is not None else None

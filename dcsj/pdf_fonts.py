@@ -19,7 +19,15 @@ def font_path():
 
 
 def status():
-    return {'available': font_path().is_file(), 'embedded': True,
+    from .pdf_report import _font, PDFUnavailableError
+    try:
+        _, cmap = _font()
+        available = all(cmap.get(ord(ch)) for ch in '电磁设计计算报告')
+        reason = None if available else 'PDF 字体缺少必要的中文字符'
+    except (PDFUnavailableError, OSError) as error:
+        available, reason = False, str(error)
+    return {'available': available, 'reason': reason, 'embedded': available,
+            'embedding_target': 'pdf', 'html_embedded_font': False,
             'setup': 'python scripts/install_pdf_font.py', 'source': 'Noto Sans SC / SIL OFL 1.1'}
 
 

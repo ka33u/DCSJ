@@ -9,7 +9,7 @@ from typing import Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
-from .parameters import InputError, validate
+from .parameters import InputError, validate, input_parameters
 from .storage import ConflictError, NotFoundError, audit, connect, dumps, now
 
 
@@ -26,7 +26,7 @@ class ModelDocument(BaseModel):
             raise ValueError('参数数量或名称长度超过限制')
         if any(isinstance(value, str) and len(value) > 2000 for value in values.values()):
             raise ValueError('参数文本超过 2000 字符')
-        return {**values, **validate(values)}
+        return validate(values, strict=True)
 
 
 class MaterialDocument(BaseModel):
@@ -76,6 +76,8 @@ def _decode(row):
     result['document'] = json.loads(result['document'])
     result['reference'] = ('user-model:' if result['kind'] == 'models' else 'user-material:') + result['id'] + '@' + str(result['revision'])
     result['document_sha256'] = hashlib.sha256(dumps(result['document']).encode()).hexdigest()
+    if result['kind'] == 'models':
+        result['input_parameters'] = input_parameters(result['document']['parameters'])
     if result['kind'] == 'materials':
         result['compatibility'] = compatibility(result['document'])
     return result
@@ -163,8 +165,10 @@ def from_reference(reference, kind):
 
 def model(reference):
     entry = from_reference(reference, 'models')
+    parameters = input_parameters(entry['document']['parameters'])
+    from .semantics import electrical
     return {'id': reference, 'model': entry['name'], 'series': '用户录入',
-            'parameters': entry['document']['parameters'], 'historical_results': {},
+            'parameters': parameters, 'inputs': parameters, 'electrical': electrical(parameters), 'historical_results': {},
             'source': {'path': '用户型号库', 'description': entry['document']['source'],
                        'id': entry['id'], 'revision': entry['revision'], 'sha256': entry['document_sha256']}}
 
@@ -175,6 +179,7 @@ def material(reference):
     doc = entry['document']
     return {'id': reference, 'name': entry['name'], 'calculation_key': reference,
             'compatibility': entry['compatibility'], 'frequency_hz': doc['frequency_hz'],
+            'loss_curve_frequency_hz': doc['frequency_hz'], 'loss_unit': doc['loss_unit'],
             'source': {'path': '用户材料库', 'description': doc['source'], 'revision': entry['revision'], 'sha256': entry['document_sha256']},
             'warnings': entry['compatibility']['reasons'],
             'curves': [{'id': key, 'title': title, 'x_label': '磁密 B (T)', 'y_label': unit,

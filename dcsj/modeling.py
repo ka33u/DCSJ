@@ -4,7 +4,7 @@ import json
 import math
 
 from . import catalog
-from .parameters import InputError, field_info, normalize_keys, validate
+from .parameters import InputError, field_info, input_parameters, validate
 from .storage import NotFoundError
 
 QUICK_FIELDS = {"SizeX", "kW", "f", "Ufai", "Jiefa", "Paihao", "D1", "Di1", "Di2",
@@ -27,7 +27,7 @@ def templates(power_kw, poles, frequency_hz=50, phase_voltage=380, limit=12):
     found = []
     for score, row in sorted(candidates, key=lambda pair: (pair[0], pair[1]["record_id"])):
         try:
-            validate(normalize_keys(json.loads(row["raw_json"])))
+            validate(input_parameters(json.loads(row["raw_json"])))
         except InputError:
             continue
         found.append({"id": row["record_id"], "model": row["model"], "series": row["series"],

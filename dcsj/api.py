@@ -1,7 +1,8 @@
 """Local web workbench and versioned engineering API."""
 import math
+from datetime import datetime
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -11,8 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from . import __version__, catalog, projects, calculations, comparisons, modeling, resources, library
 from .execution import BusyError, compute
-from .storage import ConflictError, NotFoundError
-from .parameters import ROOT, InputError, schema, validate, example_data
+from .storage import ConflictError, NotFoundError, now
+from .parameters import ROOT, InputError, schema, validate, example_data, check_keys
 from .engine import CalculationUnavailableError
 from . import jobs, optimization
 from . import pdf_fonts
@@ -52,12 +53,13 @@ class DesignInput(BaseModel):
                 raise ValueError("参数文本过长")
             if isinstance(value, float) and not math.isfinite(value):
                 raise ValueError(f"{key} 必须为有限数值")
-        return values
+        return check_keys(values)
 
 
 class ProjectInput(DesignInput):
     name: str = Field(min_length=1, max_length=120)
     notes: str = Field(default="", max_length=4000)
+    base_model_id: str | None = Field(default=None, min_length=1, max_length=160)
 
     @field_validator("name")
     @classmethod
@@ -81,11 +83,82 @@ class CalculationInput(DesignInput):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     project_id: str | None = Field(default=None, min_length=1, max_length=100)
     project_revision: int | None = Field(default=None, ge=1)
+    base_model_id: str | None = Field(default=None, min_length=1, max_length=160)
+    persist: bool = Field(default=True, description='false 仅试算，不创建计算记录或报告 ID')
 
     @model_validator(mode="after")
     def project_link(self):
         if (self.project_id is None) != (self.project_revision is None):
             raise ValueError("关联项目时须同时提供 project_id 和 project_revision")
+        return self
+
+
+class ModelCalculationInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    overrides: dict[str, str | float | int | None] = Field(default_factory=dict)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    persist: bool = True
+
+    @field_validator('overrides')
+    @classmethod
+    def valid_overrides(cls, values):
+        return DesignInput.finite_parameters(values)
+
+
+class CalculationResult(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    inputs: dict = Field(description='实际计算的规范化输入；*_req 只用于判定')
+    values: dict[str, float] = Field(description='规范数值输出；磁密原值 G，效率与功率因数均为 0–1 比例')
+    metrics: list[dict] = Field(description='values 的同值元数据视图，含单位和 source；不是另一套计算')
+    curves: list[dict] = Field(description='趋势采样；校核和寻优使用 values，不从曲线读判定值')
+    provenance: dict = Field(description='数值核、材料、输入指纹和服务器解析的 base_model 来源')
+    contract: dict = Field(default_factory=dict, description='values 与 metrics 的同值关系及曲线用途')
+    values_units: dict[str, str] = Field(default_factory=dict)
+    values_si: dict[str, dict] = Field(default_factory=dict, description='磁密等 SI 补充值，原 values 保持兼容单位')
+    electrical: dict = Field(default_factory=dict, description='接法、相电压与线电压，Y 按 sqrt(3) 换算')
+    requirements: list[dict] = Field(default_factory=list, description='指标目标、判定方向、实际值和 passed')
+    loss_semantics: dict = Field(default_factory=dict, description='损耗输入单位、核内比例、额定 W 及可选转速折算')
+    material_semantics: dict = Field(default_factory=dict, description='材料声明频率与核内频率折算分开返回')
+    curve_checks: list[dict] = Field(default_factory=list, description='曲线起动点和采样峰值与校核标量的差值')
+    calculation_id: str | None = Field(description='persist=false 时为 null，无保存记录和报告')
+    persisted: bool
+
+
+PDF_RESPONSES = {
+    200: {'content': {'application/pdf': {'schema': {'type': 'string', 'format': 'binary'}}}},
+    404: {'description': '计算或对比记录不存在'},
+    422: {'description': '报告含当前字体不支持的字符'},
+    429: {'description': 'PDF 渲染资源忙，请按 Retry-After 重试'},
+    503: {'description': 'PDF 字体缺失或无法读取；返回 code、setup、html_report_url',
+          'content': {'application/json': {'schema': {'type': 'object', 'properties': {
+              'detail': {'type': 'string'}, 'code': {'type': 'string'},
+              'setup': {'type': 'string'}, 'html_report_url': {'type': ['string', 'null']}}}}}},
+}
+
+
+class CalculationArchiveInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    archived: bool = True
+
+
+class CalculationCleanupInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name_prefix: str | None = Field(default=None, min_length=1, max_length=120)
+    before: datetime | None = None
+    after: datetime | None = None
+    action: Literal['archive', 'delete'] = 'archive'
+    dry_run: bool = True
+    limit: int = Field(default=100, ge=1, le=1000)
+
+    @model_validator(mode='after')
+    def explicit_scope(self):
+        if not (self.name_prefix or self.before or self.after):
+            raise ValueError('请指定名称前缀或时间条件，默认只预览，不执行清理')
+        for value in (self.before, self.after):
+            if value is not None and value.tzinfo is None:
+                raise ValueError('时间必须包含时区，例如 2026-01-01T00:00:00Z')
+        if self.before and self.after and self.after >= self.before:
+            raise ValueError('after 必须早于 before')
         return self
 
 
@@ -169,7 +242,12 @@ async def unavailable_error(request, error):
 
 @app.exception_handler(PDFUnavailableError)
 async def pdf_unavailable_error(request, error):
-    return JSONResponse({"detail": str(error)}, status_code=503)
+    identity = request.path_params
+    fallback = ('/reports/' + identity['calculation_id']) if 'calculation_id' in identity else (
+        '/comparison-reports/' + identity['comparison_id'] if 'comparison_id' in identity else None)
+    return JSONResponse({'detail': str(error), 'code': 'PDF_FONT_UNAVAILABLE', 'retryable': False,
+                         'setup': 'python scripts/install_pdf_font.py', 'html_report_url': fallback},
+                        status_code=503, headers={'Content-Location': fallback} if fallback else {})
 
 
 @app.exception_handler(PDFContentError)
@@ -244,8 +322,21 @@ def get_models(
     limit: Annotated[int, Query(ge=1, le=200)] = 30,
     offset: Annotated[int, Query(ge=0, le=100000)] = 0,
     history: bool = False,
+    frequency_hz: Annotated[float | None, Query(gt=0, allow_inf_nan=False)] = None,
+    poles: Annotated[int | None, Query(ge=2, le=64)] = None,
+    voltage_v: Annotated[float | None, Query(gt=0, allow_inf_nan=False, description='绕组相电压 V')] = None,
+    power_min: Annotated[float | None, Query(ge=0, allow_inf_nan=False)] = None,
+    power_max: Annotated[float | None, Query(ge=0, allow_inf_nan=False)] = None,
+    frame: Annotated[str | None, Query(pattern=r'^\d{2,4}$')] = None,
+    source_table: Annotated[str | None, Query(max_length=120)] = None,
 ):
-    return catalog.models(q, series, limit, offset, history)
+    if poles is not None and poles % 2:
+        raise HTTPException(422, '极数必须为偶数')
+    if power_min is not None and power_max is not None and power_min > power_max:
+        raise HTTPException(422, 'power_min 不能大于 power_max')
+    return catalog.models(q, series, limit, offset, history, frequency_hz=frequency_hz,
+                          poles=poles, voltage_v=voltage_v, power_min=power_min,
+                          power_max=power_max, frame=frame, source_table=source_table)
 
 
 @app.get("/api/v1/models/{model_id}", tags=["型号库"])
@@ -256,20 +347,45 @@ def get_model(model_id: str):
     return result
 
 
-@app.post("/api/v1/calculate", tags=["计算"])
+@app.post("/api/v1/calculate", response_model=CalculationResult, tags=["计算"],
+          responses={409: {'description': '设计版本或来源不一致'}, 429: {'description': '计算资源忙'},
+                     503: {'description': '计算资源未安装'}})
 def calculate(body: CalculationInput):
+    return _calculate(body)
+
+
+def _calculate(body: CalculationInput, origin=None):
     from .engine import CalculationError
     if body.project_id is not None:
         version = projects.get_revision(body.project_id, body.project_revision)
         if validate(version['parameters']) != validate(body.parameters):
             raise ConflictError("输入与关联版本不同，请先保存新版本，或不关联版本进行计算。")
+        saved_origin = version.get('lineage') or {}
+        if body.base_model_id and saved_origin.get('id') != body.base_model_id:
+            raise ConflictError('来源型号与关联设计版本不符，请先保存新版本')
+        origin = saved_origin
+    elif body.base_model_id and origin is None:
+        origin = catalog.lineage(body.base_model_id)
     try:
         result = compute(body.parameters)
+        result['provenance']['base_model'] = origin
+        if not body.persist:
+            return {**result, 'calculation_id': None, 'persisted': False,
+                    'name': body.name or result['inputs']['SizeX'], 'created_at': now(),
+                    'project_id': body.project_id, 'project_revision': body.project_revision}
         return calculations.save(result, body.name, body.project_id, body.project_revision)
     except BusyError as error:
         raise HTTPException(429, str(error), headers={"Retry-After": "2"}) from error
     except CalculationError as error:
         raise HTTPException(422, str(error)) from error
+
+
+@app.post('/api/v1/models/{model_id}/calculate', response_model=CalculationResult, tags=['计算'])
+def calculate_model(model_id: str, body: ModelCalculationInput):
+    model = get_model(model_id)
+    return _calculate(CalculationInput(parameters={**model['parameters'], **body.overrides},
+                                      name=body.name, persist=body.persist, base_model_id=model_id),
+                      origin=catalog.lineage_of(model))
 
 
 @app.get("/api/v1/materials", tags=["材料库"])
@@ -351,7 +467,8 @@ def get_projects(include_archived: bool = False):
 
 @app.post("/api/v1/projects", status_code=201, tags=["保存的设计"])
 def save_project(body: ProjectInput):
-    return projects.save_project(body.name, body.parameters, body.notes)
+    origin = catalog.lineage(body.base_model_id) if body.base_model_id else {}
+    return projects.save_project(body.name, body.parameters, body.notes, origin)
 
 
 @app.get("/api/v1/projects/{project_id}", tags=["保存的设计"])
@@ -364,7 +481,12 @@ def get_project(project_id: str):
 
 @app.put("/api/v1/projects/{project_id}", tags=["保存的设计"])
 def update_project(project_id: str, body: ProjectUpdate):
-    return projects.update_project(project_id, body.expected_revision, body.name, body.parameters, body.notes)
+    origin = None
+    if 'base_model_id' in body.model_fields_set:
+        previous = get_project(project_id).get('lineage', {})
+        origin = previous if body.base_model_id and previous.get('id') == body.base_model_id else (
+            catalog.lineage(body.base_model_id) if body.base_model_id else {})
+    return projects.update_project(project_id, body.expected_revision, body.name, body.parameters, body.notes, origin)
 
 
 @app.post("/api/v1/projects/{project_id}/archive", tags=["保存的设计"])
@@ -384,8 +506,14 @@ def project_revision(project_id: str, revision: int):
 
 @app.get("/api/v1/calculations", tags=["计算记录与对比"])
 def list_calculations(limit: Annotated[int, Query(ge=1, le=100)] = 30,
-                      offset: Annotated[int, Query(ge=0)] = 0, project_id: str | None = None):
-    return calculations.list_calculations(limit, offset, project_id)
+                      offset: Annotated[int, Query(ge=0)] = 0, project_id: str | None = None,
+                      include_archived: bool = False):
+    return calculations.list_calculations(limit, offset, project_id, include_archived)
+
+
+@app.post('/api/v1/calculations/cleanup', tags=['计算记录与对比'])
+def cleanup_calculations(body: CalculationCleanupInput):
+    return calculations.cleanup(**body.model_dump(mode='json'))
 
 
 @app.get("/api/v1/calculations/{calculation_id}", tags=["计算记录与对比"])
@@ -393,8 +521,21 @@ def get_calculation(calculation_id: str):
     return calculations.get(calculation_id)
 
 
+@app.post('/api/v1/calculations/{calculation_id}/archive', tags=['计算记录与对比'])
+def archive_calculation(calculation_id: str, body: CalculationArchiveInput):
+    return calculations.archive(calculation_id, body.archived)
+
+
+@app.delete('/api/v1/calculations/{calculation_id}', status_code=204,
+            responses={404: {'description': '记录不存在'}, 409: {'description': '被对比或寻优任务引用，不能删除'}},
+            tags=['计算记录与对比'])
+def delete_calculation(calculation_id: str):
+    calculations.delete(calculation_id)
+    return Response(status_code=204)
+
+
 @app.get("/api/v1/calculations/{calculation_id}/report.pdf", response_class=Response,
-         responses={200: {"content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}}}},
+         responses=PDF_RESPONSES,
          tags=["打印报告"])
 def download_report(calculation_id: str):
     from .pdf_report import render
@@ -433,7 +574,7 @@ def get_comparison(comparison_id: str):
 
 
 @app.get('/api/v1/comparison-sets/{comparison_id}/report.pdf', response_class=Response,
-         responses={200: {'content': {'application/pdf': {'schema': {'type': 'string', 'format': 'binary'}}}}},
+         responses=PDF_RESPONSES,
          tags=['打印报告'])
 def comparison_pdf(comparison_id: str):
     from .comparison_reports import render_pdf

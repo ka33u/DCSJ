@@ -8,7 +8,7 @@ import sqlite3
 import threading
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _migration_lock = threading.Lock()
 _initialized = set()
 
@@ -94,8 +94,14 @@ def _migrate(db, path):
                 "CREATE INDEX IF NOT EXISTS library_kind ON library_entries(kind,archived,updated_at DESC)",
             ]:
                 db.execute(statement)
-            db.execute("INSERT OR IGNORE INTO project_revisions "
-                       "SELECT id,revision,name,parameters,notes,updated_at FROM projects")
+            for table, column, declaration in [('projects', 'lineage', "TEXT NOT NULL DEFAULT '{}'"),
+                                               ('project_revisions', 'lineage', "TEXT NOT NULL DEFAULT '{}'"),
+                                               ('calculations', 'archived', 'INTEGER NOT NULL DEFAULT 0')]:
+                existing = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
+                if column not in existing:
+                    db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {declaration}')
+            db.execute("INSERT OR IGNORE INTO project_revisions(project_id,revision,name,parameters,notes,created_at,lineage) "
+                       "SELECT id,revision,name,parameters,notes,updated_at,lineage FROM projects")
             db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             db.commit()
             _initialized.add(identity)

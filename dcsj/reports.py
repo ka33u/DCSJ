@@ -120,7 +120,7 @@ def render(snapshot):
                 '<h2>运行与电磁指标</h2>', table([], summary.grid(summary.performance(v)), 'pairs'), '</section>']
     curves = [curve for curve in snapshot.get('curves', []) if curve.get('display') is not False]
     if curves:
-        content.append('<h2 class="break">性能曲线</h2>')
+        content.append('<h2 class="break">性能曲线</h2><p>' + text(summary.CURVE_NOTE) + '</p>')
         for curve in curves:
             content.append('<figure><figcaption>' + text(curve['title']) + '</figcaption>' + curve_svg(curve) + '</figure>')
     content += ['<h2 class="break">完整输入</h2>', table(['字段', '参数', '输入', '单位'], [

@@ -71,8 +71,11 @@ def _font():
     path = pdf_fonts.font_path()
     if not path.is_file():
         raise PDFUnavailableError('尚未安装 PDF 中文字体，请运行 python scripts/install_pdf_font.py；也可使用网页打印。')
-    stat = path.stat()
-    return _load_font(str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    try:
+        stat = path.stat()
+        return _load_font(str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    except OSError as error:
+        raise PDFUnavailableError('PDF 字体无法访问，请检查 DCSJ_PDF_FONT 和文件权限。') from error
 
 
 class Slot(Flowable):
@@ -243,6 +246,7 @@ def _render(snapshot):
     curves = [curve for curve in snapshot.get('curves', []) if curve.get('display') is not False]
     if curves:
         story += [PageBreak(), paragraph('性能曲线', 'h2')]
+        story.append(paragraph(summary.CURVE_NOTE, 'small'))
         for index, curve in enumerate(curves):
             if index and index % 2 == 0:
                 story += [PageBreak(), paragraph('性能曲线（续）', 'h2')]
@@ -270,7 +274,7 @@ def _render(snapshot):
     for key, value in snapshot.get('provenance', {}).items():
         provenance.append(paragraph(key + '：' + plain(value)))
     provenance.append(paragraph('报告直接读取保存的输入和结果，不使用工作台中后来修改的参数。数值以最多 8 位有效数字展示；完整精度可通过计算记录 API 获取。', 'small'))
-    story.append(KeepTogether(provenance))
+    story.extend(provenance)
 
     def page(canvas, doc):
         canvas.saveState()
