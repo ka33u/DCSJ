@@ -37,6 +37,8 @@ def targets(snapshot):
         specs.append(('槽满率', '_wire_target', 'Sf', 100, '%'))
     rows = []
     for label, target_key, result_key, factor, unit in specs:
+        # Preserve targets recorded in 0.7.0 snapshots. New calculations only
+        # contain the original ATA/PF/IST/TST/TM inputs.
         target, result = p.get(target_key + '_req', p.get(target_key)), v.get(result_key)
         target = target * factor if finite(target) else None
         result = result * factor if finite(result) else None

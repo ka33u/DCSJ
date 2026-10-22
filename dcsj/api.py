@@ -107,7 +107,7 @@ class ModelCalculationInput(BaseModel):
 
 class CalculationResult(BaseModel):
     model_config = ConfigDict(extra='allow')
-    inputs: dict = Field(description='实际计算的规范化输入；*_req 只用于判定')
+    inputs: dict = Field(description='实际计算的规范化输入，设计指标沿用 ATA、PF、IST、TST、TM')
     values: dict[str, float] = Field(description='规范数值输出；磁密原值 G，效率与功率因数均为 0–1 比例')
     metrics: list[dict] = Field(description='values 的同值元数据视图，含单位和 source；不是另一套计算')
     curves: list[dict] = Field(description='趋势采样；校核和寻优使用 values，不从曲线读判定值')
@@ -116,7 +116,7 @@ class CalculationResult(BaseModel):
     values_units: dict[str, str] = Field(default_factory=dict)
     values_si: dict[str, dict] = Field(default_factory=dict, description='磁密等 SI 补充值，原 values 保持兼容单位')
     electrical: dict = Field(default_factory=dict, description='接法、相电压与线电压，Y 按 sqrt(3) 换算')
-    requirements: list[dict] = Field(default_factory=list, description='指标目标、判定方向、实际值和 passed')
+    requirements: list[dict] = Field(default_factory=list, description='原参数 ATA、PF、IST、TST、TM 与结果的比较，含判定方向和 passed')
     loss_semantics: dict = Field(default_factory=dict, description='损耗输入单位、核内比例、额定 W 及可选转速折算')
     material_semantics: dict = Field(default_factory=dict, description='材料声明频率与核内频率折算分开返回')
     curve_checks: list[dict] = Field(default_factory=list, description='曲线起动点和采样峰值与校核标量的差值')

@@ -50,7 +50,7 @@ async function app(t, route) {
     let data;
     if (path === '/status') data = { name: 'DCSJ synthetic test', version: 'test', catalog: {},
       engine: { name: '人工测试', limitations: [] }, reports: { pdf: { available: true } } };
-    else if (path === '/schema') data = { groups: [{ id: 'basic', label: '基本参数' }], fields: [
+    else if (path === '/schema') data = { retired_input_keys: ['ATA_req', 'PF_req', 'IST_req', 'TST_req', 'TM_req'], groups: [{ id: 'basic', label: '基本参数' }], fields: [
       { key: 'SizeX', label: '设计名称', group: 'basic', type: 'text', role: 'input' },
       { key: 'kW', label: '额定功率', group: 'basic', type: 'number', role: 'input' }] };
     else if (path === '/series') data = { items: ['人工系列'] };
@@ -505,4 +505,29 @@ test('catalog lineage follows calculation and save, then resets on unrelated des
   ui.doc.querySelector('#calculate-button').click();
   await until(() => ui.calls.filter(c => c.url.pathname.endsWith('/calculate')).length === 2, 'Second calculation sent');
   assert.equal(ui.calls.filter(c => c.url.pathname.endsWith('/calculate'))[1].body.base_model_id, null);
+});
+
+test('old comparison-only requirements do not reappear when continuing a snapshot', async t => {
+  const old = snapshot('old');
+  old.inputs = { ...parameters, ATA: .9, PF: .8, IST: 7, TST: 2, TM: 2.5,
+    ATA_req: .99, PF_req: .95, IST_req: 5, TST_req: 4, TM_req: 5 };
+  const ui = await app(t, (path) => {
+    if (path === '/calculations') return { total: 1, items: [{ id: 'old', name: '旧记录', created_at: created }] };
+    if (path === '/calculations/old') return old;
+    if (path === '/calculate') return snapshot('new');
+  });
+  ui.nav('comparisons');
+  await until(() => ui.doc.querySelector('#calculation-table-body button'), 'History loaded');
+  ui.find('#calculation-table-body button', '打开快照').click();
+  await until(() => ui.doc.querySelector('#current-design').textContent === old.name, 'Snapshot loaded');
+  const inputs = JSON.parse(ui.doc.querySelector('#raw-parameters').textContent);
+  assert.equal(inputs.ATA, .9);
+  assert.ok(!Object.keys(inputs).some(key => key.endsWith('_req')));
+  assert.ok(!ui.doc.querySelector('#parameter-tabs').textContent.includes('设计要求'));
+  ui.doc.querySelector('#calculate-button').click();
+  await until(() => ui.calls.some(call => call.url.pathname.endsWith('/calculate')), 'Recalculation sent');
+  const sent = ui.calls.find(call => call.url.pathname.endsWith('/calculate')).body.parameters;
+  assert.equal(sent.ATA, .9);
+  assert.ok(!Object.keys(sent).some(key => key.endsWith('_req')));
+  assert.equal(old.inputs.ATA_req, .99, 'Original snapshot remains unchanged');
 });

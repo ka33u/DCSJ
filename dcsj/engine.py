@@ -211,7 +211,6 @@ def calculate_design(values):
         )
     curves = extract_curves(result, p, warnings)
     metadata = semantics.result_metadata(p, output, material, curves)
-    warnings.append('ATA、PF、IST 是原版迭代初值并参与计算；仅变更设计要求请使用对应 *_req 字段。')
     for key, resolved in metadata['loss_semantics'].items():
         if resolved['mode'] == 'legacy':
             warnings.append(f"{key}={p[key]:g} 按 {resolved['resolved_unit']} 解析，额定点损耗 {resolved['rated_w']:.7g} W。")

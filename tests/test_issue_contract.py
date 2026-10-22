@@ -46,17 +46,15 @@ def test_loss_units_threshold_and_opt_in_speed(parameters):
             validate({**parameters, **overrides}, strict=True)
 
 
-def test_response_values_si_requirements_and_independent_curve(parameters):
+def test_response_values_si_original_targets_and_independent_curve(parameters):
     values = {'ATA1': .9, 'PF1': .81, 'IST1': 6, 'TST1': 2, 'TM1': 2.8, 'Bg': 6000}
     curves = [{'id': 'slip', 'series': [
         {'points': [{'x': 1, 'y': 6.2}]}, {'points': [{'x': 1, 'y': 2.1}, {'x': .3, 'y': 3.3}]}]}]
     p = validate({**parameters, 'f': 60})
     first = semantics.result_metadata(p, values, {'kind': 'mdb_custom'}, curves)
-    second = semantics.result_metadata({**p, 'ATA_req': .95}, values, {'kind': 'mdb_custom'}, copy.deepcopy(curves))
-    assert first['input_fingerprints']['core_input_sha256'] == second['input_fingerprints']['core_input_sha256']
-    assert first['input_fingerprints']['requirements_sha256'] != second['input_fingerprints']['requirements_sha256']
-    assert second['requirements'][0]['passed'] is False
-    assert second['requirements'][0]['target_source'] == 'ATA_req'
+    assert first['requirements'][0]['target'] == p['ATA']
+    assert first['requirements'][0]['target_source'] == 'ATA'
+    assert first['input_fingerprints'] == {'core_input_sha256': semantics.fingerprint(p)}
     assert first['values_si']['Bg'] == {'value': .6, 'unit': 'T'}
     assert semantics.metric_info('Bg', 6000)['si'] == first['values_si']['Bg']
     assert first['material_semantics']['loss_curve_frequency_hz'] is None
@@ -178,6 +176,33 @@ def test_schema_and_v4_migration_preserve_snapshots(client, parameters, snapshot
     assert 'PFE' not in projects.get_project(item['id'])['parameters']
     assert calculations.get(saved['calculation_id'])['values'] == snapshot['values']
     fields = {f['key']: f for f in schema()['fields']}
-    assert fields['ATA_req']['participates_in_calculation'] is False
+    assert not any(key.endswith('_req') for key in fields)
+    assert not any(group['id'] == 'requirements' for group in schema()['groups'])
+    assert fields['ATA']['label'] == '标准效率'
     assert fields['ATA']['purpose'] == 'legacy_iteration_seed'
     assert fields['Bg']['unit'] == 'G'
+
+
+def test_removed_requirements_preserve_old_records_but_not_new_inputs(client, parameters, snapshot, monkeypatch):
+    from dcsj import jobs, report_summary
+    retired = {'ATA_req': .99, 'PF_req': .97, 'IST_req': 5, 'TST_req': 4, 'TM_req': 5}
+    old_parameters = {**parameters, **retired}
+    project = projects.save_project('Old 0.7.0 design', old_parameters)
+    assert project['parameters'] == parameters and project['raw_parameters'] == old_parameters
+    for key, value in retired.items():
+        rejected = client.post('/api/v1/calculate', json={'parameters': {**parameters, key: value}})
+        assert rejected.status_code == 422 and '独立设计要求已取消' in rejected.text
+    original = copy.deepcopy(snapshot)
+    original['inputs'] = old_parameters
+    saved = calculations.save(original)
+    assert calculations.get(saved['calculation_id'])['inputs'] == old_parameters
+    assert report_summary.targets(saved)[0][1] == '99'  # Historical report retains recorded target.
+    assert report_summary.targets(snapshot)[0][1] == '90'  # New reports use original ATA.
+    monkeypatch.setattr(api, 'compute', lambda inputs: {**copy.deepcopy(snapshot), 'inputs': validate(inputs)})
+    new = client.post('/api/v1/calculate', json={'parameters': project['parameters'], 'project_id': project['id'],
+                                             'project_revision': 1, 'persist': False})
+    assert new.status_code == 200 and not any(k.endswith('_req') for k in new.json()['inputs'])
+    stored_job = {'parameters': old_parameters, 'variables': [{'key': 'L', 'minimum': 150, 'maximum': 180}]}
+    reopened = jobs.saved_request(stored_job)
+    assert reopened.parameters == validate(parameters)
+    assert stored_job['parameters'] == old_parameters

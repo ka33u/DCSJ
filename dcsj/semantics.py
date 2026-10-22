@@ -4,7 +4,7 @@ import json
 import math
 import struct
 
-from .parameters import REQUIREMENT_KEYS, field_info, InputError
+from .parameters import field_info, InputError
 
 
 def f32(value):
@@ -72,11 +72,11 @@ def electrical(p):
 def requirements(p, values):
     items = []
     for key, relation in [('ATA', 'minimum'), ('PF', 'minimum'), ('IST', 'maximum'), ('TST', 'minimum'), ('TM', 'minimum')]:
-        target = p.get(key + '_req', p.get(key))
+        target = p.get(key)
         actual = values.get(key + '1')
         passed = None if target is None or actual is None else actual <= target if relation == 'maximum' else actual >= target
         items.append({'metric': key + '1', 'target': target, 'relation': relation, 'actual': actual,
-                      'passed': passed, 'target_source': key + '_req' if key + '_req' in p else key,
+                      'passed': passed, 'target_source': key,
                       'decision_source': 'values.' + key + '1'})
     return items
 
@@ -108,7 +108,6 @@ def result_metadata(p, values, material, curves):
             peak = max(points, key=lambda p: p['y'])
             checks.append({'metric': 'TM1', 'check_value': values['TM1'], 'curve_value': peak['y'],
                            'delta': peak['y'] - values['TM1'], 'position': {'s': peak['x']}})
-    req = {key: p[key] for key in REQUIREMENT_KEYS if key in p}
     return {'contract': {'version': '1.1', 'values': 'canonical-numerical-output',
                          'metrics': 'metadata-view-of-values', 'decision_values': ['IST1', 'TST1', 'TM1'],
                          'curve_authority': 'trend-only'},
@@ -119,5 +118,4 @@ def result_metadata(p, values, material, curves):
             'material_semantics': {'loss_curve_frequency_hz': 50 if material.get('kind') == 'user_native' else None,
                                    'measurement_status': 'user_declared' if material.get('kind') == 'user_native' else 'not_declared_in_table',
                                    'loss_unit': 'kernel_native', 'loss_frequency_model': frequency_model(p['f'])},
-            'input_fingerprints': {'core_input_sha256': fingerprint({k: v for k, v in p.items() if k not in REQUIREMENT_KEYS}),
-                                   'requirements_sha256': fingerprint(req)}}
+            'input_fingerprints': {'core_input_sha256': fingerprint(p)}}

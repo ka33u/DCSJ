@@ -21,10 +21,10 @@ def example_data():
 ELEMENT_KEYS = [f"{key}{i}" for i in range(1, 10) for key in ("N", "A", "B", "L")]
 INPUT_KEYS = [k for k in INPUT_MAP if k != "_wire_target"] + ELEMENT_KEYS + [
     "SizeX", "Jiefa", "Jueyuan", "CORR", "_wire_target", "_curve", "_load_curve"]
-REQUIREMENT_KEYS = [key + '_req' for key in ('ATA', 'PF', 'IST', 'TST', 'TM')]
-OPTIONAL_KEYS = REQUIREMENT_KEYS + ['pfw_unit', 'ps_unit', 'pfw_ref_rpm', 'pfw_speed_exponent']
+RETIRED_INPUT_KEYS = [key + '_req' for key in ('ATA', 'PF', 'IST', 'TST', 'TM')]
+OPTIONAL_KEYS = ['pfw_unit', 'ps_unit', 'pfw_ref_rpm', 'pfw_speed_exponent']
 GROUPS = [
-    ("rating", "额定参数与原版初值"), ("requirements", "设计要求（仅判定）"), ("geometry", "铁心与气隙"),
+    ("rating", "额定参数与设计指标"), ("geometry", "铁心与气隙"),
     ("stator", "定子槽"), ("rotor", "转子槽"),
     ("winding", "绕组与导线"), ("material", "材料与损耗"),
     ("elements", "自定义槽形元素"), ("controls", "计算选项"),
@@ -32,7 +32,6 @@ GROUPS = [
 ]
 GROUP_KEYS = {
     "rating": "SizeX Jiefa Jueyuan kW p f Ufai ATA PF IST TST TM",
-    "requirements": " ".join(REQUIREMENT_KEYS),
     "geometry": "Q1 Q2 D1 Df Dn Xn Di1 Di2 g L dk nk dk2 d kfe",
     "stator": "b01 hs0 zs1 bs1 bs2 hs12 czn hw Si Wi",
     "rotor": "zc bc02 hr0 zs2 br1 br2 br3 br4 hr12 hr3 hr4 Srr Jc srl hrr hrl le lel",
@@ -51,9 +50,6 @@ SPECIAL_LABELS = {
     "CORR": "冷轧硅钢修正", "Ufai": "相电压", "ATA1": "效率",
     "PF1": "功率因数", "IST1": "启动电流倍数", "TST1": "启动转矩倍数",
     "TM1": "最大转矩倍数（原公式估计）",
-    'ATA': '原版效率初值', 'PF': '原版功率因数初值', 'IST': '原版起动电流初值',
-    'ATA_req': '要求效率', 'PF_req': '要求功率因数', 'IST_req': '允许起动电流倍数',
-    'TST_req': '要求起动转矩倍数', 'TM_req': '要求最大转矩倍数',
     'pfw_unit': '机械损耗输入单位', 'ps_unit': '杂散损耗输入单位',
     'pfw_ref_rpm': '机械损耗参考同步转速', 'pfw_speed_exponent': '机械损耗转速指数',
 }
@@ -63,7 +59,6 @@ UNIT_OVERRIDES = {
     "A11": "A/cm", "n": "r/min", "Tn": "N·m", "TstNm": "N·m",
     "Gcu": "kg", "Gfe": "kg", "Gal": "kg", "R1a": "Ω",
     'pfw_ref_rpm': 'r/min', 'pfw_speed_exponent': '',
-    **{key: 'ratio' if key in {'ATA_req', 'PF_req'} else '倍' for key in REQUIREMENT_KEYS},
     **{key: 'G' for key in ('Bg', 'Bts', 'Btr', 'Bys', 'Byr')},
     **{key: "p.u." for key in ("r1b", "r2", "r2st", "rst", "X1", "X2", "X",
                                "X1s", "X2s", "Xst")},
@@ -115,12 +110,7 @@ def schema():
             info["description"] = "绕组相电压；△ 接法等于线电压，Y 接法线电压为相电压 × √3。"
         if key in {'ATA', 'PF', 'IST'}:
             info.update(participates_in_calculation=True, purpose='legacy_iteration_seed',
-                        description='原程序的迭代初值，改变它可能改变收敛结果。仅修改验收要求请使用 ' + key + '_req。')
-        if key in REQUIREMENT_KEYS:
-            info.update(optional=True, participates_in_calculation=False, purpose='requirement', min=0,
-                        description='只用于目标比较，不传入数值核。未设置时沿用原版对应值作为比较目标。')
-            if key in {'ATA_req', 'PF_req'}:
-                info['max'] = 1
+                        description='沿用原程序，同时用于设计指标比较和计算初值。')
         if key in {'pfw_unit', 'ps_unit'}:
             info.update(type='select', optional=True, default='legacy', options=[
                 {'value': 'legacy', 'label': '原版自动判断'}, {'value': 'W', 'label': 'W（额定点）'},
@@ -137,7 +127,8 @@ def schema():
     for key in OUTPUT_MAP:
         if key not in INPUT_KEYS:
             fields.append({**field_info(key), "type": "number", "role": "output"})
-    return {"groups": [{"id": key, "label": label} for key, label in GROUPS], "fields": fields}
+    return {"groups": [{"id": key, "label": label} for key, label in GROUPS], "fields": fields,
+            'retired_input_keys': RETIRED_INPUT_KEYS}
 
 
 def normalize_keys(values):
@@ -166,6 +157,8 @@ def check_keys(values):
         message = '未知输入字段' + (f'；是否指 {match}？字段名区分大小写' if match else '')
         if key in OUTPUT_MAP:
             message = '此字段为历史计算输出，不能作为输入'
+        if key in RETIRED_INPUT_KEYS:
+            message = '独立设计要求已取消，请使用原参数 ' + key.removesuffix('_req')
         issues.append({'field': key, 'message': message})
     if issues:
         raise InputError(issues)
@@ -241,7 +234,7 @@ def validate(values, *, strict=False):
             else:
                 clean[key] = raw
             continue
-        maximum = 1 if key in {'ATA_req', 'PF_req'} else 6 if key == 'pfw_speed_exponent' else 1e9
+        maximum = 6 if key == 'pfw_speed_exponent' else 1e9
         try:
             number = float(raw)
             if isinstance(raw, bool) or not math.isfinite(number) or not 0 <= number <= maximum:

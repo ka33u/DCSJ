@@ -45,11 +45,11 @@ python run.py
 
 保存项目允许未完成的草稿；计算时会严格校验。输入 `Ufai` 是绕组相电压。尺寸预览是设计辅助图，不能直接用于加工。
 
-## 0.7.0 接口与计算语义
+## 0.7.1 接口与计算语义
 
-本版处理 issue #1 的九类问题，默认数值路径保持原版行为。升级会将用户库结构迁移至 v5；历史计算快照不重算、不改写。升级前备份 `.runtime/projects.sqlite`，回退程序时使用升级前备份。
+在 0.7.0 接口改进基础上，0.7.1 取消独立设计要求，恢复原版设计指标流程。默认数值路径保持原版行为。升级会将用户库结构迁移至 v5；历史计算快照不重算、不改写。升级前备份 `.runtime/projects.sqlite`，回退程序时使用升级前备份。
 
-- **要求与初值分开**：`ATA`、`PF`、`IST` 是原版迭代初值，会影响收敛。新增 `ATA_req`、`PF_req`、`IST_req`、`TST_req`、`TM_req` 只参与结果判定和报告目标，不写入数值核。效率、功率因数为 0–1；起动电流为上限，其余为下限。未设置 `*_req` 时，目标比较兼容旧字段。`requirements` 返回判定依据，`core_input_sha256` 与 `requirements_sha256` 分别追踪两类输入。
+- **恢复原版设计指标**：只编辑 `ATA`、`PF`、`IST`、`TST`、`TM` 一组值，报告与 `requirements` 响应按这组参数比较。`ATA`、`PF`、`IST` 继续沿用原计算初值行为。工作台及输入 schema 已移除独立的 `*_req` 字段；新 API 请求使用这些旧字段会返回 422，并提示对应原字段。打开旧设计、用户型号、快照或导入设计时不再携带独立要求；旧快照及其报告仍保留当时的目标和计算结果。其他 0.7.0 接口改进保留。
 - **损耗单位显式化**：`pfw_unit`、`ps_unit` 可填 `W`、`pu`、`legacy`，默认 `legacy`。原规则在单精度转换后以 `>1` 判断 W，否则为额定输出功率比例；显式 `W` 支持 0.8 W、1 W。`loss_semantics` 返回解析单位、核内比例和额定损耗 W。机械损耗在负荷曲线上保持固定 W，杂散损耗按输出功率变化。仅设置正数 `pfw_ref_rpm` 时，启用 `(当前同步转速/参考同步转速)^pfw_speed_exponent` 工程估算，指数默认 2；不自动假设每台机器都适用转速平方律。
 - **材料频率**：`material_semantics.loss_curve_frequency_hz=null` 表示原表未声明实测频率；`loss_frequency_model` 单独列出核内 `(f/50)^1.33` 折算及实际因子。这不是实测 60 Hz 材料数据。用户材料继续按现有单位和频率兼容性校验，不能将 60 Hz 实测表直接当作 50 Hz 基表输入。
 - **校核与曲线**：`values` 为规范数值输出，`metrics` 是同值元数据视图。`IST1`、`TST1`、`TM1` 用于程序内设计校核与寻优；`curves[].authoritative=false` 表示趋势采样，`curve_checks` 单独返回起动点、采样峰值与校核输出的差值。未拉伸曲线去强制匹配标量输出；该标记不构成实机验证结论。
@@ -64,7 +64,7 @@ python run.py
 POST /api/v1/models/<model_id>/calculate
 Content-Type: application/json
 
-{"overrides":{"f":60,"Ufai":460,"ATA_req":0.92,"pfw_unit":"W","pfw":200},"persist":false}
+{"overrides":{"f":60,"Ufai":460,"ATA":0.92,"pfw_unit":"W","pfw":200},"persist":false}
 ```
 
 通用 `/calculate` 同样支持 `persist:false`，默认 true。试算返回 `calculation_id:null`、`persisted:false`，不创建计算记录、审计事件或报告。`base_model_id` 可用于计算和项目保存，来源由服务器查库解析；项目版本和后续对比保留原型号、来源文件摘要和资源包版本。更新项目省略该字段时保留原来源，显式 null 清除来源。来源标识表示派生基础，不表示输入与基础型号完全相同。

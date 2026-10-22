@@ -151,7 +151,10 @@
   }
   function validParameters(parameters) {
     if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) throw new Error("设计中的 parameters 必须是参数对象。");
-    const entries = Object.entries(parameters);
+    // Retired 0.7.0 comparison-only inputs are not carried into a new design.
+    // The original calculation snapshot/document remains unchanged on the server.
+    const retired = new Set(state.schema.retired_input_keys || []);
+    const entries = Object.entries(parameters).filter(([key]) => !retired.has(key));
     if (!entries.length) throw new Error("设计参数为空，无法载入。");
     for (const [key, value] of entries) {
       if (key === "__proto__" || key === "constructor" || key === "prototype") throw new Error("设计文件包含不支持的字段名。");

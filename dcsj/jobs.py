@@ -9,7 +9,7 @@ from . import calculations
 from .engine import CalculationError, CalculationUnavailableError, engine_status
 from .execution import BusyError, compute
 from .optimization import SearchInput, Search, assess, in_region, metrics
-from .parameters import InputError
+from .parameters import InputError, RETIRED_INPUT_KEYS
 from .storage import ConflictError, NotFoundError, audit, connect, database_path, dumps, now
 
 TERMINAL = {'succeeded', 'failed', 'cancelled', 'interrupted'}
@@ -79,11 +79,17 @@ def cancel(identity, *, database=None):
     return get(identity, database=database)
 
 
+def saved_request(document):
+    """Reopen old jobs without reviving the removed comparison-only inputs."""
+    return SearchInput.model_validate({**document, 'parameters': {
+        key: value for key, value in document['parameters'].items() if key not in RETIRED_INPUT_KEYS}})
+
+
 def retry(identity):
     previous = get(identity)
     if previous['status'] not in TERMINAL:
         raise ConflictError('只能重新运行已结束的任务。')
-    request = SearchInput.model_validate(previous['request'])
+    request = saved_request(previous['request'])
     request.name = (request.name[:110] + ' · 重试')
     return create(request)
 
@@ -129,7 +135,7 @@ class Worker:
 
     def run_job(self, identity):
         job = get(identity, database=self.database)
-        request = SearchInput.model_validate(job['request'])
+        request = saved_request(job['request'])
         search = Search(request)
         best_id, completed = None, 0
         for ordinal in range(1, request.max_evaluations + 1):
