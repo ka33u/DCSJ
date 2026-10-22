@@ -6,6 +6,55 @@ import pytest
 
 from dcsj.curves import material_plot, natural_spline, plot_data, quadratic_fit, slip_plot, trend_points
 from dcsj.reports import curve_svg
+from dcsj.engine import extract_curves
+
+
+def test_load_arrays_are_independent_and_keep_original_units():
+    xs = [.3, .4, .5, .6, .75, .9, 1., 1.1, 1.2]
+    eta = [.72 + .1 * x for x in xs]
+    pf = [.55 + .2 * x for x in xs]
+    power = [12 * x / e for x, e in zip(xs, eta)]
+    current = [p * 1000 / (3 * 230 * f) for p, f in zip(power, pf)]
+    slip = [.04 * x for x in xs]
+    arrays = [(0x4AB89C, xs), (0x4AB830, eta), (0x4AB80C, pf),
+              (0x4AB854, power), (0x4AB7C4, current), (0x4AB7A0, slip)]
+    memory = {address + i * 4: value for address, values in arrays for i, value in enumerate(values)}
+    class Memory:
+        f32 = staticmethod(memory.__getitem__)
+    warnings = []
+    curves = extract_curves({'memory': Memory()}, {'_curve': 0, '_load_curve': 1}, warnings)
+    curve = curves[0]
+    for series, expected in zip(curve['series'], [power, slip, current, pf, eta]):
+        assert [p['x'] for p in series['points']] == xs
+        assert [p['y'] for p in series['points']] == expected
+    assert warnings == []
+    assert all(c['display'] is False for c in curves[1:])
+    for s, expected in zip(curve['plot']['series'], [power, slip, current, pf, eta]):
+        precision = curve['plot']['input_decimal_places'][s['axis']]
+        assert s['points'] == trend_points(xs, [round(y, precision) for y in expected])
+
+
+def test_load_efficiency_percent_display_preserves_geometry_and_snapshot():
+    curve = {'id': 'load_characteristic', 'series': [{'name': '效率 η', 'points': [{'x': 1, 'y': .82}]}],
+             'plot': {'x_min': 20, 'x_max': 150,
+                      'y_axes': [{'id': 'pf', 'label': '功率因数 cosφ', 'min': 0, 'max': 1},
+                                 {'id': 'efficiency', 'label': '效率 η', 'min': 0, 'max': 1}],
+                      'series': [{'name': '功率因数 cosφ', 'axis': 'pf', 'points': [{'x': 100, 'y': .75}]},
+                                 {'name': '效率 η', 'axis': 'efficiency', 'points': [{'x': 100, 'y': .82}]}]}}
+    original = deepcopy(curve)
+    normalized = plot_data(curve)
+    assert normalized['y_axes'][0]['max'] == 1
+    assert normalized['y_axes'][1]['max'] == 100
+    assert normalized['y_axes'][1]['short_label'] == 'η (%)'
+    assert normalized['series'][0]['points'][0]['y'] == .75
+    assert normalized['series'][1]['points'][0]['y'] == 82
+    assert curve == original
+    # A normalized plot is already in percent; do not scale it a second time.
+    assert plot_data({**curve, 'plot': normalized}) == normalized
+    old_svg = curve_svg({**curve, 'id': 'original_ratio_display'})
+    new_svg = curve_svg(curve)
+    assert re.findall(r'<polyline points="([^"]+)"', old_svg) == re.findall(r'<polyline points="([^"]+)"', new_svg)
+    assert '效率 η (%)' in new_svg and 'η (%)' in new_svg
 
 
 def test_quadratic_trend_recovers_known_polynomial_and_explicit_extrapolation():

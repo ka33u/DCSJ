@@ -121,6 +121,17 @@ def plot_data(curve):
         if axis not in ids:
             raise ValueError('曲线引用未知纵轴')
         normalized.append({**item, 'color': color, 'axis': axis})
+    if curve.get('id') == 'load_characteristic':
+        # Saved plots and API samples use ratios. Convert a render-only copy,
+        # including both the axis range and its points, so geometry is unchanged.
+        for axis in axes:
+            if axis['id'] != 'efficiency' or axis.get('unit') == '%':
+                continue
+            axis.update(label='效率 η (%)', short_label='η (%)', unit='%',
+                        min=axis['min'] * 100, max=axis['max'] * 100)
+            for item in normalized:
+                if item['axis'] == axis['id']:
+                    item.update(name=axis['label'], points=[{**p, 'y': p['y'] * 100} for p in item['points']])
     return {'series': normalized, 'y_axes': axes, 'x_min': xmin, 'x_max': xmax,
             'x_reverse': bool(source.get('x_reverse')), 'x_label': source.get('x_label', curve.get('x_label', '')),
             'aspect_ratio': source.get('aspect_ratio') if isinstance(source.get('aspect_ratio'), (int, float)) and .5 <= source['aspect_ratio'] <= 4 else None,

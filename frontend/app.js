@@ -462,6 +462,15 @@
     if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || xMax <= xMin || !axes.length || axes.some(a => !Number.isFinite(a.min) || !Number.isFinite(a.max) || a.max <= a.min)) {
       card.append(el("p", "chart-warning", "坐标轴范围无效，请检查曲线数据。")); return card;
     }
+    if (curve.id === 'load_characteristic') axes.forEach(axis => {
+      // Match the report renderer: transform copies, never saved/API ratios.
+      if (axis.id !== 'efficiency' || axis.unit === '%') return;
+      Object.assign(axis, { label: '效率 η (%)', short_label: 'η (%)', unit: '%', min: axis.min * 100, max: axis.max * 100 });
+      series.filter(item => item.axis === axis.id).forEach(item => {
+        item.name = axis.label;
+        item.points = item.points.map(point => ({ ...point, y: point.y * 100 }));
+      });
+    });
     const byAxis = new Map(axes.map(axis => [axis.id, axis]));
     if (series.some(item => item.axis && !byAxis.has(item.axis))) { card.append(el("p", "chart-warning", "曲线引用未知坐标轴。")); return card; }
     const axisFor = item => byAxis.get(item.axis || axes[0].id);
@@ -469,7 +478,8 @@
     const legend = el("div", "chart-legend");
     series.forEach(item => {
       const label = el("span", "legend-item"), dot = el("i", "legend-dot"); dot.style.backgroundColor = item.color;
-      label.append(dot, document.createTextNode(`${item.name}${axes.length > 1 ? ` · ${axisFor(item).label}` : ""}`)); legend.append(label);
+      const axisLabel = axisFor(item).label;
+      label.append(dot, document.createTextNode(`${item.name}${axes.length > 1 && item.name !== axisLabel ? ` · ${axisLabel}` : ""}`)); legend.append(label);
     });
     card.append(legend);
     if (plot.note) card.append(el("p", "chart-note muted small", plot.note));
@@ -510,6 +520,7 @@
     const viewport = el('div', 'curve-viewport'); viewport.append(svg); card.append(viewport);
     const details = el("details", "chart-data"), scroll = el("div", "table-scroll"), table = el("table", "result-table"), head = el("thead"), header = el("tr"), body = el("tbody");
     details.append(el("summary", "", "查看原始采样数据（拟合及显示坐标不改写原始值）"));
+    if (curve.id === 'load_characteristic') details.append(el('p', 'muted small', '原始负荷率、效率、功率因数和转差率均为比值；图中负荷率与效率以百分数显示。输入功率为 kW，电流为相电流 A。'));
     ["曲线", curve.x_label || "x", curve.y_label || "y"].forEach(label => header.append(el("th", "", label))); head.append(header);
     rawSeries.forEach(item => validPoints(item.points).forEach(point => { const row = el("tr"); [item.name, fmt(point.x), fmt(point.y)].forEach(value => row.append(el("td", "", value))); body.append(row); }));
     table.append(head, body); scroll.append(table); details.append(scroll); card.append(details);

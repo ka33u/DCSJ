@@ -105,6 +105,33 @@ test('versioned plots use reverse x and separate y scales while raw tables and o
   assert.ok(chart.textContent.includes('不是计算值'));
 });
 
+test('load chart distinguishes percent efficiency from ratio power factor without changing data or shape', async t => {
+  const value = snapshot('a');
+  const curve = { id: 'load_characteristic', title: '人工负荷图', series: [
+    { name: '功率因数 cosφ', points: [{ x: 1, y: .75 }] },
+    { name: '效率 η', points: [{ x: 1, y: .82 }] }],
+    plot: { x_min: 20, x_max: 150,
+      y_axes: [{ id: 'pf', label: '功率因数 cosφ', min: 0, max: 1 }, { id: 'efficiency', label: '效率 η', min: 0, max: 1 }],
+      series: [{ name: '功率因数 cosφ', axis: 'pf', points: [{ x: 100, y: .75 }] },
+               { name: '效率 η', axis: 'efficiency', points: [{ x: 100, y: .82 }] }] } };
+  value.curves = [curve, { ...structuredClone(curve), id: 'original_ratio_display', title: '原始比值刻度' }];
+  const original = JSON.stringify(value);
+  const ui = await app(t, path => path === '/calculations' ? records() : path === '/calculations/a' ? value : undefined);
+  ui.nav('comparisons'); await settle(); ui.find('#calculation-table-body button', '打开快照').click();
+  await until(() => ui.doc.querySelectorAll('#result-content .chart-card').length === 2, 'Charts loaded');
+  const [chart, control] = ui.doc.querySelectorAll('#result-content .chart-card');
+  const labels = axis => [...chart.querySelectorAll(`text[data-axis=${axis}]`)].map(n => n.textContent);
+  assert.equal(labels('pf')[0], '1'); assert.equal(labels('efficiency')[0], '100');
+  assert.equal(labels('efficiency').at(-1), '0');
+  assert.ok(chart.textContent.includes('η (%)'));
+  assert.ok(chart.querySelector('.chart-data').textContent.includes('均为比值'));
+  assert.deepEqual([...chart.querySelectorAll('tbody tr')].map(n => n.textContent), ['功率因数 cosφ10.75', '效率 η10.82']);
+  const paths = el => [...el.querySelectorAll('path[data-series]')].map(n => n.getAttribute('d'));
+  assert.deepEqual(paths(chart), paths(control), 'Unit conversion must preserve the two distinct curves');
+  assert.notEqual(paths(chart)[0], paths(chart)[1]);
+  assert.equal(JSON.stringify(value), original, 'Saved API response stays unchanged');
+});
+
 test('a nonempty model catalog renders and loads a design without project actions', async t => {
   const ui = await app(t, path => {
     if (path === '/models') return { total: 1, items: [{ id: 'synthetic-model', model: '人工型号', source: '人工数据' }] };

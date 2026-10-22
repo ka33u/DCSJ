@@ -111,6 +111,22 @@ def test_missing_design_targets_remain_blank_in_summary(snapshot):
     assert '<td>功率因数 cosφ</td><td>0.8</td><td>—</td><td>—</td>' in html
 
 
+def test_load_efficiency_percent_axis_is_consistent_in_pdf_and_html(snapshot):
+    value = saved_snapshot(snapshot)
+    value['curves'] = [{'id': 'load_characteristic', 'title': '人工负荷图', 'series': [],
+        'plot': {'x_min': 20, 'x_max': 150,
+                 'y_axes': [{'id': 'pf', 'label': '功率因数 cosφ', 'min': 0, 'max': 1},
+                            {'id': 'efficiency', 'label': '效率 η', 'min': 0, 'max': 1}],
+                 'series': [{'name': '功率因数 cosφ', 'axis': 'pf', 'points': [{'x': 100, 'y': .75}]},
+                            {'name': '效率 η', 'axis': 'efficiency', 'points': [{'x': 100, 'y': .82}]}]}}]
+    original = copy.deepcopy(value)
+    reader, text = pdf_text(pdf_report.render(value))
+    assert '效率 η (%)' in text and 'η (%)' in text
+    html = reports.render(value)
+    assert '效率 η (%)' in html and 'η (%)' in html
+    assert value == original
+
+
 @pytest.mark.parametrize('zc,extra,label', [
     (4, {'zs2':-25}, 'br3=7.2'),
     (6, {'zs2':0}, 'hr12=3.2'),
