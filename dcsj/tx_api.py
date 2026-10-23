@@ -1,7 +1,8 @@
 """Versioned API and standalone frontend for TX concentric windings."""
 from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing import Literal
 from . import tx
 from .tx_parameters import schema, validate
 from .tx_report import report
@@ -20,7 +21,16 @@ class TXCalculationInput(TXInput):
     persist: bool=True
 
 
-class TXDesignUpdate(TXInput):
+class TXDesignInput(TXInput):
+    author: str = Field(default='', max_length=120, description='作者署名；不参与计算')
+
+    @field_validator('author')
+    @classmethod
+    def trim_author(cls, value):
+        return value.strip()
+
+
+class TXDesignUpdate(TXDesignInput):
     expected_revision: int=Field(ge=1)
 
 
@@ -45,8 +55,9 @@ def parameters():return schema()
 
 
 @router.get('/api/v1/tx/models')
-def models(q:str=Query(default='',max_length=120),limit:int=Query(default=60,ge=1,le=100),offset:int=Query(default=0,ge=0,le=20000)):
-    return tx.models(q,limit,offset)
+def models(q:str=Query(default='',max_length=120),limit:int=Query(default=60,ge=1,le=100),offset:int=Query(default=0,ge=0,le=20000),
+           source:Literal['original','saved','all']='original'):
+    return tx.models(q,limit,offset,source)
 
 
 @router.get('/api/v1/tx/models/{identity}')
@@ -78,7 +89,7 @@ def designs():return {'items':tx.designs()}
 
 
 @router.post('/api/v1/tx/designs',status_code=201)
-def create(body:TXInput):return tx.save_design(body.parameters,base_model_id=body.base_model_id)
+def create(body:TXDesignInput):return tx.save_design(body.parameters,base_model_id=body.base_model_id,author=body.author)
 
 
 @router.get('/api/v1/tx/designs/{identity}')
@@ -87,4 +98,5 @@ def design(identity:str,revision:int|None=Query(default=None,ge=1)):return tx.de
 
 @router.put('/api/v1/tx/designs/{identity}')
 def update(identity:str,body:TXDesignUpdate):
-    return tx.save_design(body.parameters,identity,body.expected_revision,body.base_model_id)
+    return tx.save_design(body.parameters,identity,body.expected_revision,body.base_model_id,
+                          body.author if 'author' in body.model_fields_set else None)

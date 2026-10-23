@@ -628,3 +628,62 @@ test('old automatic-wire snapshot never displays submitted wire as effective wir
   assert.match(ui.doc.querySelector('.wire-result').textContent, /旧记录未保存反算后的线规/);
   assert.equal(ui.doc.querySelector('[data-wire-key=JJ]'), null);
 });
+
+test('saving a signed design refreshes catalog and loading it updates the same design', async t => {
+  let project = null;
+  const reference = 'saved-design:project-author@1';
+  const ui = await app(t, (path, request) => {
+    if (path === '/models') return {total:project?1:0,items:project?[{id:reference,kind:'saved_design',model:project.name,revision:project.revision,author:project.author}]:[]};
+    if (path === '/example') return {name:'署名测试',parameters};
+    if (path === '/projects' && request.method === 'POST') return project={...request.body,id:'project-author',revision:1,lineage:{},archived:0};
+    if (path === '/models/'+encodeURIComponent(reference)) return {kind:'saved_design',model:project.name,project};
+    if (path === '/projects/project-author' && request.method === 'PUT') return project={...project,...request.body,revision:2};
+  });
+  ui.nav('catalog'); await settle();
+  ui.doc.querySelector('#load-example').click();
+  await until(()=>ui.doc.querySelector('#current-design').textContent==='署名测试','Example loaded');
+  ui.doc.querySelector('#save-design').click();
+  ui.doc.querySelector('#design-author').value='  张工 <team>  ';
+  ui.doc.querySelector('#save-form').dispatchEvent(new ui.w.Event('submit',{cancelable:true}));
+  await until(()=>project&&!ui.doc.querySelector('#save-dialog').open,'Design saved');
+  assert.equal(project.author,'张工 <team>'); assert.ok(!('author' in project.parameters));
+  ui.nav('catalog');
+  await until(()=>ui.doc.querySelector('#model-table-body').textContent.includes(project.author),'Saved design replaces cached empty catalog');
+  assert.equal(ui.doc.querySelector('#model-table-body team'),null,'Author is rendered as text');
+  assert.equal(ui.calls.filter(c=>c.url.pathname==='/api/v1/models').at(-1).url.searchParams.get('source'),'all');
+  ui.find('#model-table-body button','载入设计 →').click();
+  await until(()=>ui.doc.querySelector('#parameter-source').textContent.includes('已保存设计'),'Saved catalog record opened');
+  ui.doc.querySelector('#save-design').click();
+  assert.equal(ui.doc.querySelector('#design-author').value,project.author);
+  assert.equal(ui.doc.querySelector('#save-as-new').checked,false);
+  ui.doc.querySelector('#design-author').value='李工';
+  ui.doc.querySelector('#save-form').dispatchEvent(new ui.w.Event('submit',{cancelable:true}));
+  await until(()=>project.revision===2,'Updated in place');
+  const update=ui.calls.find(c=>c.method==='PUT');
+  assert.equal(update.body.expected_revision,1);assert.equal(update.body.author,'李工');assert.equal(update.body.base_model_id,null);
+  ui.doc.querySelector('#catalog-source').value='saved';
+  ui.doc.querySelector('#catalog-source').dispatchEvent(new ui.w.Event('change'));
+  await settle();
+  assert.equal(ui.calls.filter(c=>c.url.pathname==='/api/v1/models').at(-1).url.searchParams.get('source'),'saved');
+});
+
+test('TX author is revision metadata and a saved library record resumes its original identity',async t=>{
+  let design;
+  const reference='saved-design:tx-author@1';
+  const a=await txApp(t,(req,{p})=>{
+    if(req.path==='/designs'&&req.method==='POST')return design={id:'tx-author',name:p.TYP,revision:1,...req.body,source:{resource_version:'synthetic.2',model_id:'synthetic'}};
+    if(req.path==='/models'&&design)return {total:1,items:[{id:reference,name:design.name,kind:'saved_design',power_kw:p.P2,poles:4,revision:1,author:design.author,source:{}}]};
+    if(req.path==='/models/'+encodeURIComponent(reference))return {kind:'saved_design',design};
+    if(req.path==='/designs/tx-author'&&req.method==='PUT')return design={...design,...req.body,revision:2};
+  });
+  a.doc.querySelector('#design-author').value='张工';a.doc.querySelector('#save-design').click();
+  await until(()=>a.doc.querySelector('#models').textContent.includes('张工')&&!a.doc.querySelector('#save-design').disabled,'Saved record indexed');
+  assert.equal(design.author,'张工');assert.ok(!('author' in design.parameters));
+  a.doc.querySelector('#design-author').value='尚未保存';
+  a.doc.querySelector('#models button').click();await settle();
+  assert.equal(a.doc.querySelector('#design-author').value,'张工');
+  a.doc.querySelector('#design-author').value='李工';a.doc.querySelector('#save-design').click();
+  await until(()=>design.revision===2,'Saved design updated');
+  const update=a.calls.find(c=>c.method==='PUT');assert.equal(update.path,'/designs/tx-author');
+  assert.equal(update.body.expected_revision,1);assert.equal(update.body.author,'李工');assert.equal(update.body.base_model_id,'synthetic');
+});

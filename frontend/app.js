@@ -9,6 +9,7 @@
     status: null,
     parameters: {},
     name: "",
+    author: "",
     model: "",
     source: null,
     baseModelId: null,
@@ -164,13 +165,14 @@
     }
     return Object.fromEntries(entries);
   }
-  function acceptDesign(parameters, name, source, model = "", baseModelId = null) {
+  function acceptDesign(parameters, name, source, model = "", baseModelId = null, author = "") {
     const accepted = validParameters(parameters);
     ++modelRequest;
     state.project = null;
     state.baseModelId = baseModelId;
     state.parameters = accepted;
     state.name = String(name || "未命名设计");
+    state.author = typeof author === "string" ? author.trim() : "";
     state.model = String(model || parameters.SizeX || parameters.Model || parameters.model || "");
     state.source = source || null;
     state.revision += 1;
@@ -664,7 +666,7 @@
   async function loadCatalog() {
     const request = ++state.catalog.request;
     const { offset, limit } = state.catalog;
-    const params = new URLSearchParams({ q: $("#model-search").value.trim(), series: $("#series-filter").value, limit, offset });
+    const params = new URLSearchParams({ q: $("#model-search").value.trim(), series: $("#series-filter").value, source: $("#catalog-source").value, limit, offset });
     $("#catalog-feedback").textContent = "正在读取型号…";
     $("#model-table-body").replaceChildren();
     $("#page-previous").disabled = true;
@@ -679,8 +681,8 @@
       $("#catalog-feedback").textContent = data.items.length ? "" : "没有符合条件的型号，请调整关键词或系列。";
       data.items.forEach(item => {
         const row = el("tr");
-        [item.model || item.id, item.series || "—", fmt(item.rated_power_kw), fmt(item.poles, 0), fmt(item.voltage_v), fmt(item.frequency_hz)].forEach(value => row.append(el("td", "", value)));
-        const source = el("td", "source-cell", sourceText(item.source));
+        [item.model || item.id, item.series || "—", item.author || "—", fmt(item.rated_power_kw), fmt(item.poles, 0), fmt(item.voltage_v), fmt(item.frequency_hz)].forEach(value => row.append(el("td", "", value)));
+        const source = el("td", "source-cell", item.kind === "saved_design" ? `已保存设计 · v${item.revision}` : sourceText(item.source));
         source.title = sourceText(item.source);
         row.append(source);
         const action = el("td");
@@ -710,7 +712,11 @@
     try {
       const model = await api(`/models/${encodeURIComponent(id)}`);
       if (request !== modelRequest) return;
-      acceptDesign(model.parameters, model.model || String(id), model.source, model.model || "", model.id);
+      if (model.kind === "saved_design") {
+        const design = model.project;
+        acceptDesign(design.parameters, design.name, `已保存设计 · v${design.revision} · ${design.author || "未署名"}`, "", design.lineage?.id || null, design.author);
+        state.project = design;
+      } else acceptDesign(model.parameters, model.model || String(id), model.source, model.model || "", model.id);
       showToast(`已载入 ${model.model || id}，来源信息显示在参数区。`);
     } catch (error) { showToast(errorText(error), "error"); }
     finally { trigger.disabled = false; trigger.textContent = "载入设计 →"; }
@@ -817,7 +823,7 @@
       data.items.forEach(project => {
         const row = el("tr");
         const date = new Date(project.updated_at);
-        [`${project.name} · v${project.revision}${project.archived ? " · 已归档" : ""}`, project.id, Number.isNaN(date.getTime()) ? project.updated_at || "—" : date.toLocaleString("zh-CN")].forEach(value => row.append(el("td", "", value)));
+        [`${project.name} · v${project.revision}${project.archived ? " · 已归档" : ""}`, project.author || "未署名", project.id, Number.isNaN(date.getTime()) ? project.updated_at || "—" : date.toLocaleString("zh-CN")].forEach(value => row.append(el("td", "", value)));
         const action = el("td");
         const trigger = button("打开设计 →", "text-button", async () => {
           if (state.busy) return showToast("计算正在进行，请在完成后打开其他设计。", "warning");
@@ -826,7 +832,7 @@
           try {
             const design = await api(`/projects/${encodeURIComponent(project.id)}`);
             if (request !== modelRequest) return;
-            acceptDesign(design.parameters, design.name, design.source || `已保存设计 · ${design.id}`, design.model || "", design.lineage?.id || design.base_model_id || null);
+            acceptDesign(design.parameters, design.name, design.source || `已保存设计 · ${design.id}`, design.model || "", design.lineage?.id || design.base_model_id || null, design.author);
             state.project = design;
             showToast(`已打开设计：${design.name} · v${design.revision}`);
           } catch (error) { showToast(errorText(error), "error"); }
@@ -838,6 +844,7 @@
           try {
             const saved = await api(`/projects/${encodeURIComponent(project.id)}/archive`, { method: "POST", body: JSON.stringify({ archived: !project.archived, expected_revision: project.revision }) });
             if (state.project?.id === saved.id) state.project = { ...state.project, archived: saved.archived };
+            state.catalog.loaded = false; ++state.catalog.request;
             await loadProjects();
           } catch (error) { showToast(errorText(error), "error"); }
           finally { archive.disabled = false; }
@@ -851,6 +858,7 @@
   function openSaveDialog() {
     if (!populated()) return showToast("请先载入设计参数。", "warning");
     $("#design-name").value = state.name;
+    $("#design-author").value = state.author;
     $("#design-notes").value = state.project?.notes || "";
     $("#save-as-new").checked = !state.project || !!state.project.archived;
     $("#save-as-new").disabled = !state.project;
@@ -867,9 +875,11 @@
     const revision = state.revision;
     try {
       const updating = state.project && !$("#save-as-new").checked;
-      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, parameters: state.parameters, base_model_id: state.baseModelId, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
+      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, author: $("#design-author").value.trim(), parameters: state.parameters, base_model_id: state.baseModelId, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
       if (!saved.id) throw new Error("服务未返回设计 ID，无法确认是否保存成功。");
+      state.catalog.loaded = false; ++state.catalog.request;
       if (revision === state.revision) {
+        state.author = saved.author || "";
         state.project = saved;
         state.name = saved.name || name;
         state.dirty = false;
@@ -877,7 +887,7 @@
         $("#current-design").title = state.name;
       }
       $("#save-dialog").close();
-      showToast(`设计已保存：${saved.name || name}`);
+      showToast(`设计已保存：${saved.name || name}，可在型号库按名称或作者检索。`);
     } catch (error) {
       $("#save-error").textContent = errorText(error);
       $("#save-error").classList.remove("hidden");
@@ -885,7 +895,7 @@
   }
   function exportDesign() {
     if (!populated()) return showToast("请先载入设计参数。", "warning");
-    const documentData = { format: "dcsj-design", version: 1, name: state.name, model: state.model, source: state.source, base_model_id: state.baseModelId, parameters: state.parameters, exported_at: new Date().toISOString() };
+    const documentData = { format: "dcsj-design", version: 1, name: state.name, author: state.author, model: state.model, source: state.source, base_model_id: state.baseModelId, parameters: state.parameters, exported_at: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(documentData, null, 2)], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = el("a");
@@ -910,10 +920,11 @@
       if (!design || typeof design !== "object" || Array.isArray(design)) throw new Error("设计 JSON 的顶层必须是对象。");
       if (design.format && design.format !== "dcsj-design") throw new Error(`不支持的设计文件格式：${asText(design.format)}`);
       if (design.format === "dcsj-design" && design.version !== 1) throw new Error(`不支持的设计版本：${asText(design.version)}`);
+      if (design.author !== undefined && (typeof design.author !== "string" || design.author.length > 120)) throw new Error("作者署名须为不超过 120 字的文本。");
       const params = validParameters(design.parameters);
       if (state.busy) throw new Error("计算正在进行，请在完成后重新导入设计。");
       ++modelRequest;
-      acceptDesign(params, design.name || file.name.replace(/\.json$/i, ""), design.source || `导入文件：${file.name}`, design.model || "", design.lineage?.id || design.base_model_id || null);
+      acceptDesign(params, design.name || file.name.replace(/\.json$/i, ""), design.source || `导入文件：${file.name}`, design.model || "", design.lineage?.id || design.base_model_id || null, design.author);
       showToast("设计参数已导入。请重新运行计算检查结果。");
     } catch (error) { showToast(errorText(error), "error"); }
   }
@@ -939,7 +950,7 @@
       container.replaceChildren();
       data.items.forEach(item => {
         const row = el("div", "history-entry");
-        row.append(el("strong", "", `v${item.revision} · ${item.name}`), el("p", "muted", `${item.created_at} ${item.notes || ""}`), button("以此版本另建方案", "button button-small", async () => {
+        row.append(el("strong", "", `v${item.revision} · ${item.name}`), el("p", "muted", `${item.author || "未署名"} · ${item.created_at} ${item.notes || ""}`), button("以此版本另建方案", "button button-small", async () => {
           let request, applying = false;
           try {
             if (state.busy) throw new Error("请等待当前计算完成。");
@@ -947,7 +958,7 @@
             const revision = await api(`/projects/${project.id}/revisions/${item.revision}`);
             if (request !== modelRequest) return;
             applying = true;
-            acceptDesign(revision.parameters, `${revision.name} · v${item.revision} 副本`, `版本 ${project.id} / ${item.revision}`, "", revision.lineage?.id || null);
+            acceptDesign(revision.parameters, `${revision.name} · v${item.revision} 副本`, `版本 ${project.id} / ${item.revision}`, "", revision.lineage?.id || null, revision.author);
             state.dirty = true;
             $("#history-dialog").close();
           } catch (error) { if (applying || request === undefined || request === modelRequest) showToast(errorText(error), "error"); }
@@ -1733,6 +1744,7 @@
     loadExample();
   });
   $("#catalog-filter").addEventListener("submit", event => { event.preventDefault(); state.catalog.offset = 0; loadCatalog(); });
+  $("#catalog-source").addEventListener("change", () => { $("#series-filter").value = ""; $("#series-filter").disabled = $("#catalog-source").value === "saved"; state.catalog.offset = 0; loadCatalog(); });
   $("#series-filter").addEventListener("change", () => { state.catalog.offset = 0; loadCatalog(); });
   $("#page-previous").addEventListener("click", () => { state.catalog.offset = Math.max(0, state.catalog.offset - state.catalog.limit); loadCatalog(); });
   $("#page-next").addEventListener("click", () => { state.catalog.offset += state.catalog.limit; loadCatalog(); });

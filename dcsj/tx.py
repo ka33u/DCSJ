@@ -71,7 +71,20 @@ def status():
         return {'available':False,'message':str(exc),'application_version':__version__}
 
 
-def models(query='',limit=60,offset=0):
+def models(query='',limit=60,offset=0,source='original'):
+    from . import saved_catalog
+    saved=saved_catalog.search('tx',query,limit,offset) if source!='original' else {'items':[],'total':0}
+    items=[]
+    for row in saved['items']:
+        p=json.loads(row.pop('parameters'))
+        row.update(design_id=row['id'],id=saved_catalog.reference(row['id'],row['revision']),
+                   kind='saved_design',power_kw=p['P2'],poles=p['P'],source={'kind':'saved_design'})
+        items.append(row)
+    original=_original_models(query,max(0,limit-len(items)),max(0,offset-saved['total'])) if source!='saved' else {'items':[],'total':0}
+    return {**original,'items':items+original['items'],'total':saved['total']+original['total'],'offset':offset}
+
+
+def _original_models(query='',limit=60,offset=0):
     ctx=context();catalog=_catalog(str(ctx['paths']['tx_catalog.json']),ctx['files']['tx_catalog.json']['sha256'])
     items=[m for m in catalog['models'] if query.casefold() in m['name'].casefold()]
     return {'items':[{k:m[k] for k in ('id','name','source','verified_execution')}|{'power_kw':m['parameters']['P2'],'poles':m['parameters']['P']} for m in items[offset:offset+limit]],
@@ -79,6 +92,12 @@ def models(query='',limit=60,offset=0):
 
 
 def model(identity, ctx=None):
+    if identity.startswith('saved-design:'):
+        from .saved_catalog import parse_reference
+        d=design(*parse_reference(identity))
+        return {'id':identity,'name':d['name'],'author':d['author'],'parameters':d['parameters'],
+                'kind':'saved_design','design':d,'source':{'kind':'saved_design','design_id':d['id'],
+                                                       'revision':d['revision'],'author':d['author']}}
     ctx=ctx or context();catalog=_catalog(str(ctx['paths']['tx_catalog.json']),ctx['files']['tx_catalog.json']['sha256'])
     found=next((m for m in catalog['models'] if m['id']==identity),None)
     if found is None:raise NotFoundError('TX 型号不存在于当前资源版本')
@@ -169,17 +188,18 @@ def design(identity,revision=None):
         version=db.execute('SELECT * FROM tx_revisions WHERE design_id=? AND revision=?',(identity,revision or row['revision'])).fetchone()
         if not version:raise NotFoundError('TX 设计版本不存在')
         versions=[r[0] for r in db.execute('SELECT revision FROM tx_revisions WHERE design_id=? ORDER BY revision DESC',(identity,))]
-        return {**dict(row),'revision':version['revision'],'latest_revision':row['revision'],'parameters':json.loads(version['parameters']),
+        return {**dict(row),'name':json.loads(version['parameters'])['TYP'],'author':version['author'],
+                'revision':version['revision'],'latest_revision':row['revision'],'parameters':json.loads(version['parameters']),
                 'source':json.loads(version['source']),'revisions':versions}
 
 
-def save_design(parameters,identity=None,expected_revision=None,base_model_id=None):
+def save_design(parameters,identity=None,expected_revision=None,base_model_id=None,author=None):
     parameters=validate(parameters);source=lineage(base_model_id,context()) if base_model_id else {'kind':'manual'}
     stamp=now()
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
         if identity:
-            row=db.execute('SELECT revision FROM tx_designs WHERE id=?',(identity,)).fetchone()
+            row=db.execute('SELECT revision,author FROM tx_designs WHERE id=?',(identity,)).fetchone()
             if not row:raise NotFoundError('TX 设计不存在')
             if row['revision']!=expected_revision:raise ConflictError('TX 设计已被更新，请重新打开最新版本')
             if not base_model_id:
@@ -187,10 +207,14 @@ def save_design(parameters,identity=None,expected_revision=None,base_model_id=No
                                     (identity,expected_revision)).fetchone()
                 source=json.loads(previous['source'])
             revision=expected_revision+1
-            db.execute('UPDATE tx_designs SET name=?,revision=?,updated_at=? WHERE id=?',(parameters['TYP'],revision,stamp,identity))
+            author=row['author'] if author is None else author
+            db.execute('UPDATE tx_designs SET name=?,revision=?,updated_at=?,author=? WHERE id=?',(parameters['TYP'],revision,stamp,author,identity))
         else:
             identity=str(uuid.uuid4());revision=1
-            db.execute('INSERT INTO tx_designs VALUES(?,?,?,?,?)',(identity,parameters['TYP'],revision,stamp,stamp))
-        db.execute('INSERT INTO tx_revisions VALUES(?,?,?,?,?)',(identity,revision,dumps(parameters),dumps(source),stamp))
+            author=author or ''
+            db.execute('INSERT INTO tx_designs(id,name,revision,created_at,updated_at,author) VALUES(?,?,?,?,?,?)',
+                       (identity,parameters['TYP'],revision,stamp,stamp,author))
+        db.execute('INSERT INTO tx_revisions(design_id,revision,parameters,source,created_at,author) VALUES(?,?,?,?,?,?)',
+                   (identity,revision,dumps(parameters),dumps(source),stamp,author))
         audit(db,'tx.design_saved',identity,{'revision':revision})
     return design(identity)

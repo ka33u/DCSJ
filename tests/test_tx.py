@@ -107,7 +107,7 @@ def test_legacy_schema_migration_preserves_main_and_tx(client,tx_parameters):
     with storage.connect() as db:
         db.execute('PRAGMA user_version=5')
     assert tx.design(first['id'])['parameters']==validate(tx_parameters)
-    with storage.connect() as db:assert db.execute('PRAGMA user_version').fetchone()[0]==6
+    with storage.connect() as db:assert db.execute('PRAGMA user_version').fetchone()[0]==storage.SCHEMA_VERSION
 
 
 def test_calculation_failures_are_not_saved(client,tx_parameters,monkeypatch):
@@ -143,3 +143,31 @@ def test_snapshot_report_is_escaped_and_independent_of_resources(client,tx_param
     assert output.status_code==200 and '&lt;script&gt;' in output.text and '<script>alert' not in output.text
     assert '&lt;img' in output.text and '<img src=x' not in output.text
     assert '输入参数快照' in output.text and 'TY / cm' in output.text
+
+
+def test_author_and_saved_catalog_without_private_resources(client, tx_parameters, monkeypatch):
+    def unavailable():raise tx.TXUnavailableError('Synthetic resource absence')
+    monkeypatch.setattr(tx,'context',unavailable)
+    url='/api/v1/tx'
+    created=client.post(url+'/designs',json={'parameters':tx_parameters,'author':'  张工  '})
+    assert created.status_code==201
+    d=created.json();assert d['author']=='张工'
+    for q in ('张工',tx_parameters['TYP']):
+        result=client.get(url+'/models',params={'source':'saved','q':q}).json()
+        assert result['total']==1 and result['items'][0]['author']=='张工'
+    reference=result['items'][0]['id']
+    loaded=client.get(url+'/models/'+reference).json()['design']
+    assert loaded['id']==d['id'] and loaded['parameters']==tx_parameters
+    update={'parameters':{**tx_parameters,'TYP':'New name'},'expected_revision':1}
+    assert client.put(url+'/designs/'+d['id'],json=update).json()['author']=='张工'
+    update.update(expected_revision=2,author='李工')
+    assert client.put(url+'/designs/'+d['id'],json=update).json()['author']=='李工'
+    old=client.get(url+'/models/'+reference).json()['design']
+    assert old['author']=='张工' and old['name']==tx_parameters['TYP'] and old['revision']==1
+    assert client.get(url+'/models?source=saved&q=张工').json()['total']==0
+    assert client.get(url+'/models?source=saved&q=李工').json()['total']==1
+    update.update(expected_revision=3,author='')
+    assert client.put(url+'/designs/'+d['id'],json=update).json()['author']==''
+    assert client.put(url+'/designs/'+d['id'],json=update).status_code==409
+    assert client.get(url+'/models?source=saved&q=%25').json()['total']==0
+    assert client.get(url+'/models?source=saved&offset=1').json()['items']==[]

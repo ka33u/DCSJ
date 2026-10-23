@@ -44,7 +44,24 @@ def frame_size(name):
     return match[1] if match else None
 
 
-def models(q="", series_name="", limit=30, offset=0, history=False, *, frequency_hz=None,
+def models(q="", series_name="", limit=30, offset=0, history=False, *, source='original', **filters):
+    from . import saved_catalog
+    saved = saved_catalog.search('main', q, limit, offset, series=series_name, **filters) if source != 'original' else {'items': [], 'total': 0}
+    items = []
+    for row in saved['items']:
+        p = input_parameters(json.loads(row.pop('parameters')))
+        row.update(project_id=row['id'], id=saved_catalog.reference(row['id'], row['revision']),
+                   kind='saved_design', model=row['name'], frame=frame_size(row['model_name']),
+                   source='已保存设计', is_primary=True)
+        row.update(electrical(p))
+        items.append(row)
+    original = _original_models(q, series_name, max(0, limit-len(items)), max(0, offset-saved['total']), history,
+                                **filters) if source != 'saved' else {'items': [], 'total': 0}
+    return {'items': items + original['items'], 'total': saved['total'] + original['total'],
+            'offset': offset, 'limit': limit, 'voltage_semantics': 'phase_voltage'}
+
+
+def _original_models(q="", series_name="", limit=30, offset=0, history=False, *, frequency_hz=None,
            poles=None, voltage_v=None, power_min=None, power_max=None, frame=None, source_table=None):
     conditions, args = [], []
     if not history:
@@ -89,6 +106,17 @@ def models(q="", series_name="", limit=30, offset=0, history=False, *, frequency
 
 
 def model(record_id):
+    if record_id.startswith('saved-design:'):
+        from . import projects, saved_catalog
+        identity, revision = saved_catalog.parse_reference(record_id)
+        project = projects.get_revision(identity, revision)
+        current = projects.get_project(identity)
+        project.update(id=identity, archived=current['archived'])
+        return {'id': record_id, 'model': project['name'], 'parameters': project['parameters'],
+                'inputs': project['parameters'], 'electrical': electrical(project['parameters']),
+                'kind': 'saved_design', 'project': project, 'author': project['author'],
+                'source': {'description': '已保存设计', 'project_id': identity, 'revision': revision,
+                           'author': project['author']}}
     if record_id.startswith('user-model:'):
         from .library import model as user_model
         return user_model(record_id)

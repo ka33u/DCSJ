@@ -8,7 +8,7 @@ import sqlite3
 import threading
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _migration_lock = threading.Lock()
 _initialized = set()
 
@@ -104,12 +104,16 @@ def _migrate(db, path):
                 db.execute(statement)
             for table, column, declaration in [('projects', 'lineage', "TEXT NOT NULL DEFAULT '{}'"),
                                                ('project_revisions', 'lineage', "TEXT NOT NULL DEFAULT '{}'"),
+                                               ('projects', 'author', "TEXT NOT NULL DEFAULT ''"),
+                                               ('project_revisions', 'author', "TEXT NOT NULL DEFAULT ''"),
+                                               ('tx_designs', 'author', "TEXT NOT NULL DEFAULT ''"),
+                                               ('tx_revisions', 'author', "TEXT NOT NULL DEFAULT ''"),
                                                ('calculations', 'archived', 'INTEGER NOT NULL DEFAULT 0')]:
                 existing = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
                 if column not in existing:
                     db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {declaration}')
-            db.execute("INSERT OR IGNORE INTO project_revisions(project_id,revision,name,parameters,notes,created_at,lineage) "
-                       "SELECT id,revision,name,parameters,notes,updated_at,lineage FROM projects")
+            db.execute("INSERT OR IGNORE INTO project_revisions(project_id,revision,name,parameters,notes,created_at,lineage,author) "
+                       "SELECT id,revision,name,parameters,notes,updated_at,lineage,author FROM projects")
             db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             db.commit()
             _initialized.add(identity)

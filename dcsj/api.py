@@ -72,8 +72,14 @@ class DesignInput(BaseModel):
 
 class ProjectInput(DesignInput):
     name: str = Field(min_length=1, max_length=120)
+    author: str = Field(default="", max_length=120, description='作者署名；留空表示未署名，不参与计算')
     notes: str = Field(default="", max_length=4000)
     base_model_id: str | None = Field(default=None, min_length=1, max_length=160)
+
+    @field_validator("author")
+    @classmethod
+    def trim_author(cls, value):
+        return value.strip()
 
     @field_validator("name")
     @classmethod
@@ -363,6 +369,7 @@ def get_models(
     power_max: Annotated[float | None, Query(ge=0, allow_inf_nan=False)] = None,
     frame: Annotated[str | None, Query(pattern=r'^\d{2,4}$')] = None,
     source_table: Annotated[str | None, Query(max_length=120)] = None,
+    source: Literal['original', 'saved', 'all'] = 'original',
 ):
     if poles is not None and poles % 2:
         raise HTTPException(422, '极数必须为偶数')
@@ -370,7 +377,7 @@ def get_models(
         raise HTTPException(422, 'power_min 不能大于 power_max')
     return catalog.models(q, series, limit, offset, history, frequency_hz=frequency_hz,
                           poles=poles, voltage_v=voltage_v, power_min=power_min,
-                          power_max=power_max, frame=frame, source_table=source_table)
+                          power_max=power_max, frame=frame, source_table=source_table, source=source)
 
 
 @app.get("/api/v1/models/{model_id}", tags=["型号库"])
@@ -502,7 +509,7 @@ def get_projects(include_archived: bool = False):
 @app.post("/api/v1/projects", status_code=201, tags=["保存的设计"])
 def save_project(body: ProjectInput):
     origin = catalog.lineage(body.base_model_id) if body.base_model_id else {}
-    return projects.save_project(body.name, body.parameters, body.notes, origin)
+    return projects.save_project(body.name, body.parameters, body.notes, origin, body.author)
 
 
 @app.get("/api/v1/projects/{project_id}", tags=["保存的设计"])
@@ -520,7 +527,8 @@ def update_project(project_id: str, body: ProjectUpdate):
         previous = get_project(project_id).get('lineage', {})
         origin = previous if body.base_model_id and previous.get('id') == body.base_model_id else (
             catalog.lineage(body.base_model_id) if body.base_model_id else {})
-    return projects.update_project(project_id, body.expected_revision, body.name, body.parameters, body.notes, origin)
+    return projects.update_project(project_id, body.expected_revision, body.name, body.parameters, body.notes, origin,
+                                   body.author if 'author' in body.model_fields_set else None)
 
 
 @app.post("/api/v1/projects/{project_id}/archive", tags=["保存的设计"])
