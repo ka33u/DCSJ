@@ -22,6 +22,12 @@ def coil_svg(coils):
 
 def report(record):
     r=record['result'];p=record['parameters'];m=r['metrics']
+    from .report_summary import slot_rows, SLOT_HEADERS, SLOT_AREA_NOTE
+    slots = '<h2>使用槽型与面积</h2><table><tr>' + ''.join('<th>'+escape(h)+'</th>' for h in SLOT_HEADERS) + '</tr>'
+    slots += ''.join('<tr>'+''.join('<td>'+escape(str(value))+'</td>' for value in row)+'</tr>' for row in slot_rows(r))
+    slots += '</table><p class="meta">'+escape(SLOT_AREA_NOTE)+'</p>'
+    if not r.get('slots'):
+        slots = ''
     cards=[]
     references={'efficiency':'E4','power_factor':'E6','maximum_torque_ratio':'TMN',
                 'starting_torque_ratio':'TQN','starting_current_ratio':'ISN'}
@@ -44,6 +50,7 @@ def report(record):
 <p class="meta">TX / 双层同心式绕组电磁设计</p><h1>{escape(record['name'])}</h1>
 <p>{p['P2']:g} kW · {p['P']:g} 极 · {p['U1']:g} V 线电压 · {p['HZ']:g} Hz · 定/转子槽数 {p['Q1']:g}/{p['Q2']:g}</p>
 <p class="meta">{escape(p['description'])}</p><div class="cards">{cards}</div>
+{slots}
 <div class="grid"><section><h2>线圈组节距示意</h2>{coil_svg(r['harmonics'])}<p class="meta">示意按节距展开；线圈尺寸见右表。</p></section><section><h2>线圈尺寸</h2><table><tr><th>组</th><th>TY / cm</th><th>R / cm</th><th>端角 / rad</th><th>H / cm</th></tr>{coils}</table></section></div>
 <h2>绕组系数与谐波</h2><table><tr><th>谐波次数</th><th>绕组系数 KDP</th><th>相对磁势 FV / %</th><th>组匝数</th><th>组节距</th></tr>{harmonics}</table>
 <p>总损耗 {r['details']['total_loss_w']:g} W · 定子电流 {r['details']['current_a']:g} A · 铜重 {r['details']['copper_mass_kg']:g} kg · 铁重 {r['details']['iron_mass_kg']:g} kg</p>

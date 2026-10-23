@@ -31,6 +31,7 @@ FILES = {'catalog.sqlite': 'data/catalog.sqlite',
          'example.json': 'data/example.json'}
 TX_FILES = {'tx_catalog.json': 'data/tx_catalog.json',
             'tx_kernel.json.gz': 'dcsj/generated/tx_kernel.json.gz'}
+SLOT_FILES = {'slot_catalog.json': 'data/slot_catalog.json'}
 MAX_ARCHIVE = 64 * 1024 * 1024
 MAX_EXPANDED = 512 * 1024 * 1024
 ABI = hashlib.sha256(json.dumps({'input': INPUT_MAP, 'output': OUTPUT_MAP}, sort_keys=True).encode()).hexdigest()
@@ -85,10 +86,10 @@ def current():
 
 def asset(name, package=None):
     """A supplied package pins a request to one immutable directory."""
-    if name not in {**FILES, **TX_FILES}:
+    if name not in {**FILES, **TX_FILES, **SLOT_FILES}:
         raise ResourceError('未知资源类型')
     package = current() if package is None else package
-    return directory() / _identity(package['package_id']) / name if package else ROOT / {**FILES, **TX_FILES}[name]
+    return directory() / _identity(package['package_id']) / name if package else ROOT / {**FILES, **TX_FILES, **SLOT_FILES}[name]
 
 
 def installed():
@@ -119,7 +120,7 @@ def _schema(db):
 
 @checked
 def validate_files(root, manifest):
-    if manifest.get('format') != 'dcsj-private-resources' or manifest.get('format_version') not in (1, 2) or manifest.get('abi') != ABI:
+    if manifest.get('format') != 'dcsj-private-resources' or manifest.get('format_version') not in (1, 2, 3) or manifest.get('abi') != ABI:
         raise ResourceError('资源格式或计算接口版本不兼容，请升级应用或使用兼容资源包')
     minimum = manifest.get('minimum_application', '')
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', minimum):
@@ -129,6 +130,8 @@ def validate_files(root, manifest):
     if not isinstance(manifest.get('version'), str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,80}', manifest['version']):
         raise ResourceError('资源版本无效')
     expected_files = {**FILES, **TX_FILES} if manifest['format_version'] == 2 else FILES
+    if manifest['format_version'] == 3:
+        expected_files = {**FILES, **SLOT_FILES, **(TX_FILES if set(TX_FILES) & set(manifest.get('files', {})) else {})}
     if set(manifest.get('files', {})) != set(expected_files):
         raise ResourceError('资源包文件清单不完整或含额外文件')
     total = 0
@@ -152,9 +155,15 @@ def validate_files(root, manifest):
         counts = {'model_versions': db.execute('SELECT count(*) FROM models').fetchone()[0],
                   'models': db.execute('SELECT count(*) FROM models WHERE is_primary=1').fetchone()[0],
                   'materials': db.execute('SELECT count(*) FROM materials WHERE is_primary=1').fetchone()[0]}
-    if manifest['format_version'] == 2:
+    if set(TX_FILES) <= set(manifest['files']):
         from .tx import validate_resources
         counts['tx_model_versions'] = validate_resources(root, manifest['files'])
+    if manifest['format_version'] == 3:
+        from .slots import validate_catalog
+        try:
+            counts['slot_profiles'] = validate_catalog(_json(root / 'slot_catalog.json'))
+        except ValueError as error:
+            raise ResourceError('槽型资源数据校验失败') from error
     if counts != manifest.get('counts'):
         raise ResourceError('资源记录数量与清单不一致')
     materials = _json(root / 'material_kernel_tables.json')
@@ -235,7 +244,8 @@ def install(archive, expected_sha256=None):
         with zipfile.ZipFile(archive) as bundle:
             entries = bundle.infolist()
             names = {item.filename for item in entries}
-            if len(names) != len(entries) or names not in ({*FILES, 'manifest.json'}, {*FILES, *TX_FILES, 'manifest.json'}):
+            if len(names) != len(entries) or names not in ({*FILES, 'manifest.json'}, {*FILES, *TX_FILES, 'manifest.json'},
+                                                          {*FILES, *SLOT_FILES, 'manifest.json'}, {*FILES, *TX_FILES, *SLOT_FILES, 'manifest.json'}):
                 raise ResourceError('压缩包含额外、重复或路径不安全的文件')
             if sum(item.file_size for item in entries) > MAX_EXPANDED or bundle.getinfo('manifest.json').file_size > 65536:
                 raise ResourceError('资源包声明体积超过限制')

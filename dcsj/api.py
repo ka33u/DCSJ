@@ -10,7 +10,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import __version__, catalog, projects, calculations, comparisons, modeling, resources, library
+from . import __version__, catalog, projects, calculations, comparisons, modeling, resources, library, slots
 from .execution import BusyError, compute
 from .storage import ConflictError, NotFoundError, now
 from .parameters import ROOT, InputError, schema, validate, example_data, check_keys
@@ -39,6 +39,8 @@ from .tx_api import router as tx_router
 from .tx_parameters import TXInputError
 from .tx import TXUnavailableError
 app.include_router(tx_router)
+from .slots_api import router as slots_router
+app.include_router(slots_router)
 
 
 @app.exception_handler(TXInputError)
@@ -71,6 +73,7 @@ class DesignInput(BaseModel):
 
 
 class ProjectInput(DesignInput):
+    slot_bindings: slots.Bindings = Field(default_factory=slots.Bindings)
     name: str = Field(min_length=1, max_length=120)
     author: str = Field(default="", max_length=120, description='作者署名；留空表示未署名，不参与计算')
     notes: str = Field(default="", max_length=4000)
@@ -100,6 +103,7 @@ class ArchiveInput(BaseModel):
 
 
 class CalculationInput(DesignInput):
+    slot_bindings: slots.Bindings = Field(default_factory=slots.Bindings)
     name: str | None = Field(default=None, min_length=1, max_length=120)
     project_id: str | None = Field(default=None, min_length=1, max_length=100)
     project_revision: int | None = Field(default=None, ge=1)
@@ -397,6 +401,7 @@ def calculate(body: CalculationInput):
 
 def _calculate(body: CalculationInput, origin=None):
     from .engine import CalculationError
+    bindings = body.slot_bindings.model_dump(exclude_none=True)
     if body.project_id is not None:
         version = projects.get_revision(body.project_id, body.project_revision)
         if validate(version['parameters']) != validate(body.parameters):
@@ -405,10 +410,17 @@ def _calculate(body: CalculationInput, origin=None):
         if body.base_model_id and saved_origin.get('id') != body.base_model_id:
             raise ConflictError('来源型号与关联设计版本不符，请先保存新版本')
         origin = saved_origin
+        saved_bindings = version.get('slot_bindings') or {}
+        if 'slot_bindings' in body.model_fields_set and bindings != saved_bindings:
+            raise ConflictError('槽型引用与关联设计版本不同，请先保存新版本')
+        bindings = saved_bindings
     elif body.base_model_id and origin is None:
         origin = catalog.lineage(body.base_model_id)
+    resolved_slots = slots.resolve(bindings)
     try:
         result = compute(body.parameters)
+        result['slot_bindings'] = bindings
+        result['slots'] = slots.snapshot(result['inputs'], resolved=resolved_slots)
         result['provenance']['base_model'] = origin
         if not body.persist:
             return {**result, 'calculation_id': None, 'persisted': False,
@@ -425,7 +437,8 @@ def _calculate(body: CalculationInput, origin=None):
 def calculate_model(model_id: str, body: ModelCalculationInput):
     model = get_model(model_id)
     return _calculate(CalculationInput(parameters={**model['parameters'], **body.overrides},
-                                      name=body.name, persist=body.persist, base_model_id=model_id),
+                                      name=body.name, persist=body.persist, base_model_id=model_id,
+                                      slot_bindings=model.get('project', {}).get('slot_bindings', {})),
                       origin=catalog.lineage_of(model))
 
 
@@ -471,7 +484,7 @@ def list_user_entries(kind: str, include_archived: bool = False,
 def user_library_schema():
     """用户 document 字段的 JSON Schema；材料单位及点数组校验见各字段说明。"""
     return {'models': library.ModelDocument.model_json_schema(),
-            'materials': library.MaterialDocument.model_json_schema()}
+            'materials': library.MaterialDocument.model_json_schema(), 'slots': slots.SlotDocument.model_json_schema()}
 
 
 @app.post('/api/v1/library/{kind}', tags=['资源与用户数据'], status_code=201)
@@ -509,7 +522,9 @@ def get_projects(include_archived: bool = False):
 @app.post("/api/v1/projects", status_code=201, tags=["保存的设计"])
 def save_project(body: ProjectInput):
     origin = catalog.lineage(body.base_model_id) if body.base_model_id else {}
-    return projects.save_project(body.name, body.parameters, body.notes, origin, body.author)
+    bindings = body.slot_bindings.model_dump(exclude_none=True)
+    slots.resolve(bindings)
+    return projects.save_project(body.name, body.parameters, body.notes, origin, body.author, bindings)
 
 
 @app.get("/api/v1/projects/{project_id}", tags=["保存的设计"])
@@ -527,8 +542,11 @@ def update_project(project_id: str, body: ProjectUpdate):
         previous = get_project(project_id).get('lineage', {})
         origin = previous if body.base_model_id and previous.get('id') == body.base_model_id else (
             catalog.lineage(body.base_model_id) if body.base_model_id else {})
+    bindings = body.slot_bindings.model_dump(exclude_none=True) if 'slot_bindings' in body.model_fields_set else None
+    if bindings is not None:
+        slots.resolve(bindings)
     return projects.update_project(project_id, body.expected_revision, body.name, body.parameters, body.notes, origin,
-                                   body.author if 'author' in body.model_fields_set else None)
+                                   body.author if 'author' in body.model_fields_set else None, bindings)
 
 
 @app.post("/api/v1/projects/{project_id}/archive", tags=["保存的设计"])

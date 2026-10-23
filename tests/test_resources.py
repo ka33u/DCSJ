@@ -71,6 +71,27 @@ def test_running_job_blocks_resource_switch(bundle):
     assert resources.current() is None
 
 
+def test_slot_resource_update_preserves_manual_entries_and_old_references(bundle):
+    from dcsj import slots
+    source,output,_=bundle
+    doc={'side':'stator','drawing':'SYN-001','source':'Synthetic only'}
+    item={'id':'synthetic-slot','name':'Original reference','document':doc}
+    (source/'data/slot_catalog.json').write_text(json.dumps({'format_version':1,'items':[item]}))
+    release=build(source,output,'synthetic.slots.1')
+    assert release['format_version']==3 and release['minimum_application']=='0.9.0'
+    installed=resources.install(output/'resource-bundle.zip');resources.activate(installed['package_id'],None)
+    ref=slots.search()['items'][0]['reference']
+    user=library.save('slots','Original reference',doc)
+    item['name']='Updated reference'
+    (source/'data/slot_catalog.json').write_text(json.dumps({'format_version':1,'items':[item]}))
+    build(source,output,'synthetic.slots.2')
+    second=resources.install(output/'resource-bundle.zip');resources.activate(second['package_id'],installed['package_id'])
+    assert slots.get(ref)['name']=='Original reference'
+    assert slots.get(user['reference'])['name']=='Original reference'
+    assert slots.search()['total']==2
+    assert slots.search(source='resource')['items'][0]['name']=='Updated reference'
+
+
 @pytest.mark.parametrize('mutation', ['traversal', 'duplicate', 'tamper', 'abi', 'minimum', 'corrupt'])
 def test_invalid_package_does_not_replace_active(bundle, mutation):
     _, output, _ = bundle

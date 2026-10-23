@@ -91,6 +91,19 @@ def test_user_design_revision_conflict_and_backup_compatibility(client,tx_parame
         assert db.execute('SELECT count(*) FROM tx_revisions').fetchone()[0]==2
 
 
+def test_tx_slot_bindings_are_revision_metadata(client,tx_parameters):
+    from dcsj import library,slots
+    entry=library.save('slots','Synthetic TX rotor',slots.capture(tx_parameters,'rotor','tx'))
+    bindings={'rotor':entry['reference']}
+    first=client.post('/api/v1/tx/designs',json={'parameters':tx_parameters,'slot_bindings':bindings}).json()
+    second=client.put('/api/v1/tx/designs/'+first['id'],json={'parameters':tx_parameters,'expected_revision':1}).json()
+    assert first['slot_bindings']==second['slot_bindings']==bindings
+    third=client.put('/api/v1/tx/designs/'+first['id'],json={'parameters':tx_parameters,'expected_revision':2,'slot_bindings':{}}).json()
+    assert third['slot_bindings']=={}
+    assert tx.design(first['id'],1)['slot_bindings']==bindings
+    assert tx.model('saved-design:'+first['id']+'@1')['design']['slot_bindings']==bindings
+
+
 def test_missing_resources_and_standalone_routes(client,tmp_path,monkeypatch):
     monkeypatch.setenv('DCSJ_DATA_DIR',str(tmp_path/'data'))
     monkeypatch.setattr(resources,'asset',lambda name,package=None:tmp_path/name)

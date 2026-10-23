@@ -79,6 +79,52 @@ function records() {
   return { total: 2, items: ['a', 'b'].map(id => ({ id, name: id, created_at: created, power_kw: 12, efficiency: .9 })) };
 }
 
+test('slot picker previews native changes, rejects stale apply and preserves reference-only semantics', async t => {
+  const dom = new JSDOM('<div id="host"></div>', {url:'http://dcsj.invalid/',runScripts:'outside-only'});
+  const w=dom.window,doc=w.document;t.after(()=>w.close());
+  w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+  w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
+  let p={Di1:100,g:.5,hr0:1},bindings={},applied=0;
+  const entry={name:'Synthetic slot',reference:'user-slot:synthetic@1',document:{drawing:'SYN-R',parameters:{hr0:1},applications:[]}};
+  w.fetch=async(url,options={})=>{
+    const path=new URL(url,w.location.href).pathname,body=options.body?JSON.parse(options.body):null;
+    let data;
+    if(path==='/api/v1/slots')data={total:1,items:[entry]};
+    else if(path==='/api/v1/slots/apply')data={parameters:{...body.parameters,hr0:1},binding:{rotor:entry.reference},changes:[],geometry_check:{checks:[]}};
+    else if(path==='/api/v1/slots/preview')data={entries:[],geometry_check:{checks:[],geometry:{rotor_outer_mm:99},hr0_reference_available:false}};
+    else throw new Error(path);
+    return {ok:true,json:async()=>data};
+  };
+  w.eval(readFileSync(resolve(root,'frontend/slot-picker.js'),'utf8'));
+  const picker=w.SlotPicker.mount(doc.querySelector('#host'),{module:'main',read:()=>p,bindings:()=>bindings,busy:()=>false,
+    apply:(params,b)=>{p=params;bindings={...bindings,...b};applied++;},detach:side=>delete bindings[side]});
+  const click=text=>{const b=[...doc.querySelectorAll('button')].find(e=>e.textContent===text);assert.ok(b,text);b.click();};
+  click('选择转子槽型');await settle();click('Synthetic slot · SYN-R · 含尺寸');click('预览带入内容');await settle();
+  p={...p,g:.6};click('确认带入当前设计');assert.equal(applied,0);assert.match(doc.body.textContent,/当前参数已变化/);
+  click('预览带入内容');await settle();click('确认带入当前设计');assert.equal(applied,1);assert.equal(bindings.rotor,entry.reference);
+  await picker.refresh();assert.match(doc.body.textContent,/尚无 hr0/);
+  click('解除槽型关联');assert.deepEqual(bindings,{});
+});
+
+test('slot catalog creates a new user entry and round-trips dimensions without overwriting resources', async t => {
+  const dom=new JSDOM(readFileSync(resolve(root,'frontend/slots.html'),'utf8'),{url:'http://dcsj.invalid/slots',runScripts:'outside-only'});
+  const w=dom.window,doc=w.document;t.after(()=>w.close());w.confirm=()=>true;
+  const calls=[];let saved;
+  const schema={fields:{main:{stator:[{key:'bs1',label:'槽宽',unit:'mm'}],rotor:[]},tx:{stator:[],rotor:[]}}};
+  w.fetch=async(url,options={})=>{const path=new URL(url,w.location.href).pathname;const body=options.body?JSON.parse(options.body):undefined;calls.push({path,method:options.method||'GET',body});let data;
+    if(path==='/api/v1/slots/schema')data=schema;
+    else if(path==='/api/v1/slots')data={items:saved?[saved]:[],total:saved?1:0};
+    else if(path==='/api/v1/library/slots'){saved={...body,id:'synthetic',reference:'user-slot:synthetic@1',revision:1,origin:'user',archived:false};data=saved;}
+    else throw new Error(path);
+    return {ok:true,json:async()=>data};};
+  w.eval(readFileSync(resolve(root,'frontend/slot-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/slots.js'),'utf8'));await settle();
+  doc.querySelector('#new-slot').click();doc.querySelector('#slot-name').value='Synthetic';doc.querySelector('[data-dimension="bs1"]').value='7.5';
+  doc.querySelector('#slot-editor').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await settle();
+  const request=calls.find(c=>c.method==='POST');assert.equal(request.path,'/api/v1/library/slots');assert.equal(request.body.document.parameters.bs1,7.5);assert.equal(request.body.expected_revision,undefined);
+  assert.match(doc.querySelector('#feedback').textContent,/已保存/);assert.equal(doc.querySelector('#next').disabled,true);
+  assert.equal(doc.querySelector('#save').textContent,'保存新版本');
+});
+
 test('versioned plots use reverse x and separate y scales while raw tables and old snapshots stay intact', async t => {
   const value = snapshot('a');
   const raw = [{ name: 'raw I', points: [{ x: .02, y: .4 }, { x: 1, y: 5 }] }];

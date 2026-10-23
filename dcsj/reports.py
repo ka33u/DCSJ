@@ -114,6 +114,8 @@ def render(snapshot):
     content.extend('<figure>' + slot_svg(panel) + '</figure>' for panel in slot_drawings(p))
     content += ['<div class="dimensions">', table([], [(label, value + (' ' + unit if unit else ''))
                 for label, value, unit in summary.dimensions(p)]), '</div></div>',
+                table(summary.SLOT_HEADERS, summary.slot_rows(snapshot), 'pairs') if snapshot.get('slots') else '',
+                '<p class="legend">' + text(summary.SLOT_AREA_NOTE) + '</p>' if snapshot.get('slots') else '',
                 '<h2>绕组与导线</h2>', table([], summary.grid(summary.windings(snapshot)), 'pairs'),
                 '<p class="legend">' + text(summary.wire_note(snapshot)) + '</p>' if summary.wire_note(snapshot) else '',
                 '<h2>设计目标与计算结果</h2>', table(['指标', '设计目标', '计算结果', '差值 / 峰值位置', '单位'], summary.targets(snapshot), 'targets'),

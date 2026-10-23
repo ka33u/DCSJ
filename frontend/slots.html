@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>定转子槽型库 · DCSJ</title><link rel="stylesheet" href="/slots.css"><script src="/slot-picker.js" defer></script><script src="/slots.js" defer></script></head>
+<body class="slot-page"><header><a href="/">DCSJ · 电磁设计</a><a href="/#workbench">主工作台</a><a href="/tx">同心绕组</a><strong>定转子槽型库</strong><a href="/docs" target="_blank" rel="noopener">API ↗</a></header>
+<main><h1>定转子槽型库</h1><p class="lead">按图号、机座和系列查找冲片资料，维护槽尺寸与参考面积。用户槽型独立保存版本，更新私有资源不会覆盖。</p>
+<div class="slot-layout"><aside class="slot-panel"><div class="slot-tabs" aria-label="槽型侧别"><button class="slot-button" data-side="stator" aria-pressed="true">定子槽</button><button class="slot-button" data-side="rotor" aria-pressed="false">转子槽</button></div>
+<form id="slot-search" class="slot-tools"><input id="query" type="search" aria-label="搜索槽型" placeholder="图号 / 名称 / 机座 / 系列" maxlength="120"><button class="slot-button">搜索</button></form>
+<div class="slot-tools"><select id="origin" aria-label="资料来源"><option value="all">全部来源</option><option value="resource">私有参考库</option><option value="user">用户槽型</option></select><select id="archived" aria-label="归档筛选"><option value="">使用中</option><option value="true">含归档</option></select></div>
+<div class="slot-tools"><button id="new-slot" class="slot-button slot-primary">新增槽型</button><span id="count" class="slot-state" role="status"></span></div>
+<div id="slot-list" class="slot-list"></div><div class="slot-tools"><button id="previous" class="slot-button">上一页</button><span id="page-label" class="slot-state"></span><button id="next" class="slot-button">下一页</button></div></aside>
+<section class="slot-panel"><div id="empty">选择左侧槽型查看资料，也可在工作台把当前槽尺寸保存到此处。</div><form id="slot-editor" hidden>
+<div class="slot-tools"><h2 id="editor-title">槽型资料</h2><span id="entry-kind" class="slot-state"></span></div><p id="entry-version" class="slot-version"></p>
+<div class="slot-grid"><label class="slot-field wide">槽型名称<input id="slot-name" required maxlength="120"></label><label class="slot-field">冲片图号<input id="drawing" maxlength="120"></label><label class="slot-field">尺寸参数所属模块<select id="module"><option value="reference">图号参考资料</option><option value="main">主设计 · mm</option><option value="tx">TX 同心绕组 · cm</option></select></label><label class="slot-field">图纸单槽面积 · mm²<input id="reference-area" type="number" min="0.000001" step="any" placeholder="未知请留空"></label><label class="slot-field wide">来源<input id="source" maxlength="2000" required></label><label class="slot-field wide">备注<textarea id="notes" maxlength="4000" rows="2"></textarea></label></div>
+<h2>槽尺寸</h2><p class="slot-state" id="dimension-help">未提供的尺寸留空；不根据图号猜测尺寸。主程序与 TX 槽型代码分别保存。</p><div id="dimension-fields" class="slot-grid"></div>
+<h2>外径与槽口高度基准 · mm</h2><p class="slot-state">hr0 联动仅用于同一冲片、槽颈底位置不变的比较。没有加工基准时留空。</p><div id="geometry-fields" class="slot-grid"></div>
+<div class="slot-tools"><button id="preview" type="button" class="slot-button">预览槽型与面积</button></div><div id="slot-area-preview" class="slot-state"></div>
+<h2>适用规格</h2><p class="slot-state">参考规格仅作选型依据；从工作台带入时可预览具体变更。</p><div id="applications" class="slot-table"></div>
+<div class="slot-tools"><button id="save" class="slot-button slot-primary">保存新版本</button><button type="button" id="copy" class="slot-button">另存为用户槽型</button><button type="button" id="archive" class="slot-button">归档</button><button type="button" id="versions" class="slot-button">版本历史</button></div>
+<div id="history" class="slot-tools"></div><details><summary>原始资料 JSON</summary><pre id="raw"></pre></details></form>
+<p id="feedback" role="status" aria-live="polite"></p></section></div></main><footer>槽型、面积和来源版本随计算结果保存；报告读取当次快照。</footer></body></html>

@@ -237,7 +237,12 @@ def _render(snapshot):
         ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('BOX', (0, 0), (-1, -1), .4, colors.HexColor('#dce5e8')),
         ('INNERGRID', (0, 0), (-1, -1), .3, colors.HexColor('#dce5e8'))]))
-    story += [figures, paragraph('绕组与导线', 'sh2'), summary_table(summary.windings(snapshot))]
+    story.append(figures)
+    if snapshot.get('slots'):
+        story += [table(summary.SLOT_HEADERS, summary.slot_rows(snapshot),
+                        [WIDTH*f for f in (.06,.26,.22,.16,.15,.15)], compact=True),
+                  paragraph(summary.SLOT_AREA_NOTE, 'small')]
+    story += [paragraph('绕组与导线', 'sh2'), summary_table(summary.windings(snapshot))]
     if summary.wire_note(snapshot):
         story.append(paragraph(summary.wire_note(snapshot), 'small'))
     story += [paragraph('设计目标与计算结果', 'sh2'),

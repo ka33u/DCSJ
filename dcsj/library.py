@@ -54,7 +54,7 @@ class MaterialDocument(BaseModel):
 
 
 def _kind(kind):
-    if kind not in {'models', 'materials'}:
+    if kind not in {'models', 'materials', 'slots'}:
         raise NotFoundError('用户数据类型不存在')
 
 
@@ -74,7 +74,7 @@ def compatibility(document):
 def _decode(row):
     result = dict(row)
     result['document'] = json.loads(result['document'])
-    result['reference'] = ('user-model:' if result['kind'] == 'models' else 'user-material:') + result['id'] + '@' + str(result['revision'])
+    result['reference'] = {'models':'user-model:', 'materials':'user-material:', 'slots':'user-slot:'}[result['kind']] + result['id'] + '@' + str(result['revision'])
     result['document_sha256'] = hashlib.sha256(dumps(result['document']).encode()).hexdigest()
     if result['kind'] == 'models':
         result['input_parameters'] = input_parameters(result['document']['parameters'])
@@ -111,7 +111,8 @@ def save(kind, name, document, identity=None, expected_revision=None):
     if not name or len(name) > 120:
         raise ValueError('名称须为 1–120 个字符')
     try:
-        document = (ModelDocument if kind == 'models' else MaterialDocument).model_validate(document).model_dump(mode='json')
+        from .slots import SlotDocument
+        document = {'models':ModelDocument, 'materials':MaterialDocument, 'slots':SlotDocument}[kind].model_validate(document).model_dump(mode='json')
     except ValidationError as error:
         raise InputError([{'field': '.'.join(str(x) for x in item['loc']), 'message': item['msg']}
                           for item in error.errors()]) from None
@@ -156,7 +157,7 @@ def archive(kind, identity, expected_revision, archived):
 
 
 def from_reference(reference, kind):
-    prefix = 'user-model:' if kind == 'models' else 'user-material:'
+    prefix = {'models':'user-model:', 'materials':'user-material:', 'slots':'user-slot:'}[kind]
     match = re.fullmatch(re.escape(prefix) + r'(ul_[a-f0-9]{32})@([1-9][0-9]{0,9})', reference)
     if not match:
         raise NotFoundError('用户数据引用无效，请使用包含固定版本的引用')

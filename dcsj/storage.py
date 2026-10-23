@@ -8,7 +8,7 @@ import sqlite3
 import threading
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _migration_lock = threading.Lock()
 _initialized = set()
 
@@ -103,6 +103,9 @@ def _migrate(db, path):
             ]:
                 db.execute(statement)
             for table, column, declaration in [('projects', 'lineage', "TEXT NOT NULL DEFAULT '{}'"),
+                                               ('projects', 'slot_bindings', "TEXT NOT NULL DEFAULT '{}'"),
+                                               ('project_revisions', 'slot_bindings', "TEXT NOT NULL DEFAULT '{}'"),
+                                               ('tx_revisions', 'slot_bindings', "TEXT NOT NULL DEFAULT '{}'"),
                                                ('project_revisions', 'lineage', "TEXT NOT NULL DEFAULT '{}'"),
                                                ('projects', 'author', "TEXT NOT NULL DEFAULT ''"),
                                                ('project_revisions', 'author', "TEXT NOT NULL DEFAULT ''"),

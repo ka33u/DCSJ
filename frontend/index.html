@@ -6,6 +6,8 @@
   <meta name="theme-color" content="#12252b">
   <title>DCSJ · 电磁设计工作台</title>
   <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="/slots.css">
+  <script src="/slot-picker.js" defer></script>
   <script src="./app.js" defer></script>
 </head>
 <body>
@@ -27,6 +29,7 @@
         <button class="nav-item" data-view="optimization"><span class="nav-icon" aria-hidden="true">↗</span>自动寻优<span class="nav-index">07</span></button>
         <button class="nav-item" data-view="resources"><span class="nav-icon" aria-hidden="true">⊕</span>资源与用户数据<span class="nav-index">08</span></button>
         <a class="nav-item" href="/tx"><span class="nav-icon" aria-hidden="true">∿</span>双层同心式绕组<span class="nav-index">TX</span></a>
+        <a class="nav-item" href="/slots"><span class="nav-icon" aria-hidden="true">▥</span>定转子槽型库<span class="nav-index">09</span></a>
       </nav>
       <div class="sidebar-label secondary">DEVELOPER</div>
       <nav class="navigation" aria-label="开发与说明">
@@ -62,6 +65,7 @@
             <section class="panel parameter-panel" aria-labelledby="parameter-title">
               <div class="panel-header"><div><span class="step-number">01</span><h2 id="parameter-title">设计参数</h2></div><div class="panel-actions"><button class="text-button" id="load-example">载入示例</button><button class="button button-small" data-go="catalog">从型号库选择</button></div></div>
               <div id="source-box" class="source-box"><span class="source-label">数据来源</span><span id="parameter-source">未载入数据</span></div>
+              <div id="slot-workbench"></div>
               <div class="editor-toolbar"><label class="search-field compact"><span aria-hidden="true">⌕</span><input type="search" id="parameter-search" placeholder="查找参数名称或符号" aria-label="查找参数"></label><span id="parameter-count" class="muted">0 个参数</span></div>
               <div id="parameter-tabs" class="parameter-tabs" aria-label="参数分组"></div>
               <form id="parameter-form" novalidate>

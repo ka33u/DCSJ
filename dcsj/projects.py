@@ -15,6 +15,7 @@ def _project(row):
     if raw != result['parameters']:
         result['raw_parameters'] = raw
     result['lineage'] = json.loads(result.get('lineage') or '{}')
+    result['slot_bindings'] = json.loads(result.get('slot_bindings') or '{}')
     return result
 
 
@@ -30,7 +31,7 @@ def get_project(project_id):
         return _project(db.execute('SELECT * FROM projects WHERE id=?', (project_id,)).fetchone())
 
 
-def save_project(name, parameters, notes='', lineage=None, author=''):
+def save_project(name, parameters, notes='', lineage=None, author='', slot_bindings=None):
     project_id, timestamp = str(uuid.uuid4()), now()
     encoded = dumps(parameters)
     with connect() as db:
@@ -39,14 +40,16 @@ def save_project(name, parameters, notes='', lineage=None, author=''):
         db.execute('INSERT INTO project_revisions(project_id,revision,name,parameters,notes,created_at,lineage,author) VALUES (?,1,?,?,?,?,?,?)',
                    (project_id, name, encoded, notes, timestamp, dumps(lineage or {}), author))
         audit(db, 'project.created', project_id, {'revision': 1})
+        for table, key in [('projects','id'), ('project_revisions','project_id')]:
+            db.execute(f'UPDATE {table} SET slot_bindings=? WHERE {key}=?', (dumps(slot_bindings or {}), project_id))
     return get_project(project_id)
 
 
-def update_project(project_id, expected_revision, name, parameters, notes='', lineage=None, author=None):
+def update_project(project_id, expected_revision, name, parameters, notes='', lineage=None, author=None, slot_bindings=None):
     timestamp, encoded = now(), dumps(parameters)
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT revision,archived,lineage,author FROM projects WHERE id=?', (project_id,)).fetchone()
+        row = db.execute('SELECT revision,archived,lineage,author,slot_bindings FROM projects WHERE id=?', (project_id,)).fetchone()
         if row is None:
             raise NotFoundError('设计不存在')
         if row['revision'] != expected_revision or row['archived']:
@@ -59,6 +62,9 @@ def update_project(project_id, expected_revision, name, parameters, notes='', li
         db.execute('INSERT INTO project_revisions(project_id,revision,name,parameters,notes,created_at,lineage,author) VALUES (?,?,?,?,?,?,?,?)',
                    (project_id, revision, name, encoded, notes, timestamp, origin, author))
         audit(db, 'project.updated', project_id, {'revision': revision})
+        bindings = row['slot_bindings'] if slot_bindings is None else dumps(slot_bindings)
+        db.execute('UPDATE projects SET slot_bindings=? WHERE id=?', (bindings, project_id))
+        db.execute('UPDATE project_revisions SET slot_bindings=? WHERE project_id=? AND revision=?', (bindings, project_id, revision))
     return get_project(project_id)
 
 

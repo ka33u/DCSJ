@@ -26,6 +26,7 @@
     project: null,
     selectedCalculations: new Map(), calculationOffset: 0, comparisonOffset: 0,
     quickTemplate: null, quickPreview: null,
+    slotBindings: {},
   };
   const viewNames = { workbench: "设计工作台", catalog: "电机型号库", materials: "材料与磁化曲线", projects: "我的设计", about: "分析与实现状态", comparisons: "方案对比", modeling: "快速建模", optimization: "自动寻优" };
   const colors = ["#3a8d70", "#668fc0", "#d59b55", "#a37bad", "#6aa9ad", "#bd7771"];
@@ -133,6 +134,7 @@
     $("#design-state").replaceChildren(el("span", `status-dot ${tone}`), document.createTextNode(text));
   }
   function designChanged() {
+    slotPicker?.update();
     ++modelRequest;
     state.revision += 1;
     state.dirty = true;
@@ -165,12 +167,14 @@
     }
     return Object.fromEntries(entries);
   }
-  function acceptDesign(parameters, name, source, model = "", baseModelId = null, author = "") {
+  function acceptDesign(parameters, name, source, model = "", baseModelId = null, author = "", slotBindings = {}) {
     const accepted = validParameters(parameters);
     ++modelRequest;
     state.project = null;
     state.baseModelId = baseModelId;
     state.parameters = accepted;
+    state.slotBindings = slotBindings || {};
+    slotPicker?.update();
     state.name = String(name || "未命名设计");
     state.author = typeof author === "string" ? author.trim() : "";
     state.model = String(model || parameters.SizeX || parameters.Model || parameters.model || "");
@@ -399,6 +403,7 @@
     const timeLabel = calculatedAt && !Number.isNaN(calculatedAt.getTime()) ? calculatedAt.toLocaleString("zh-CN") : "未记录";
     meta.append(el("span", "", `引擎：${asText(result.engine?.name || result.engine || "未提供")}`), el("span", "", `计算时间 · ${timeLabel}`));
     container.append(meta);
+    if (result.slots && window.SlotPicker) container.append(window.SlotPicker.summary(result.slots));
     if (result.calculation_id) {
       const actions = el("div", "feature-actions");
       actions.append(reportLink(result.calculation_id), button("加入方案对比", "button button-small", () => {
@@ -592,7 +597,7 @@
     $("#result-badge").textContent = "计算中";
     $("#result-badge").className = "badge neutral";
     try {
-      const result = await api("/calculate", { method: "POST", body: JSON.stringify({ parameters: state.parameters, name: state.name, base_model_id: state.baseModelId, ...(state.project && !state.dirty ? { project_id: state.project.id, project_revision: state.project.revision } : {}) }) });
+      const result = await api("/calculate", { method: "POST", body: JSON.stringify({ parameters: state.parameters, slot_bindings: state.slotBindings, name: state.name, base_model_id: state.baseModelId, ...(state.project && !state.dirty ? { project_id: state.project.id, project_revision: state.project.revision } : {}) }) });
       if (!result || !Array.isArray(result.metrics)) throw new Error("计算接口没有返回约定的 metrics 数组，请检查后端接口。");
       state.result = result;
       state.resultRevision = revision;
@@ -714,7 +719,7 @@
       if (request !== modelRequest) return;
       if (model.kind === "saved_design") {
         const design = model.project;
-        acceptDesign(design.parameters, design.name, `已保存设计 · v${design.revision} · ${design.author || "未署名"}`, "", design.lineage?.id || null, design.author);
+        acceptDesign(design.parameters, design.name, `已保存设计 · v${design.revision} · ${design.author || "未署名"}`, "", design.lineage?.id || null, design.author, design.slot_bindings);
         state.project = design;
       } else acceptDesign(model.parameters, model.model || String(id), model.source, model.model || "", model.id);
       showToast(`已载入 ${model.model || id}，来源信息显示在参数区。`);
@@ -832,7 +837,7 @@
           try {
             const design = await api(`/projects/${encodeURIComponent(project.id)}`);
             if (request !== modelRequest) return;
-            acceptDesign(design.parameters, design.name, design.source || `已保存设计 · ${design.id}`, design.model || "", design.lineage?.id || design.base_model_id || null, design.author);
+            acceptDesign(design.parameters, design.name, design.source || `已保存设计 · ${design.id}`, design.model || "", design.lineage?.id || design.base_model_id || null, design.author, design.slot_bindings);
             state.project = design;
             showToast(`已打开设计：${design.name} · v${design.revision}`);
           } catch (error) { showToast(errorText(error), "error"); }
@@ -875,7 +880,7 @@
     const revision = state.revision;
     try {
       const updating = state.project && !$("#save-as-new").checked;
-      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, author: $("#design-author").value.trim(), parameters: state.parameters, base_model_id: state.baseModelId, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
+      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, author: $("#design-author").value.trim(), parameters: state.parameters, slot_bindings: state.slotBindings, base_model_id: state.baseModelId, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
       if (!saved.id) throw new Error("服务未返回设计 ID，无法确认是否保存成功。");
       state.catalog.loaded = false; ++state.catalog.request;
       if (revision === state.revision) {
@@ -895,7 +900,7 @@
   }
   function exportDesign() {
     if (!populated()) return showToast("请先载入设计参数。", "warning");
-    const documentData = { format: "dcsj-design", version: 1, name: state.name, author: state.author, model: state.model, source: state.source, base_model_id: state.baseModelId, parameters: state.parameters, exported_at: new Date().toISOString() };
+    const documentData = { format: "dcsj-design", version: 1, name: state.name, author: state.author, model: state.model, source: state.source, base_model_id: state.baseModelId, parameters: state.parameters, slot_bindings: state.slotBindings, exported_at: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(documentData, null, 2)], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = el("a");
@@ -924,7 +929,7 @@
       const params = validParameters(design.parameters);
       if (state.busy) throw new Error("计算正在进行，请在完成后重新导入设计。");
       ++modelRequest;
-      acceptDesign(params, design.name || file.name.replace(/\.json$/i, ""), design.source || `导入文件：${file.name}`, design.model || "", design.lineage?.id || design.base_model_id || null, design.author);
+      acceptDesign(params, design.name || file.name.replace(/\.json$/i, ""), design.source || `导入文件：${file.name}`, design.model || "", design.lineage?.id || design.base_model_id || null, design.author, design.slot_bindings);
       showToast("设计参数已导入。请重新运行计算检查结果。");
     } catch (error) { showToast(errorText(error), "error"); }
   }
@@ -958,7 +963,7 @@
             const revision = await api(`/projects/${project.id}/revisions/${item.revision}`);
             if (request !== modelRequest) return;
             applying = true;
-            acceptDesign(revision.parameters, `${revision.name} · v${item.revision} 副本`, `版本 ${project.id} / ${item.revision}`, "", revision.lineage?.id || null, revision.author);
+            acceptDesign(revision.parameters, `${revision.name} · v${item.revision} 副本`, `版本 ${project.id} / ${item.revision}`, "", revision.lineage?.id || null, revision.author, revision.slot_bindings);
             state.dirty = true;
             $("#history-dialog").close();
           } catch (error) { if (applying || request === undefined || request === modelRequest) showToast(errorText(error), "error"); }
@@ -1019,7 +1024,7 @@
       const item = await api(`/calculations/${encodeURIComponent(id)}`);
       if (request !== modelRequest) return;
       applying = true;
-      acceptDesign(item.inputs, item.name, `计算快照 ${id}`, "", item.provenance?.base_model?.id || null);
+      acceptDesign(item.inputs, item.name, `计算快照 ${id}`, "", item.provenance?.base_model?.id || null, "", item.slot_bindings);
       state.result = item; state.resultRevision = state.revision;
       renderResults(item);
     } catch (error) { if (applying || request === undefined || request === modelRequest) showToast(errorText(error), "error"); }
@@ -1795,5 +1800,15 @@
   $("#open-import").addEventListener("click", () => $("#import-file").click());
   $("#import-file").addEventListener("change", importDesign);
   $("#export-design").addEventListener("click", exportDesign);
+  const slotPicker = window.SlotPicker?.mount($("#slot-workbench"), {
+    module: "main", read: () => {
+      if (state.invalidInputs.size) throw new Error("请先完成当前参数输入");
+      return state.parameters;
+    }, bindings: () => state.slotBindings, busy: () => state.busy,
+    apply: (parameters, binding) => {
+      state.parameters = parameters; state.slotBindings = { ...state.slotBindings, ...binding };
+      designChanged(); renderEditor(); showToast("槽型已带入，请重新计算。");
+    }, detach: side => { delete state.slotBindings[side]; designChanged(); },
+  });
   boot().catch(error => showNotice(`初始化失败：${errorText(error)}`));
 })();

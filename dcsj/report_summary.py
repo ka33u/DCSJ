@@ -64,6 +64,24 @@ def ratings(p):
                      ('Paihao', '硅钢牌号', ''), ('kfe', '迭压系数', ''), ('czn', '绕组层数', '')])
 
 
+def slot_rows(snapshot):
+    statuses = {'matched':'已带入尺寸', 'modified':'尺寸已修改', 'reference_only':'仅图号参考', 'manual':'手工参数'}
+    rows = []
+    for item in snapshot.get('slots', {}).get('entries', []):
+        area = item['area']
+        name = item['name'] + (f" · v{item['revision']}" if item.get('revision') else '')
+        reference = item.get('document') or {}
+        rows.append(('定子' if item['side'] == 'stator' else '转子', name, item.get('drawing') or '—',
+                     statuses.get(item['status'], item['status']),
+                     f"{area['value_mm2']:.3f}" if area['value_mm2'] is not None else '未计算',
+                     f"{reference['reference_area_mm2']:.3f}" if reference.get('reference_area_mm2') is not None else '—'))
+    return rows
+
+
+SLOT_HEADERS = ['侧别', '槽型 / 版本', '冲片图号', '使用状态', '本次面积 mm²', '图纸面积 mm²']
+SLOT_AREA_NOTE = '主程序为含槽口的单槽几何面积（不扣绝缘，圆弧近似）；TX 定子面积取原核输出。图纸面积仅供参考。'
+
+
 def dimensions(p):
     data = dict(p)
     data['D2'] = p['Di1'] - 2 * p['g'] if finite(p.get('Di1')) and finite(p.get('g')) else None

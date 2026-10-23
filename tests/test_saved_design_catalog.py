@@ -81,7 +81,7 @@ def test_schema_six_migration_retains_old_designs_and_tx_versions(tmp_path, para
         db.execute('INSERT INTO tx_designs VALUES(?,?,?,?,?)', ('tx', '旧TX', 1, '2020', '2020'))
         db.execute('INSERT INTO tx_revisions VALUES(?,?,?,?,?)', ('tx', 1, '{"TYP":"旧TX"}', '{}', '2020'))
     with storage.connect(path) as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 7
+        assert db.execute('PRAGMA user_version').fetchone()[0] == storage.SCHEMA_VERSION
         for table in ('projects', 'project_revisions', 'tx_designs', 'tx_revisions'):
             assert db.execute(f'SELECT author FROM {table}').fetchone()[0] == ''
         assert json.loads(db.execute('SELECT parameters FROM projects').fetchone()[0]) == parameters

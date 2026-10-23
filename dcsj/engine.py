@@ -232,7 +232,9 @@ def calculate_design(values):
                 "两者来自原程序的不同计算路径，不能相互替代。"
             )
     metrics = [semantics.metric_info(key, value) for key, value in output.items()]
+    from . import slots
     return {
+        'slots': slots.snapshot(p, resolved={}),
         **metadata, "engine": engine_status(context),
         "metrics": metrics, "values": output, "warnings": warnings,
         "curves": curves, "inputs": p, "wire_selection": wire,

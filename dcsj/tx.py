@@ -150,12 +150,16 @@ def _result(vm,parameters,ctx,source):
             'input_sha256':hashlib.sha256(dumps(parameters).encode()).hexdigest()}
 
 
-def calculate(parameters,persist=True,base_model_id=None):
+def calculate(parameters,persist=True,base_model_id=None,slot_bindings=None):
+    from . import slots
+    resolved = slots.resolve(slot_bindings, 'tx')
     parameters=validate(parameters);ctx=context();source=lineage(base_model_id,ctx)
     if not _slots.acquire(blocking=False):raise BusyError('TX 计算资源已占满，请稍后重试')
     try:
         program=load_program(str(ctx['paths']['tx_kernel.json.gz']),ctx['files']['tx_kernel.json.gz']['sha256'])
         vm=TXVM(program,parameters);vm.run();result=_result(vm,parameters,ctx,source)
+        result['slot_bindings'] = slot_bindings or {}
+        result['slots'] = slots.snapshot(parameters,module='tx',resolved=resolved,details=result['details'])
     except (ArithmeticError,ValueError,NotImplementedError,KeyError,IndexError,UnicodeError) as exc:
         raise TXInputError('TX 计算未完成，请检查槽型、绕组及计算系数。原因：'+str(exc)) from None
     finally:_slots.release()
@@ -190,10 +194,14 @@ def design(identity,revision=None):
         versions=[r[0] for r in db.execute('SELECT revision FROM tx_revisions WHERE design_id=? ORDER BY revision DESC',(identity,))]
         return {**dict(row),'name':json.loads(version['parameters'])['TYP'],'author':version['author'],
                 'revision':version['revision'],'latest_revision':row['revision'],'parameters':json.loads(version['parameters']),
-                'source':json.loads(version['source']),'revisions':versions}
+                'source':json.loads(version['source']),'revisions':versions,
+                'slot_bindings':json.loads(version['slot_bindings'])}
 
 
-def save_design(parameters,identity=None,expected_revision=None,base_model_id=None,author=None):
+def save_design(parameters,identity=None,expected_revision=None,base_model_id=None,author=None,slot_bindings=None):
+    from . import slots
+    if slot_bindings is not None:
+        slots.resolve(slot_bindings, 'tx')
     parameters=validate(parameters);source=lineage(base_model_id,context()) if base_model_id else {'kind':'manual'}
     stamp=now()
     with connect() as db:
@@ -207,6 +215,9 @@ def save_design(parameters,identity=None,expected_revision=None,base_model_id=No
                                     (identity,expected_revision)).fetchone()
                 source=json.loads(previous['source'])
             revision=expected_revision+1
+            if slot_bindings is None:
+                slot_bindings=json.loads(db.execute('SELECT slot_bindings FROM tx_revisions WHERE design_id=? AND revision=?',
+                                                    (identity,expected_revision)).fetchone()[0])
             author=row['author'] if author is None else author
             db.execute('UPDATE tx_designs SET name=?,revision=?,updated_at=?,author=? WHERE id=?',(parameters['TYP'],revision,stamp,author,identity))
         else:
@@ -217,4 +228,6 @@ def save_design(parameters,identity=None,expected_revision=None,base_model_id=No
         db.execute('INSERT INTO tx_revisions(design_id,revision,parameters,source,created_at,author) VALUES(?,?,?,?,?,?)',
                    (identity,revision,dumps(parameters),dumps(source),stamp,author))
         audit(db,'tx.design_saved',identity,{'revision':revision})
+        db.execute('UPDATE tx_revisions SET slot_bindings=? WHERE design_id=? AND revision=?',
+                   (dumps(slot_bindings or {}),identity,revision))
     return design(identity)

@@ -9,7 +9,7 @@ import sys
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from dcsj.resources import ABI, FILES, TX_FILES, ROOT, digest, validate_files
+from dcsj.resources import ABI, FILES, TX_FILES, SLOT_FILES, ROOT, digest, validate_files
 
 
 def build(source_root, destination, version):
@@ -21,6 +21,9 @@ def build(source_root, destination, version):
     if any(tx_present) and not all(tx_present):
         raise ValueError('TX 型号库和计算资源须一起提供')
     files = {**FILES, **TX_FILES} if all(tx_present) else FILES
+    slots_present = (source_root / SLOT_FILES['slot_catalog.json']).is_file()
+    if slots_present:
+        files = {**files, **SLOT_FILES}
     for name, source in files.items():
         shutil.copyfile(source_root / source, staging / name)
     with closing(sqlite3.connect((staging / 'catalog.sqlite').resolve().as_uri() + '?mode=ro', uri=True)) as db:
@@ -29,8 +32,10 @@ def build(source_root, destination, version):
                   'materials': db.execute('SELECT count(*) FROM materials WHERE is_primary=1').fetchone()[0]}
     if all(tx_present):
         counts['tx_model_versions'] = len(json.loads((staging / 'tx_catalog.json').read_text())['models'])
-    manifest = {'format': 'dcsj-private-resources', 'format_version': 2 if all(tx_present) else 1, 'abi': ABI,
-                'version': version, 'minimum_application': '0.8.0' if all(tx_present) else '0.6.0', 'counts': counts,
+    if slots_present:
+        counts['slot_profiles'] = len(json.loads((staging / 'slot_catalog.json').read_text())['items'])
+    manifest = {'format': 'dcsj-private-resources', 'format_version': 3 if slots_present else (2 if all(tx_present) else 1), 'abi': ABI,
+                'version': version, 'minimum_application': '0.9.0' if slots_present else ('0.8.0' if all(tx_present) else '0.6.0'), 'counts': counts,
                 'files': {name: {'size': (staging / name).stat().st_size, 'sha256': digest(staging / name)} for name in files}}
     validate_files(staging, manifest)
     (staging / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2), encoding='utf-8')

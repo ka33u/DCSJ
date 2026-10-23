@@ -3,7 +3,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Literal
-from . import tx
+from . import tx, slots
 from .tx_parameters import schema, validate
 from .tx_report import report
 from .parameters import ROOT
@@ -15,6 +15,7 @@ class TXInput(BaseModel):
     model_config=ConfigDict(extra='forbid')
     parameters: dict = Field(description='TX 独立参数；从 /api/v1/tx/models/{id} 取得，单位见 /schema。')
     base_model_id: str | None = Field(default=None,max_length=100)
+    slot_bindings: slots.Bindings = Field(default_factory=slots.Bindings)
 
 
 class TXCalculationInput(TXInput):
@@ -69,7 +70,7 @@ def check(body:TXInput):return {'valid':True,'parameters':validate(body.paramete
 
 
 @router.post('/api/v1/tx/calculate')
-def calculate(body:TXCalculationInput):return tx.calculate(body.parameters,body.persist,body.base_model_id)
+def calculate(body:TXCalculationInput):return tx.calculate(body.parameters,body.persist,body.base_model_id,body.slot_bindings.model_dump(exclude_none=True))
 
 
 @router.get('/api/v1/tx/calculations')
@@ -89,7 +90,7 @@ def designs():return {'items':tx.designs()}
 
 
 @router.post('/api/v1/tx/designs',status_code=201)
-def create(body:TXDesignInput):return tx.save_design(body.parameters,base_model_id=body.base_model_id,author=body.author)
+def create(body:TXDesignInput):return tx.save_design(body.parameters,base_model_id=body.base_model_id,author=body.author,slot_bindings=body.slot_bindings.model_dump(exclude_none=True))
 
 
 @router.get('/api/v1/tx/designs/{identity}')
@@ -99,4 +100,5 @@ def design(identity:str,revision:int|None=Query(default=None,ge=1)):return tx.de
 @router.put('/api/v1/tx/designs/{identity}')
 def update(identity:str,body:TXDesignUpdate):
     return tx.save_design(body.parameters,identity,body.expected_revision,body.base_model_id,
-                          body.author if 'author' in body.model_fields_set else None)
+                          body.author if 'author' in body.model_fields_set else None,
+                          body.slot_bindings.model_dump(exclude_none=True) if 'slot_bindings' in body.model_fields_set else None)
