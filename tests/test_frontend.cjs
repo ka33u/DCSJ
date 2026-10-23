@@ -687,3 +687,56 @@ test('TX author is revision metadata and a saved library record resumes its orig
   const update=a.calls.find(c=>c.method==='PUT');assert.equal(update.path,'/designs/tx-author');
   assert.equal(update.body.expected_revision,1);assert.equal(update.body.author,'李工');assert.equal(update.body.base_model_id,'synthetic');
 });
+
+test('TX tabs and global parameter search preserve every edited value and calculation input',async t=>{
+  const a=await txApp(t),d=a.doc;
+  const tabs=[...d.querySelectorAll('#parameter-tabs [role="tab"]')].filter(tab=>!tab.hidden);
+  assert.equal(tabs.length,5);
+  assert.equal(d.querySelectorAll('#parameters > [role="tabpanel"]:not([hidden])').length,1);
+  assert.match(tabs[0].textContent,/额定参数/);
+  tabs[1].click();
+  assert.match(d.querySelector('#parameter-count').textContent,/线圈组/);
+  const turns=d.querySelector('[name="NDXP(2)"]');turns.value='8.5';turns.dispatchEvent(new a.w.Event('input',{bubbles:true}));
+  const search=d.querySelector('#parameter-search');
+  const query=value=>{search.value=value;search.dispatchEvent(new a.w.Event('input',{bubbles:true}));};
+  query('匝数');
+  assert.equal(d.querySelectorAll('#parameter-search-results input').length,6);
+  assert.equal(d.querySelector('#parameter-search-tab').getAttribute('aria-selected'),'true');
+  assert.equal(d.querySelectorAll('#parameter-tabs [aria-selected="true"]').length,1);
+  assert.equal(d.querySelector('[name="NDXP(2)"]'),turns,'Search moves the original control');
+  query('ndxp(2)');assert.equal(d.querySelectorAll('#parameter-search-results input').length,1);
+  assert.equal(d.querySelector('#parameter-search-results input').value,'8.5');
+  query('不存在的参数');assert.equal(d.querySelectorAll('#parameter-search-results input').length,0);
+  assert.match(d.querySelector('#parameter-search-results').textContent,/没有匹配/);
+  assert.equal(d.querySelectorAll('#parameters input').length,Object.keys(a.p).length,'No controls disappear from the form');
+  query('cm');assert.equal(d.querySelector('#parameter-search-results input').name,'D3');
+  const diameter=d.querySelector('[name="D3"]');diameter.value='19';diameter.dispatchEvent(new a.w.Event('input',{bubbles:true}));
+  search.dispatchEvent(new a.w.KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));
+  assert.equal(search.value,'');assert.equal(tabs[1].getAttribute('aria-selected'),'true');
+  query('FE');tabs[0].click();assert.equal(search.value,'');
+  assert.equal(d.querySelector('[name="NDXP(2)"]').value,'8.5');
+  // Calculate while most inputs are in hidden groups, then verify the complete payload.
+  d.querySelector('#calculate').click();await until(()=>a.calls.some(c=>c.path==='/calculate'),'Calculated after tab and search edits');
+  const sent=a.calls.find(c=>c.path==='/calculate').body.parameters;
+  assert.deepEqual(Object.keys(sent).sort(),Object.keys(a.p).sort());
+  assert.equal(sent['NDXP(2)'],8.5);assert.equal(sent.D3,19);assert.equal(sent.FE,1);
+});
+
+test('TX tabs support keyboard navigation and reveal invalid hidden parameters',async t=>{
+  const a=await txApp(t),d=a.doc;
+  const tabs=[...d.querySelectorAll('#parameter-tabs [role="tab"]')].filter(tab=>!tab.hidden);
+  const press=(element,key)=>element.dispatchEvent(new a.w.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}));
+  tabs[0].focus();press(tabs[0],'ArrowRight');
+  assert.equal(d.activeElement,tabs[1]);assert.equal(tabs[1].getAttribute('aria-selected'),'true');
+  press(tabs[1],'End');assert.equal(d.activeElement,tabs[4]);
+  press(tabs[4],'ArrowRight');assert.equal(d.activeElement,tabs[0]);
+  press(tabs[0],'ArrowLeft');assert.equal(d.activeElement,tabs[4]);
+  const hidden=d.querySelector('[name="D3"]');hidden.value='';
+  d.querySelector('#calculate').click();await settle();
+  assert.equal(a.calls.filter(c=>c.path==='/calculate').length,0);
+  assert.match(d.querySelector('#notice').textContent,/D3/);
+  assert.equal(tabs[3].getAttribute('aria-selected'),'true');assert.equal(d.activeElement,hidden);
+  assert.equal(hidden.getAttribute('aria-invalid'),'true');
+  hidden.value='18';hidden.dispatchEvent(new a.w.Event('input',{bubbles:true}));
+  assert.equal(hidden.hasAttribute('aria-invalid'),false);
+});
