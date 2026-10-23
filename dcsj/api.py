@@ -119,9 +119,28 @@ class ModelCalculationInput(BaseModel):
         return DesignInput.finite_parameters(values)
 
 
+class WireSpecification(BaseModel):
+    JJ: int = Field(description='第一组并绕根数；0 表示不参与')
+    Djj: float = Field(description='第一组线径，mm')
+    MM: int = Field(description='第二组并绕根数；0 表示不参与')
+    Dmm: float = Field(description='第二组线径，mm；根数为 0 时不参与计算')
+
+
+class WireSelection(BaseModel):
+    mode: Literal['fixed', 'target_fill']
+    input: WireSpecification = Field(description='提交的线规，保持输入快照不变')
+    used: WireSpecification = Field(description='计算后直接读取的实际线规，与 Sf、铜耗及铜重对应')
+    ignored_input_keys: list[str]
+    target_fill: float | None = Field(description='目标槽满率，0–1 比例；固定线规时为 null')
+    actual_fill: float = Field(description='实际槽满率，与 values.Sf 同值')
+    fill_delta: float | None = Field(description='实际减目标，比例；乘 100 得百分点')
+    units: dict[str, str]
+    source: Literal['kernel-final-state']
+
+
 class CalculationResult(BaseModel):
     model_config = ConfigDict(extra='allow')
-    inputs: dict = Field(description='实际计算的规范化输入，设计指标沿用 ATA、PF、IST、TST、TM')
+    inputs: dict = Field(description='提交并规范化的输入快照；反算后的实际线规见 wire_selection.used；设计指标沿用 ATA、PF、IST、TST、TM')
     values: dict[str, float] = Field(description='规范数值输出；磁密原值 G，效率与功率因数均为 0–1 比例')
     metrics: list[dict] = Field(description='values 的同值元数据视图，含单位和 source；不是另一套计算')
     curves: list[dict] = Field(description='趋势采样；校核和寻优使用 values，不从曲线读判定值')
@@ -133,6 +152,7 @@ class CalculationResult(BaseModel):
     requirements: list[dict] = Field(default_factory=list, description='原参数 ATA、PF、IST、TST、TM 与结果的比较，含判定方向和 passed')
     loss_semantics: dict = Field(default_factory=dict, description='损耗输入单位、核内比例、额定 W 及可选转速折算')
     material_semantics: dict = Field(default_factory=dict, description='材料声明频率与核内频率折算分开返回')
+    wire_selection: WireSelection | None = Field(default=None, description='实际线规、原输入及槽满率偏差；旧记录未保存此项时为 null，须重新计算获取')
     curve_checks: list[dict] = Field(default_factory=list, description='曲线起动点和采样峰值与校核标量的差值')
     calculation_id: str | None = Field(description='persist=false 时为 null，无保存记录和报告')
     persisted: bool

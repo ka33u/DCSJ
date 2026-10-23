@@ -1,6 +1,7 @@
 """Shared first-page values derived only from the immutable calculation snapshot."""
 from datetime import datetime, timezone, timedelta
 import math
+from .wire_selection import recorded
 
 
 def finite(value):
@@ -72,11 +73,27 @@ def dimensions(p):
                         ('Q1', 'Q1 定子槽数', ''), ('Q2', 'Q2 转子槽数', '')])
 
 
-def windings(p, v):
-    return cells(p, [('a', '并联路数 a', ''), ('ZZ', '每槽导体 ZZ', ''), ('Y1', '跨距 Y1', '槽'),
-                     ('JJ', '并绕根数 JJ', ''), ('Djj', '线径 Djj', 'mm'), ('MM', '并绕根数 MM', ''),
-                     ('Dmm', '线径 Dmm', 'mm'), ('sk', '斜槽比 sk', ''), ('Srr', '端环面积 Srr', 'mm²')]) + \
+def windings(snapshot):
+    p, v = snapshot['inputs'], snapshot['values']
+    # Do not put pre-selection wire inputs beside a post-selection fill factor.
+    used = recorded(snapshot)['used'] or dict.fromkeys(('JJ', 'Djj', 'MM', 'Dmm'))
+    data = {**p, **used}
+    return cells(data, [('a', '并联路数 a', ''), ('ZZ', '每槽导体 ZZ', ''), ('Y1', '跨距 Y1', '槽'),
+                     ('JJ', '采用根数 JJ', ''), ('Djj', '采用线径 Djj', 'mm'), ('MM', '采用根数 MM', ''),
+                     ('Dmm', '采用线径 Dmm', 'mm'), ('sk', '斜槽比 sk', ''), ('Srr', '端环面积 Srr', 'mm²')]) + \
            cells(v, [('Sf', '槽满率 Sf', ''), ('R1a', '相电阻 R1a', 'Ω'), ('Lz', '半匝长 Lz', 'mm')])
+
+
+def wire_note(snapshot):
+    wire = recorded(snapshot)
+    if wire['mode'] != 'target_fill':
+        return ''
+    p = wire['input']
+    submitted = '；'.join(f'{count}={number(p.get(count))} / {diameter}={number(p.get(diameter))} mm'
+                         for count, diameter in (('JJ', 'Djj'), ('MM', 'Dmm')))
+    if wire['used'] is None:
+        return '旧记录未保存反算线规，采用规格留空；重新计算后可获取。原输入（未采用）：' + submitted + '。'
+    return '按目标槽满率反算线规；原输入（未采用）：' + submitted + '。根数为 0 的导线组不参与计算。'
 
 
 def performance(v):

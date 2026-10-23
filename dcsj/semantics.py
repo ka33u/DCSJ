@@ -108,9 +108,9 @@ def result_metadata(p, values, material, curves):
             peak = max(points, key=lambda p: p['y'])
             checks.append({'metric': 'TM1', 'check_value': values['TM1'], 'curve_value': peak['y'],
                            'delta': peak['y'] - values['TM1'], 'position': {'s': peak['x']}})
-    return {'contract': {'version': '1.1', 'values': 'canonical-numerical-output',
+    return {'contract': {'version': '1.2', 'values': 'canonical-numerical-output',
                          'metrics': 'metadata-view-of-values', 'decision_values': ['IST1', 'TST1', 'TM1'],
-                         'curve_authority': 'trend-only'},
+                         'curve_authority': 'trend-only', 'effective_wire': 'wire_selection.used'},
             'values_units': {key: field_info(key)['unit'] for key in values},
             'values_si': {key: {'value': value / 10000, 'unit': 'T'} for key, value in values.items() if field_info(key)['unit'] == 'G'},
             'electrical': electrical(p), 'requirements': requirements(p, values),

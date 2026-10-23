@@ -122,7 +122,7 @@ def schema():
             info.update(optional=True, min=0, max=6, default=2, description='仅启用参考转速时使用，默认 2；请按损耗模型选取。')
         if key == "_wire_target":
             info.update(default=0, min=0, max=0.99,
-                        description="0 使用给定并绕根数与线径；正数调用原程序的线规反算分支。")
+                        description="0 使用给定并绕根数与线径；正数忽略 JJ/Djj/MM/Dmm，按目标反算线规。实际规格见计算结果，实际槽满率可能偏离目标。")
         fields.append(info)
     for key in OUTPUT_MAP:
         if key not in INPUT_KEYS:

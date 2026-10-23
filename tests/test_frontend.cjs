@@ -30,7 +30,7 @@ async function settle() {
   for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
 }
 
-async function app(t, route) {
+async function app(t, route, extraFields = []) {
   const errors = [], calls = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', error => errors.push(error.message));
@@ -52,7 +52,7 @@ async function app(t, route) {
       engine: { name: '人工测试', limitations: [] }, reports: { pdf: { available: true } } };
     else if (path === '/schema') data = { retired_input_keys: ['ATA_req', 'PF_req', 'IST_req', 'TST_req', 'TM_req'], groups: [{ id: 'basic', label: '基本参数' }], fields: [
       { key: 'SizeX', label: '设计名称', group: 'basic', type: 'text', role: 'input' },
-      { key: 'kW', label: '额定功率', group: 'basic', type: 'number', role: 'input' }] };
+      { key: 'kW', label: '额定功率', group: 'basic', type: 'number', role: 'input' }, ...extraFields] };
     else if (path === '/series') data = { items: ['人工系列'] };
     else data = await route(path, request);
     if (data === undefined && path === '/comparison-sets' && request.method === 'GET') data = { items: [], total: 0 };
@@ -590,4 +590,41 @@ test('TX saves revisions with optimistic guards and creates a separate copy',asy
   const update=a.calls.find(c=>c.method==='PUT');assert.equal(update.body.expected_revision,1);assert.equal(update.path,'/designs/user-tx');
   a.doc.querySelector('#save-copy').click();await settle();
   assert.equal(a.calls.filter(c=>c.path==='/designs'&&c.method==='POST').length,2);
+});
+
+test('target fill exposes effective wire without overwriting editable design or snapshot inputs', async t => {
+  const input = { ...parameters, JJ: 4, Djj: 1, MM: 0, Dmm: 0, _wire_target: .8 };
+  const used = { JJ: 3, Djj: 1.25, MM: 1, Dmm: .75 };
+  const result = { ...snapshot('wire'), inputs: input, values: { ATA1: .9, Sf: .775 },
+    wire_selection: { mode: 'target_fill', input, used, target_fill: .8, actual_fill: .775, fill_delta: -.025 } };
+  const fields = ['JJ', 'Djj', 'MM', 'Dmm', '_wire_target'].map(key => ({ key, label: key, type: 'number', role: 'input', group: 'basic' }));
+  const ui = await app(t, path => path === '/example' ? { parameters: input, name: 'wire' } : path === '/calculate' ? result : undefined, fields);
+  ui.doc.querySelector('#load-example').click(); await settle();
+  const first = ui.doc.querySelector('input[data-key=JJ]'), target = ui.doc.querySelector('input[data-key=_wire_target]');
+  assert.equal(first.value, '4'); assert.equal(first.readOnly, true);
+  assert.equal(ui.doc.querySelector('#wire-mode-note').classList.contains('hidden'), false);
+  assert.match(ui.doc.querySelector('#wire-mode-note').textContent, /输入暂不采用/);
+  ui.doc.querySelector('#parameter-form').dispatchEvent(new ui.w.Event('submit', { bubbles: true, cancelable: true }));
+  await until(() => ui.doc.querySelector('[data-wire-key=JJ]'), 'Actual wire result visible');
+  assert.deepEqual([...ui.doc.querySelector('[data-wire-key=JJ]').children].map(n => n.textContent), ['第一组根数 JJ', '4', '3', '根']);
+  assert.match(ui.doc.querySelector('.wire-result').textContent, /目标槽满率 80% · 实际 77.5% · 差值 -2.5 个百分点/);
+  assert.equal(first.value, '4', 'Calculation does not silently overwrite inputs');
+  target.value = '0'; target.dispatchEvent(new ui.w.Event('input', { bubbles: true }));
+  assert.equal(first.readOnly, false);
+  assert.equal(ui.doc.querySelector('#wire-mode-note').classList.contains('hidden'), true);
+  assert.ok(ui.doc.querySelector('#stale-result'), 'Results remain previous snapshot after mode change');
+  assert.match(ui.doc.querySelector('.wire-result').textContent, /原输入（未采用）/);
+  assert.equal(result.inputs._wire_target, .8, 'Frozen snapshot stays in target-fill mode');
+  const call = ui.calls.find(r => r.url.pathname === '/api/v1/calculate');
+  assert.equal(call.body.parameters.JJ, 4);
+  assert.equal(JSON.parse(ui.doc.querySelector('#raw-parameters').textContent)._wire_target, 0);
+});
+
+test('old automatic-wire snapshot never displays submitted wire as effective wire', async t => {
+  const value = { ...snapshot('old-wire'), inputs: { ...parameters, _wire_target: .8, JJ: 4, Djj: 1, MM: 0, Dmm: 0 } };
+  const ui = await app(t, path => path === '/calculations' ? { items: [{ id: 'old-wire', name: 'old-wire' }], total: 1 } : path === '/calculations/old-wire' ? value : undefined);
+  ui.nav('comparisons'); await settle(); ui.find('#calculation-table-body button', '打开快照').click();
+  await until(() => ui.doc.querySelector('.wire-result'), 'Old wire fallback visible');
+  assert.match(ui.doc.querySelector('.wire-result').textContent, /旧记录未保存反算后的线规/);
+  assert.equal(ui.doc.querySelector('[data-wire-key=JJ]'), null);
 });

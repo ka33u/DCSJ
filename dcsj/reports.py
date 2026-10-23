@@ -114,7 +114,8 @@ def render(snapshot):
     content.extend('<figure>' + slot_svg(panel) + '</figure>' for panel in slot_drawings(p))
     content += ['<div class="dimensions">', table([], [(label, value + (' ' + unit if unit else ''))
                 for label, value, unit in summary.dimensions(p)]), '</div></div>',
-                '<h2>绕组与导线</h2>', table([], summary.grid(summary.windings(p, v)), 'pairs'),
+                '<h2>绕组与导线</h2>', table([], summary.grid(summary.windings(snapshot)), 'pairs'),
+                '<p class="legend">' + text(summary.wire_note(snapshot)) + '</p>' if summary.wire_note(snapshot) else '',
                 '<h2>设计目标与计算结果</h2>', table(['指标', '设计目标', '计算结果', '差值 / 峰值位置', '单位'], summary.targets(snapshot), 'targets'),
                 '<p class="legend">差值＝计算结果−设计目标；效率与槽满率的差值单位为百分点。s 表示峰值处转差率。</p>',
                 '<h2>运行与电磁指标</h2>', table([], summary.grid(summary.performance(v)), 'pairs'), '</section>']

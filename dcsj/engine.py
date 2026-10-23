@@ -15,7 +15,7 @@ from . import __version__
 from .numeric_vm import NumericKernelError, run
 from .parameters import ELEMENT_KEYS, INPUT_MAP, OUTPUT_MAP, ROOT, field_info, validate
 from .curves import trend_points, slip_plot
-from . import semantics
+from . import semantics, wire_selection
 
 _material_path = ROOT / "data/material_kernel_tables.json"
 MATERIALS = {item["name"]: item for item in json.loads(_material_path.read_text())["materials"]} if _material_path.is_file() else {}
@@ -23,7 +23,7 @@ ENGINE_NAME = "DCSJ Python 数值核心"
 _kernel_path = ROOT / "dcsj/generated/numeric_kernel.json.gz"
 KERNEL_SHA256 = hashlib.sha256(_kernel_path.read_bytes()).hexdigest() if _kernel_path.is_file() else None
 WRAPPER_SHA256 = hashlib.sha256(b"".join((ROOT / "dcsj" / name).read_bytes()
-    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py", "library.py", "curves.py", "semantics.py"))).hexdigest()
+    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py", "library.py", "curves.py", "semantics.py", "wire_selection.py"))).hexdigest()
 LIMITATIONS = [
     "由原 Fortran 程序的计算指令恢复；使用双精度中间运算和原单精度存储。",
     "已恢复三相异步电动机计算；历史型号保存值可能使用不同版本的材料表。",
@@ -195,6 +195,10 @@ def calculate_design(values):
     if len(raw) != 80 or not all(math.isfinite(x) for x in raw):
         raise CalculationError("计算未返回完整的有限数值结果；请检查输入组合。")
     output = {key: raw[index] for key, index in OUTPUT_MAP.items()}
+    try:
+        wire = wire_selection.extract(p, output, result['memory'])
+    except NumericKernelError as error:
+        raise CalculationError(str(error)) from error
     if not 0 < output["ATA1"] <= 1 or not 0 < output["PF1"] <= 1:
         raise CalculationError("当前参数产生了超出物理范围的效率或功率因数，请检查输入。")
     warnings = []
@@ -231,7 +235,7 @@ def calculate_design(values):
     return {
         **metadata, "engine": engine_status(context),
         "metrics": metrics, "values": output, "warnings": warnings,
-        "curves": curves, "inputs": p,
+        "curves": curves, "inputs": p, "wire_selection": wire,
         "trace": [
             f"材料：{material['name']}；常量组 {material['slot']}。",
             *[f"{key} 输入单位 {entry['resolved_unit']}；额定点损耗 {entry['rated_w']:.7g} W；"

@@ -237,8 +237,10 @@ def _render(snapshot):
         ('TOPPADDING', (0, 0), (-1, -1), 0), ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), ('BOX', (0, 0), (-1, -1), .4, colors.HexColor('#dce5e8')),
         ('INNERGRID', (0, 0), (-1, -1), .3, colors.HexColor('#dce5e8'))]))
-    story += [figures, paragraph('绕组与导线', 'sh2'), summary_table(summary.windings(p, values)),
-              paragraph('设计目标与计算结果', 'sh2'),
+    story += [figures, paragraph('绕组与导线', 'sh2'), summary_table(summary.windings(snapshot))]
+    if summary.wire_note(snapshot):
+        story.append(paragraph(summary.wire_note(snapshot), 'small'))
+    story += [paragraph('设计目标与计算结果', 'sh2'),
               table(['指标', '设计目标', '计算结果', '差值 / 峰值位置', '单位'], summary.targets(snapshot),
                     [WIDTH*.30, WIDTH*.18, WIDTH*.18, WIDTH*.24, WIDTH*.10], compact=True),
               paragraph('差值＝计算结果−设计目标；效率与槽满率的差值单位为百分点。s 表示峰值处转差率。', 'small'),

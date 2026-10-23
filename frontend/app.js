@@ -139,6 +139,7 @@
     $("#validation-errors").classList.add("hidden");
     setDesignState("参数已修改", "teal");
     if (state.result) markResultStale();
+    updateWireMode();
   }
   function markResultStale() {
     $("#result-badge").className = "badge warning";
@@ -322,6 +323,20 @@
       card.append(label, wrap, hint);
       container.append(card);
     });
+    updateWireMode();
+  }
+  function updateWireMode() {
+    const automatic = Number(state.parameters._wire_target) > 0;
+    const note = $("#wire-mode-note");
+    note.classList.toggle("hidden", !automatic);
+    note.textContent = automatic ? "按目标槽满率反算：JJ / Djj / MM / Dmm 输入暂不采用。实际线规和槽满率将在计算结果中显示；将目标槽满率设为 0 可恢复固定线规。" : "";
+    $$("#parameter-fields input[data-key]").filter(input => ["JJ", "Djj", "MM", "Dmm"].includes(input.dataset.key)).forEach(input => {
+      input.readOnly = automatic;
+      input.setAttribute("aria-label", `${input.dataset.key}${automatic ? "，反算模式下输入不采用，只读" : "，固定线规输入"}`);
+      const hint = input.closest(".field").querySelector(".field-hint");
+      if (hint.dataset.baseHint === undefined) hint.dataset.baseHint = hint.textContent;
+      hint.textContent = automatic ? `输入不采用 · ${hint.dataset.baseHint}` : hint.dataset.baseHint;
+    });
   }
   function validateInputs() {
     const errors = [];
@@ -392,6 +407,8 @@
     }
     const warningBox = warningsNode(warnings);
     if (warningBox) container.append(warningBox);
+    const wire = renderWireSelection(result);
+    if (wire) container.append(wire);
     if (metrics.length) {
       const cards = el("div", "metric-grid");
       metrics.slice(0, 6).forEach(metric => {
@@ -435,6 +452,36 @@
     $("#result-badge").className = `badge ${warnings.length ? "warning" : metrics.length || curves.length ? "success" : "neutral"}`;
     $("#result-badge").textContent = warnings.length ? "完成 · 请核对提示" : metrics.length || curves.length ? "计算完成" : "未返回结果";
     setDesignState("计算完成", "teal");
+  }
+  function renderWireSelection(result) {
+    const p = result.inputs || {};
+    const automatic = result.wire_selection?.mode === "target_fill" || Number(p._wire_target) > 0;
+    const wire = result.wire_selection;
+    if (!wire && !automatic) return null;
+    const box = el("section", "wire-result");
+    box.append(el("h3", "result-section-title", automatic ? "反算采用线规" : "本次采用线规"));
+    const used = wire?.used;
+    if (!used) {
+      box.append(el("p", "small", "旧记录未保存反算后的线规。重新计算后可查看，原输入不能作为实际规格。"));
+      return box;
+    }
+    const scroll = el("div", "table-scroll"), table = el("table", "result-table");
+    const head = el("thead"), row = el("tr"), body = el("tbody");
+    ["规格", automatic ? "原输入（未采用）" : "输入", "实际采用", "单位"].forEach(label => row.append(el("th", "", label)));
+    head.append(row);
+    [["JJ", "第一组根数", "根"], ["Djj", "第一组线径", "mm"], ["MM", "第二组根数", "根"], ["Dmm", "第二组线径", "mm"]].forEach(([key, label, unit]) => {
+      const line = el("tr"); line.dataset.wireKey = key;
+      [label + " " + key, fmt(wire.input?.[key]), fmt(used[key]), unit].forEach(value => line.append(el("td", "", value)));
+      body.append(line);
+    });
+    table.append(head, body); scroll.append(table); box.append(scroll);
+    const actual = wire.actual_fill;
+    const target = wire.target_fill;
+    box.append(el("p", "small", automatic
+      ? `目标槽满率 ${fmt(target * 100, 4)}% · 实际 ${fmt(actual * 100, 4)}% · 差值 ${fmt((actual - target) * 100, 4)} 个百分点。反算按可选规格取值，可能偏离目标。`
+      : `实际槽满率 ${fmt(actual * 100, 4)}%`));
+    if (used.JJ === 0 || used.MM === 0) box.append(el("p", "small muted", "根数为 0 的导线组不参与计算。"));
+    return box;
   }
   function svgNode(tag, attrs = {}, text) {
     const node = document.createElementNS("http://www.w3.org/2000/svg", tag);

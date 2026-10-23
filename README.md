@@ -181,3 +181,19 @@ Docker 用户可运行 `docker compose up --build -d`。配置默认只映射 `1
 | `PUT /api/v1/tx/designs/{id}` | 保存新版本，要求 `expected_revision` |
 
 计算或保存设计时可传 `base_model_id` 记录派生基础，服务器解析来源；它不表示参数未被修改。资源更新后若基础 ID 已不在当前包，可使用已保存的参数继续手工计算。TX JSON 导出包含 `module:"tx"`、`schema_version:1` 和完整 `parameters`，与主模块的导入格式分开。
+
+## 0.8.1：目标槽满率与实际线规
+
+修复 [issue #2](https://github.com/ka33u/DCSJ/issues/2)。主模块的 `_wire_target > 0` 会调用原程序的线规反算，此时 `JJ`、`Djj`、`MM`、`Dmm` 输入不参与选线。工作台明确标示此模式并暂时只读这四项；将目标设为 0 后恢复编辑。计算结果列出输入和实际采用规格、目标/实际槽满率及差值。HTML/PDF 报告首页的导线规格使用实际计算值。
+
+`POST /api/v1/calculate` 及型号计算接口新增 `wire_selection`（接口合同 1.2）：
+
+- `mode`：`fixed` 或 `target_fill`。
+- `input`：提交的四项线规；`used`：直接从计算后的数值核状态读取的 `JJ / Djj / MM / Dmm`，根数单位为根、直径为 mm。根数为 0 的导线组不参与计算，即使其线径非零。
+- `ignored_input_keys`：反算时为上述四个字段；固定线规时为空。
+- `target_fill`、`actual_fill`、`fill_delta`：均为 0–1 比例，后者为实际减目标；固定线规时目标及差值为 `null`。`actual_fill` 与 `values.Sf` 相同。反算按原核的可选线规取值，不保证精确命中目标。
+- `source`：`kernel-final-state`；完整规格和单位也写入不可变计算快照。
+
+`inputs` 保留提交值，不自动回写，以保持设计版本、输入指纹和历史记录一致。需要固定选中的线规时，将 `wire_selection.used` 四项合入下一次请求的 `parameters`，并设置 `_wire_target: 0`。旧版本的反算记录没有保存实际线规，报告会留空并注明需重新计算，不用旧输入冒充实际规格；旧固定线规记录仍能正常显示。
+
+此次升级不改变原数值核、资源包格式或数据库结构，已安装的 v1/v2 资源包可继续使用，无需重新导入。
