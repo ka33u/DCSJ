@@ -8,7 +8,7 @@ import sqlite3
 import threading
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _migration_lock = threading.Lock()
 _initialized = set()
 
@@ -92,6 +92,14 @@ def _migrate(db, path):
                 "revision INTEGER NOT NULL, name TEXT NOT NULL, document TEXT NOT NULL, created_at TEXT NOT NULL, "
                 "PRIMARY KEY(entry_id,revision))",
                 "CREATE INDEX IF NOT EXISTS library_kind ON library_entries(kind,archived,updated_at DESC)",
+                "CREATE TABLE IF NOT EXISTS tx_designs (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+                "revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS tx_revisions (design_id TEXT NOT NULL REFERENCES tx_designs(id), "
+                "revision INTEGER NOT NULL, parameters TEXT NOT NULL, source TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, PRIMARY KEY(design_id,revision))",
+                "CREATE TABLE IF NOT EXISTS tx_calculations (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
+                "parameters TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL)",
+                "CREATE INDEX IF NOT EXISTS tx_calculations_created ON tx_calculations(created_at DESC)",
             ]:
                 db.execute(statement)
             for table, column, declaration in [('projects', 'lineage', "TEXT NOT NULL DEFAULT '{}'"),

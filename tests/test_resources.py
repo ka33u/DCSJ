@@ -193,3 +193,34 @@ def test_segment_retry_is_bounded_and_does_not_accept_truncated_content(bundle, 
     monkeypatch.setattr(resources, '_download_file', always_truncated)
     with pytest.raises(resources.ResourceError, match='不完整'):
         resources._download_archive('synthetic/private', 'a' * 40, output, {'parts': [part], 'size': len(content)})
+
+
+def test_optional_tx_package_upgrade_rollback_and_user_data(bundle):
+    from dcsj import tx
+    from dcsj.tx_parameters import KEYS
+    source,output,_=bundle
+    legacy=resources.install(output/'resource-bundle.zip');resources.activate(legacy['package_id'],None)
+    p=dict.fromkeys(KEYS,1.)
+    p.update(TYP='Synthetic TX only',description='Invented import test',D1=30,D3=18,D4=6,G=.05,
+             P=4,Q1=36,Q2=28,Y=0,E4=.9,E6=.8,DYXS=.95)
+    catalog={'format':'tx-catalog','format_version':1,'default_id':'synthetic',
+             'models':[{'id':'synthetic','name':p['TYP'],'parameters':p,'source':{'sheet':'Synthetic','row':1},'verified_execution':False}]}
+    (source/'data/tx_catalog.json').write_text(json.dumps(catalog))
+    kernel={'format':'tx-numeric-ir','format_version':1,'image_base':0x400000,'image_size':0x30000,
+            'stack_base':0x1000000,'stack_size':0x100000,'initial_ebp':0x10ff000,'entry':0x402000,'exit':0x402001,
+            'instructions':[[0x402000,0x402001,'nop',[]]],'imports':{},'io_skips':{},'arrays':[],
+            'segments':[],'bindings':[{'key':key,'offset':-16*(i+1)} for i,key in enumerate(KEYS[1:95])],
+            'strings':{'TYP':-2000,'description':-2004}}
+    (source/'dcsj/generated/tx_kernel.json.gz').write_bytes(gzip.compress(json.dumps(kernel).encode()))
+    release=build(source,output,'synthetic.tx.2')
+    assert release['format_version']==2 and release['minimum_application']=='0.8.0'
+    assert release['counts']['tx_model_versions']==1
+    new=resources.install(output/'resource-bundle.zip');resources.activate(new['package_id'],legacy['package_id'])
+    assert tx.status()['available'] and tx.models()['total']==1
+    user=tx.save_design(p,base_model_id='synthetic')
+    resources.activate(legacy['package_id'],new['package_id'])
+    assert tx.status()['available'] is False
+    assert tx.design(user['id'])['parameters']==p
+    assert tx.design(user['id'])['source']['resource_version']=='synthetic.tx.2'
+    resources.activate(new['package_id'],legacy['package_id'])
+    assert tx.status()['available']

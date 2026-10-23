@@ -35,6 +35,20 @@ app = FastAPI(
     docs_url=None, redoc_url=None,
     lifespan=lifespan,
 )
+from .tx_api import router as tx_router
+from .tx_parameters import TXInputError
+from .tx import TXUnavailableError
+app.include_router(tx_router)
+
+
+@app.exception_handler(TXInputError)
+async def tx_input_error(request, error):
+    return JSONResponse({'detail': str(error)}, status_code=422)
+
+
+@app.exception_handler(TXUnavailableError)
+async def tx_unavailable(request, error):
+    return JSONResponse({'detail': str(error)}, status_code=503)
 
 
 class DesignInput(BaseModel):
@@ -272,7 +286,7 @@ async def bounded_body(request: Request, call_next):
         request._body = b"".join(chunks)
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    if request.url.path in {"/", "/app.js", "/styles.css"}:
+    if request.url.path in {"/", "/app.js", "/styles.css", "/tx", "/tx.js", "/tx.css"}:
         response.headers["Cache-Control"] = "no-cache"
     return response
 

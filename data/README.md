@@ -67,8 +67,16 @@ API 路径 `/api/v1/library/{kind}` 中 `kind` 为 `models` 或 `materials`：
 
 ## 备份、更新与旧安装兼容
 
-用户库与设计、计算记录一起由 `scripts/backup.py` 备份；资源包目录需另外备份，或保留对应私有提交和压缩包以便重装。数据库升级至结构版本 4，保留已有设计及历史记录。资源版本回退不回退用户数据；应用版本回退需使用升级前的数据库备份。
+用户库与设计、计算记录一起由 `scripts/backup.py` 备份；资源包目录需另外备份，或保留对应私有提交和压缩包以便重装。数据库升级至结构版本 6，保留已有设计及历史记录。资源版本回退不回退用户数据；应用版本回退需使用升级前的数据库备份。
 
 旧版手工放置的文件继续兼容：`data/catalog.sqlite`、`data/material_kernel_tables.json`、`dcsj/generated/numeric_kernel.json.gz`、可选 `data/example.json`。未激活版本化包时使用这些资源；手工替换旧路径需重启服务。型号库也支持 `catalog.sqlite.gz` + `catalog_bundle.json`。`DCSJ_CATALOG_PATH` 显式设置时优先于资源包内的型号目录，界面会显示提示；要完全采用版本化资源，请取消该覆盖。
 
 缺少型号库时提供空目录，缺少计算资源时计算返回 503。构建新版私有包可运行 `python scripts/build_resources.py --source-root <资源根目录> --output <私有输出目录> --version <版本>`，将生成的 `manifest.json`、`resource-bundle.zip` 及清单列出的 `.partNNN` 文件一起提交到私有资源仓库。不要把暂存 `files/`、设计库或令牌提交到公开仓库。发布源码前运行 `scripts/check_public_scope.py`。
+
+## TX 可选资源（应用 0.8.0 起）
+
+资源格式 v2 在原有四个文件之外包含 `tx_catalog.json` 与 `tx_kernel.json.gz`，两者必须一起提供；`counts.tx_model_versions` 标记 TX 型号版本数。构建脚本检测到 `data/tx_catalog.json` 和 `dcsj/generated/tx_kernel.json.gz` 时生成 v2 包，最低应用版本为 0.8.0。缺少其中一个文件会停止构建。
+
+一键导入方式不变，同时更新主模块与 TX 的只读资源。应用继续接受 v1 包；切回 v1 后 TX 新计算暂不可用，已保存的 TX 设计、计算及打印报告仍然可读。手工放置资源时也须同时提供两个 TX 文件。
+
+数据库当前版本为 v6，新增 `tx_designs`、`tx_revisions`、`tx_calculations`。TX 的输入、材料代码与主模块不同：两边用户设计各自管理，现有主模块用户材料曲线不会被自动映射到 TX。

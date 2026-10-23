@@ -531,3 +531,63 @@ test('old comparison-only requirements do not reappear when continuing a snapsho
   assert.ok(!Object.keys(sent).some(key => key.endsWith('_req')));
   assert.equal(old.inputs.ATA_req, .99, 'Original snapshot remains unchanged');
 });
+
+async function txApp(t, route = () => undefined) {
+  const p = {TYP:'人工 TX 设计', P2:7.2, A1:2, D3:18, FE:1};
+  const fields = Object.entries({TYP:'额定参数',P2:'额定参数',A1:'导线与绕组',D3:'铁心与槽型',FE:'计算系数'})
+    .map(([key,group])=>({key,label:key,group,unit:key==='D3'?'cm':'',type:key==='TYP'?'text':'number'}));
+  for(let i=1;i<=6;i++)for(const prefix of ['NDXP','YDXP']){
+    const key=`${prefix}(${i})`;p[key]=i<4?(prefix==='NDXP'?8:10-i):0;fields.push({key,label:key,group:'线圈组',type:'number',unit:''});
+  }
+  const result={metrics:{efficiency:.88,power_factor:.81,maximum_torque_ratio:2.7,starting_torque_ratio:2.1,starting_current_ratio:6.8,speed_rpm:1700},
+    resource_version:'synthetic.2',harmonics:[1,5,7,11,13,17].map((order,i)=>({order,turns:i<3?8:0,pitch:i<3?9-i:0,winding_factor:.1,relative_mmf_percent:i?-.2:100})),
+    coils:[{index:1,span_cm:12,radius_cm:8,end_angle_rad:.8,height_cm:6}],details:{iron_loss_w:40,stator_copper_loss_w:50,rotor_copper_loss_w:30,total_loss_w:150,current_a:10,copper_mass_kg:3,iron_mass_kg:20,mean_turn_length_mm:300},report_text:'人工输出'};
+  const errors=[],calls=[],virtualConsole=new VirtualConsole();virtualConsole.on('jsdomError',e=>errors.push(e.message));
+  const dom=new JSDOM(readFileSync(resolve(root,'frontend/tx.html'),'utf8'),{url:'https://dcsj.invalid/tx',runScripts:'outside-only',virtualConsole});
+  const w=dom.window,doc=w.document;
+  w.HTMLElement.prototype.scrollIntoView=function(){};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};w.confirm=()=>true;
+  w.fetch=async(url,options={})=>{
+    const request={path:new URL(url,w.location.href).pathname.replace('/api/v1/tx',''),method:options.method||'GET',body:options.body?JSON.parse(options.body):null};calls.push(request);
+    let data=await route(request,{p,result});
+    if(data===undefined){
+      if(request.path==='/schema')data={fields};
+      if(request.path==='/status')data={available:true,resource_version:'synthetic.2',default_id:'synthetic'};
+      if(request.path==='/models')data={items:[{id:'synthetic',name:p.TYP,power_kw:p.P2,poles:4,source:{sheet:'Test',row:1},verified_execution:true}],total:1};
+      if(request.path==='/models/synthetic')data={id:'synthetic',parameters:p,source:{sheet:'Test',row:1},resource_version:'synthetic.2',verified_execution:true};
+      if(request.path==='/calculate')data={id:'synthetic-result',parameters:request.body.parameters,name:p.TYP,result,created_at:created};
+    }
+    assert.notEqual(data,undefined,request.path);return {ok:true,json:async()=>data};
+  };
+  t.after(()=>{w.close();assert.deepEqual(errors,[]);});w.eval(readFileSync(resolve(root,'frontend/tx.js'),'utf8'));
+  await until(()=>doc.querySelector('#design-title').textContent===p.TYP&&!doc.querySelector('#calculate').disabled,'TX starts');
+  return {w,doc,calls,p,result};
+}
+
+test('TX computes its own parameter contract and renders immutable results, harmonics and report link',async t=>{
+  const pending=deferred();const a=await txApp(t,async(req,{p,result})=>{
+    if(req.path==='/calculate'){await pending.promise;return {id:'synthetic-snapshot',parameters:req.body.parameters,name:p.TYP,result,created_at:created};}
+  });
+  a.doc.querySelector('#calculate').click();await settle();
+  assert.equal(a.doc.querySelector('[name="NDXP(1)"]').disabled,true);
+  a.doc.querySelector('#calculate').click();assert.equal(a.calls.filter(c=>c.path==='/calculate').length,1);
+  const sent=a.calls.find(c=>c.path==='/calculate').body;
+  assert.equal(sent.parameters.D3,18);assert.equal(sent.parameters['NDXP(1)'],8);assert.equal(sent.base_model_id,'synthetic');
+  pending.release();await until(()=>!a.doc.querySelector('#results').hidden,'TX results');
+  assert.match(a.doc.querySelector('#metric-cards').textContent,/88/);
+  assert.match(a.doc.querySelector('#metric-cards').textContent,/0.81/);
+  assert.equal(a.doc.querySelectorAll('#harmonic-table tbody tr').length,6);
+  assert.equal(a.doc.querySelectorAll('#coil-diagram svg').length,1);
+  assert.equal(a.doc.querySelector('#report-link').getAttribute('href'),'/tx/reports/synthetic-snapshot');
+  const n=a.doc.querySelector('[name="NDXP(1)"]');n.value='9';n.dispatchEvent(new a.w.Event('input',{bubbles:true}));
+  assert.match(a.doc.querySelector('#result-status').textContent,/参数已修改/);
+  assert.equal(a.doc.querySelector('#report-link').getAttribute('href'),'/tx/reports/synthetic-snapshot');
+});
+
+test('TX saves revisions with optimistic guards and creates a separate copy',async t=>{
+  const a=await txApp(t,(req,{p})=>req.path.startsWith('/designs')?{id:'user-tx',name:p.TYP,revision:req.method==='PUT'?2:1}:undefined);
+  a.doc.querySelector('#save-design').click();await until(()=>a.doc.querySelector('#revision').textContent.includes('v1'),'saved first revision');
+  a.doc.querySelector('#save-design').click();await until(()=>a.doc.querySelector('#revision').textContent.includes('v2'),'saved second revision');
+  const update=a.calls.find(c=>c.method==='PUT');assert.equal(update.body.expected_revision,1);assert.equal(update.path,'/designs/user-tx');
+  a.doc.querySelector('#save-copy').click();await settle();
+  assert.equal(a.calls.filter(c=>c.path==='/designs'&&c.method==='POST').length,2);
+});
