@@ -18,7 +18,7 @@ COOKIE = 'dcsj_session'
 SESSION_SECONDS = 12 * 60 * 60
 PASSWORD_ITERATIONS = 600_000
 PUBLIC = {'/login', '/login.js', '/auth.js', '/auth.css', '/healthz', '/api/v1/auth/login',
-          '/app.js', '/styles.css', '/tx.js', '/tx.css', '/slots.js', '/slots.css', '/slot-picker.js'}
+          '/app.js', '/styles.css', '/tx.js', '/tx.css', '/slots.js', '/slots.css', '/slot-picker.js', '/series-picker.js'}
 router = APIRouter(tags=['登录与账号'])
 
 

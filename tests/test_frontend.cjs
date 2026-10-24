@@ -30,6 +30,19 @@ async function settle() {
   for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
 }
 
+test('series selector keeps custom input during refresh and retains unknown saved series',async t=>{
+  const dom=new JSDOM('<div id="series"></div>',{runScripts:'outside-only'}),w=dom.window,d=w.document;t.after(()=>w.close());
+  w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));
+  const picker=w.SeriesPicker.mount(d.querySelector('#series'));picker.options(['YE3','YE4']);picker.set('历史自定义');
+  assert.equal(picker.value(),'历史自定义');
+  const select=d.querySelector('select'),input=d.querySelector('input');select.value='new';select.dispatchEvent(new w.Event('change'));
+  assert.equal(input.hidden,false);assert.throws(()=>picker.value(),/新系列名/);
+  input.value='  试制系列  ';picker.options(['YE3','YE5']);assert.equal(select.value,'new');assert.equal(picker.value(),'试制系列');
+  picker.disable(true);assert.equal(select.disabled,true);assert.equal(input.disabled,true);picker.disable(false);
+  picker.set('');assert.equal(picker.value(),'');assert.equal(input.required,false);assert.equal(input.hidden,true);
+  assert.throws(()=>picker.set({series:'bad'}),/系列名/);
+});
+
 test('login handles errors and duplicate submission and rejects external return URLs',async t=>{
   const {runInNewContext}=require('node:vm');
   const dom=new JSDOM(readFileSync(resolve(root,'frontend/login.html'),'utf8'),{url:'https://dcsj.invalid/login'});
@@ -98,6 +111,7 @@ async function app(t, route, extraFields = []) {
     return { ok: true, status: 200, json: async()=>data, text: async () => JSON.stringify(data) };
   };
   w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));
+  w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));
   w.eval(script);
   await until(() => doc.querySelector('#connection-text').textContent === '服务已连接', 'App boot completed');
   await settle();
@@ -637,6 +651,7 @@ async function txApp(t, route = () => undefined) {
     const request={path:new URL(url,w.location.href).pathname.replace('/api/v1/tx',''),method:options.method||'GET',body:options.body?JSON.parse(options.body):null};calls.push(request);
     let data=request.path==='/api/v1/auth/me'?{username:'张工'}:await route(request,{p,result});
     if(data===undefined){
+      if(request.path==='/series')data={items:['人工系列']};
       if(request.path==='/schema')data={fields};
       if(request.path==='/status')data={available:true,resource_version:'synthetic.2',default_id:'synthetic'};
       if(request.path==='/models')data={items:[{id:'synthetic',name:p.TYP,power_kw:p.P2,poles:4,source:{sheet:'Test',row:1},verified_execution:true}],total:1};
@@ -645,7 +660,7 @@ async function txApp(t, route = () => undefined) {
     }
     assert.notEqual(data,undefined,request.path);return {ok:true,json:async()=>data};
   };
-  t.after(()=>{w.close();assert.deepEqual(errors,[]);});w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/tx.js'),'utf8'));
+  t.after(()=>{w.close();assert.deepEqual(errors,[]);});w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/tx.js'),'utf8'));
   await until(()=>doc.querySelector('#design-title').textContent===p.TYP&&!doc.querySelector('#calculate').disabled,'TX starts');
   return {w,doc,calls,p,result};
 }
@@ -731,8 +746,10 @@ test('saving a signed design refreshes catalog and loading it updates the same d
   await until(()=>ui.doc.querySelector('#current-design').textContent==='署名测试','Example loaded');
   ui.doc.querySelector('#save-design').click();
   ui.doc.querySelector('#design-author').value='  张工 <team>  ';
+  ui.doc.querySelector('#design-series-control-select').value='series:人工系列';
   ui.doc.querySelector('#save-form').dispatchEvent(new ui.w.Event('submit',{cancelable:true}));
   await until(()=>project&&!ui.doc.querySelector('#save-dialog').open,'Design saved');
+  assert.equal(project.series,'人工系列');assert.ok(!('series' in project.parameters));
   assert.equal(project.author,'张工');assert.equal(ui.doc.querySelector('#design-author').readOnly,true); assert.ok(!('author' in project.parameters));
   ui.nav('catalog');
   await until(()=>ui.doc.querySelector('#model-table-body').textContent.includes(project.author),'Saved design replaces cached empty catalog');
@@ -742,6 +759,7 @@ test('saving a signed design refreshes catalog and loading it updates the same d
   await until(()=>ui.doc.querySelector('#parameter-source').textContent.includes('已保存设计'),'Saved catalog record opened');
   ui.doc.querySelector('#save-design').click();
   assert.equal(ui.doc.querySelector('#design-author').value,project.author);
+  assert.equal(ui.doc.querySelector('#design-series-control-select').value,'series:人工系列');
   assert.equal(ui.doc.querySelector('#save-as-new').checked,false);
   ui.doc.querySelector('#design-author').value='李工';
   ui.doc.querySelector('#save-form').dispatchEvent(new ui.w.Event('submit',{cancelable:true}));
@@ -750,7 +768,10 @@ test('saving a signed design refreshes catalog and loading it updates the same d
   assert.equal(update.body.expected_revision,1);assert.equal(update.body.author,'张工');assert.equal(update.body.base_model_id,null);
   ui.doc.querySelector('#catalog-source').value='saved';
   ui.doc.querySelector('#catalog-source').dispatchEvent(new ui.w.Event('change'));
+  assert.equal(ui.doc.querySelector('#series-filter').disabled,false);
+  ui.doc.querySelector('#series-filter').value='人工系列';ui.doc.querySelector('#series-filter').dispatchEvent(new ui.w.Event('change'));
   await settle();
+  assert.equal(ui.calls.filter(c=>c.url.pathname==='/api/v1/models').at(-1).url.searchParams.get('series'),'人工系列');
   assert.equal(ui.calls.filter(c=>c.url.pathname==='/api/v1/models').at(-1).url.searchParams.get('source'),'saved');
 });
 
@@ -765,12 +786,15 @@ test('TX author is revision metadata and a saved library record resumes its orig
   });
   assert.equal(a.doc.querySelector('#design-author').readOnly,true);
   assert.equal(a.doc.querySelector('#design-author').value,'张工');
+  a.doc.querySelector('#design-series-control-select').value='series:人工系列';
   a.doc.querySelector('#design-author').value='伪造姓名';a.doc.querySelector('#save-design').click();
   await until(()=>a.doc.querySelector('#models').textContent.includes('张工')&&!a.doc.querySelector('#save-design').disabled,'Saved record indexed');
+  assert.equal(design.series,'人工系列');assert.ok(!('series' in design.parameters));
   assert.equal(design.author,'张工');assert.ok(!('author' in design.parameters));
   a.doc.querySelector('#design-author').value='尚未保存';
   a.doc.querySelector('#models button').click();await settle();
   assert.equal(a.doc.querySelector('#design-author').value,'张工');
+  assert.equal(a.doc.querySelector('#design-series-control-select').value,'series:人工系列');
   a.doc.querySelector('#design-author').value='李工';a.doc.querySelector('#save-design').click();
   await until(()=>design.revision===2,'Saved design updated');
   const update=a.calls.find(c=>c.method==='PUT');assert.equal(update.path,'/designs/tx-author');

@@ -4,6 +4,7 @@ import uuid
 
 from .storage import ConflictError, NotFoundError, audit, connect, dumps, now
 from .parameters import input_parameters
+from .saved_catalog import series_name
 
 
 def _project(row):
@@ -22,7 +23,7 @@ def _project(row):
 def list_projects(include_archived=False):
     with connect() as db:
         return [dict(r) for r in db.execute(
-            'SELECT id,name,author,revision,archived,created_at,updated_at FROM projects '
+            'SELECT id,name,author,series,revision,archived,created_at,updated_at FROM projects '
             + ('' if include_archived else 'WHERE archived=0 ') + 'ORDER BY updated_at DESC LIMIT 500')]
 
 
@@ -31,7 +32,8 @@ def get_project(project_id):
         return _project(db.execute('SELECT * FROM projects WHERE id=?', (project_id,)).fetchone())
 
 
-def save_project(name, parameters, notes='', lineage=None, author='', slot_bindings=None):
+def save_project(name, parameters, notes='', lineage=None, author='', slot_bindings=None, series=None):
+    series = series_name(series) or ''
     project_id, timestamp = str(uuid.uuid4()), now()
     encoded = dumps(parameters)
     with connect() as db:
@@ -41,15 +43,16 @@ def save_project(name, parameters, notes='', lineage=None, author='', slot_bindi
                    (project_id, name, encoded, notes, timestamp, dumps(lineage or {}), author))
         audit(db, 'project.created', project_id, {'revision': 1})
         for table, key in [('projects','id'), ('project_revisions','project_id')]:
-            db.execute(f'UPDATE {table} SET slot_bindings=? WHERE {key}=?', (dumps(slot_bindings or {}), project_id))
+            db.execute(f'UPDATE {table} SET slot_bindings=?,series=? WHERE {key}=?', (dumps(slot_bindings or {}), series, project_id))
     return get_project(project_id)
 
 
-def update_project(project_id, expected_revision, name, parameters, notes='', lineage=None, author=None, slot_bindings=None):
+def update_project(project_id, expected_revision, name, parameters, notes='', lineage=None, author=None, slot_bindings=None, series=None):
+    series = series_name(series)
     timestamp, encoded = now(), dumps(parameters)
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT revision,archived,lineage,author,slot_bindings FROM projects WHERE id=?', (project_id,)).fetchone()
+        row = db.execute('SELECT revision,archived,lineage,author,slot_bindings,series FROM projects WHERE id=?', (project_id,)).fetchone()
         if row is None:
             raise NotFoundError('设计不存在')
         if row['revision'] != expected_revision or row['archived']:
@@ -63,8 +66,9 @@ def update_project(project_id, expected_revision, name, parameters, notes='', li
                    (project_id, revision, name, encoded, notes, timestamp, origin, author))
         audit(db, 'project.updated', project_id, {'revision': revision})
         bindings = row['slot_bindings'] if slot_bindings is None else dumps(slot_bindings)
-        db.execute('UPDATE projects SET slot_bindings=? WHERE id=?', (bindings, project_id))
-        db.execute('UPDATE project_revisions SET slot_bindings=? WHERE project_id=? AND revision=?', (bindings, project_id, revision))
+        series = row['series'] if series is None else series
+        db.execute('UPDATE projects SET slot_bindings=?,series=? WHERE id=?', (bindings, series, project_id))
+        db.execute('UPDATE project_revisions SET slot_bindings=?,series=? WHERE project_id=? AND revision=?', (bindings, series, project_id, revision))
     return get_project(project_id)
 
 
@@ -73,7 +77,7 @@ def revisions(project_id):
         if db.execute('SELECT 1 FROM projects WHERE id=?', (project_id,)).fetchone() is None:
             raise NotFoundError('设计不存在')
         return [dict(r) for r in db.execute(
-            'SELECT revision,name,author,notes,created_at FROM project_revisions WHERE project_id=? ORDER BY revision DESC',
+            'SELECT revision,name,author,series,notes,created_at FROM project_revisions WHERE project_id=? ORDER BY revision DESC',
             (project_id,))]
 
 

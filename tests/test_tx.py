@@ -187,3 +187,37 @@ def test_author_and_saved_catalog_without_private_resources(client, tx_parameter
     assert client.put(url+'/designs/'+d['id'],json=update).status_code==409
     assert client.get(url+'/models?source=saved&q=%25').json()['total']==0
     assert client.get(url+'/models?source=saved&offset=1').json()['items']==[]
+
+
+def test_series_saved_and_filtered_without_private_tx_resources(client,tx_parameters,monkeypatch):
+    def unavailable():raise tx.TXUnavailableError('Synthetic missing TX resources')
+    monkeypatch.setattr(tx,'context',unavailable)
+    url='/api/v1/tx'
+    item=client.post(url+'/designs',json={'parameters':tx_parameters,'series':'  用户系列  '}).json()
+    assert item['series']=='用户系列' and 'series' not in item['parameters']
+    assert '用户系列' in client.get(url+'/series').json()['items']
+    ref=f"saved-design:{item['id']}@1"
+    for filters in ({'series':'用户系列'},{'q':'用户系列'}):
+        result=client.get(url+'/models',params={'source':'saved',**filters}).json()
+        assert result['total']==1 and result['items'][0]['series']=='用户系列'
+    update={'parameters':tx_parameters,'expected_revision':1}
+    assert client.put(url+'/designs/'+item['id'],json=update).json()['series']=='用户系列'
+    update.update(expected_revision=2,series='下一系列')
+    assert client.put(url+'/designs/'+item['id'],json=update).json()['series']=='下一系列'
+    assert client.get(url+'/models/'+ref).json()['design']['series']=='用户系列'
+    assert client.get(url+'/designs').json()['items'][0]['series']=='下一系列'
+    update.update(expected_revision=3,series='')
+    assert client.put(url+'/designs/'+item['id'],json=update).json()['series']==''
+    for value in ('a'*81,'line\nline',[]):
+        assert client.post(url+'/designs',json={'parameters':tx_parameters,'series':value}).status_code==422
+
+
+def test_tx_original_series_filter_has_stable_pagination_and_leaves_unknown_names_blank(monkeypatch,tx_parameters):
+    names=['YE3-160M2-2','YHE160L-2','143T-2-1HP','YE3-100L-2']
+    data={'models':[{'id':str(i),'name':name,'parameters':tx_parameters,'source':{},'verified_execution':True} for i,name in enumerate(names)]}
+    monkeypatch.setattr(tx,'context',lambda:{'paths':{'tx_catalog.json':'synthetic'},'files':{'tx_catalog.json':{'sha256':'synthetic'}},'resource_version':'test'})
+    monkeypatch.setattr(tx,'_catalog',lambda *args:data)
+    assert [tx.original_series(name) for name in names]==['YE3','YHE','','YE3']
+    result=tx._original_models('',1,1,'YE3')
+    assert result['total']==2 and result['items'][0]['id']=='3'
+    assert result['items'][0]['series']=='YE3'

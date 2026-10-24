@@ -7,7 +7,7 @@
   <title>DCSJ · 电磁设计工作台</title>
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="/slots.css">
-  <link rel="stylesheet" href="/auth.css"><script src="/auth.js" defer></script><script src="/slot-picker.js" defer></script>
+  <link rel="stylesheet" href="/auth.css"><script src="/auth.js" defer></script><script src="/series-picker.js" defer></script><script src="/slot-picker.js" defer></script>
   <script src="./app.js" defer></script>
 </head>
 <body>
@@ -85,9 +85,9 @@
         </section>
 
         <section class="page" id="view-catalog" aria-labelledby="catalog-title">
-          <div class="page-heading"><div><div class="eyebrow">MODEL & DESIGN LIBRARY</div><h1 id="catalog-title">电机型号库</h1><p>按型号、设计名称或作者检索，载入后可继续编辑。</p></div><span class="large-count"><strong id="catalog-total">—</strong> 个型号</span></div>
+          <div class="page-heading"><div><div class="eyebrow">MODEL & DESIGN LIBRARY</div><h1 id="catalog-title">电机型号库</h1><p>按型号、设计名称、系列或作者检索，载入后可继续编辑。</p></div><span class="large-count"><strong id="catalog-total">—</strong> 个型号</span></div>
           <section class="panel">
-            <form class="filter-bar" id="catalog-filter"><label class="search-field"><span aria-hidden="true">⌕</span><input id="model-search" type="search" placeholder="搜索型号、设计名称或作者" aria-label="搜索型号、设计名称或作者"></label><label class="select-filter"><span>来源</span><select id="catalog-source"><option value="all">全部</option><option value="saved">已保存设计</option><option value="original">原始型号</option></select></label><label class="select-filter"><span>系列</span><select id="series-filter"><option value="">全部系列</option></select></label><button class="button button-primary" type="submit">检索</button></form>
+            <form class="filter-bar" id="catalog-filter"><label class="search-field"><span aria-hidden="true">⌕</span><input id="model-search" type="search" placeholder="搜索型号、设计名称、系列或作者" aria-label="搜索型号、设计名称、系列或作者"></label><label class="select-filter"><span>来源</span><select id="catalog-source"><option value="all">全部</option><option value="saved">已保存设计</option><option value="original">原始型号</option></select></label><label class="select-filter"><span>系列</span><select id="series-filter"><option value="">全部系列</option></select></label><button class="button button-primary" type="submit">检索</button></form>
             <div id="catalog-feedback" class="table-feedback" role="status"></div>
             <div class="table-scroll"><table class="data-table model-table"><thead><tr><th>型号 / 设计</th><th>系列</th><th>作者</th><th>额定功率 <small>kW</small></th><th>极数</th><th>电压 <small>V</small></th><th>频率 <small>Hz</small></th><th>来源</th><th><span class="sr-only">操作</span></th></tr></thead><tbody id="model-table-body"></tbody></table></div>
             <div class="pagination"><span id="page-description">尚未加载</span><div><button class="button button-small" id="page-previous" disabled>← 上一页</button><span id="page-number">—</span><button class="button button-small" id="page-next" disabled>下一页 →</button></div></div>
@@ -174,7 +174,7 @@
     </div>
   </div>
   <input id="import-file" type="file" accept=".json,application/json" hidden>
-  <dialog id="save-dialog"><form id="save-form"><div class="dialog-heading"><div><div class="eyebrow">SAVE DESIGN</div><h2>保存当前设计</h2></div><button class="icon-button" type="button" id="close-save" aria-label="关闭保存窗口">×</button></div><p class="muted">保存当前参数，作者使用当前登录用户名，可在型号库按名称或作者检索。</p><label class="field-label" for="design-name">设计名称</label><input class="text-input" id="design-name" required maxlength="120" placeholder="例如：三相异步电机方案 A"><label class="field-label" for="design-author">作者署名</label><input class="text-input" id="design-author" maxlength="120" readonly aria-readonly="true" title="使用当前登录用户名，不能修改"><label class="field-label" for="design-notes">设计备注</label><textarea class="text-input" id="design-notes" maxlength="4000" rows="3"></textarea><label><input type="checkbox" id="save-as-new"> 另存为新设计</label><div id="save-error" class="inline-error hidden" role="alert"></div><div class="dialog-actions"><button class="button" type="button" id="cancel-save">取消</button><button class="button button-primary" type="submit" id="confirm-save">保存设计</button></div></form></dialog>
+  <dialog id="save-dialog"><form id="save-form"><div class="dialog-heading"><div><div class="eyebrow">SAVE DESIGN</div><h2>保存当前设计</h2></div><button class="icon-button" type="button" id="close-save" aria-label="关闭保存窗口">×</button></div><p class="muted">保存当前参数，作者使用当前登录用户名，可在型号库按名称、系列或作者检索。</p><label class="field-label" for="design-name">设计名称</label><input class="text-input" id="design-name" required maxlength="120" placeholder="例如：三相异步电机方案 A"><div id="design-series-control"></div><label class="field-label" for="design-author">作者署名</label><input class="text-input" id="design-author" maxlength="120" readonly aria-readonly="true" title="使用当前登录用户名，不能修改"><label class="field-label" for="design-notes">设计备注</label><textarea class="text-input" id="design-notes" maxlength="4000" rows="3"></textarea><label><input type="checkbox" id="save-as-new"> 另存为新设计</label><div id="save-error" class="inline-error hidden" role="alert"></div><div class="dialog-actions"><button class="button" type="button" id="cancel-save">取消</button><button class="button button-primary" type="submit" id="confirm-save">保存设计</button></div></form></dialog>
   <dialog id="history-dialog" class="wide-dialog"><div class="dialog-heading"><h2>版本历史</h2><button class="button" id="close-history">关闭</button></div><div id="history-content"></div></dialog>
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 </body>

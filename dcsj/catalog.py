@@ -34,9 +34,11 @@ def stats():
 
 
 def series():
+    from . import saved_catalog
     with connect() as db:
-        return [r[0] for r in db.execute(
+        original = [r[0] for r in db.execute(
             "SELECT DISTINCT series FROM models WHERE is_primary=1 ORDER BY series")]
+    return sorted(set(original + saved_catalog.series()) - {None, ''})
 
 
 def frame_size(name):
@@ -114,7 +116,7 @@ def model(record_id):
         project.update(id=identity, archived=current['archived'])
         return {'id': record_id, 'model': project['name'], 'parameters': project['parameters'],
                 'inputs': project['parameters'], 'electrical': electrical(project['parameters']),
-                'kind': 'saved_design', 'project': project, 'author': project['author'],
+                'kind': 'saved_design', 'project': project, 'author': project['author'], 'series': project['series'],
                 'source': {'description': '已保存设计', 'project_id': identity, 'revision': revision,
                            'author': project['author']}}
     if record_id.startswith('user-model:'):

@@ -16,12 +16,14 @@ async function app(t, initial = [], original) {
   const calls = [], errors = [], vc = new VirtualConsole(); vc.on('jsdomError', e => errors.push(e.message));
   const dom = new JSDOM(readFileSync(resolve(root, 'frontend/index.html'), 'utf8'), { url: 'https://dcsj.invalid/', runScripts: 'outside-only', virtualConsole: vc });
   const w = dom.window, d = w.document;
+  w.Headers=Headers;w.Request=Request;
   w.HTMLElement.prototype.scrollIntoView = function () {};
   w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   w.fetch = async (url, options = {}) => {
     const path = new URL(url, w.location.href).pathname.replace('/api/v1', ''), method = options.method || 'GET';
     const body = options.body ? JSON.parse(options.body) : null; calls.push({ path, method, body }); let data;
-    if (path === '/status') data = { catalog: {}, engine: { name: '人工测试', limitations: [] } };
+    if (path === '/auth/me') data = {username:'张工'};
+    else if (path === '/status') data = { catalog: {}, engine: { name: '人工测试', limitations: [] } };
     else if (path === '/schema') data = { groups: [], fields: [] };
     else if (path === '/series') data = { items: [] };
     else if (path === '/resources') data = { active: null, installed: [], remote_configured: false };
@@ -32,8 +34,10 @@ async function app(t, initial = [], original) {
     } else if (path === '/materials') data = { items: [{ id: 'original', name: '原始测试', point_count: 3, loss_point_count: 2, source: '人工原表' }] };
     else if (path === '/materials/original') data = original;
     else throw new Error('Unexpected request ' + path);
-    return { ok: true, status: 200, text: async () => JSON.stringify(data) };
+    return { ok: true, status: 200, json:async()=>data, text: async () => JSON.stringify(data) };
   };
+  w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));
+  w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));
   w.eval(readFileSync(resolve(root, 'frontend/app.js'), 'utf8')); await settle();
   t.after(() => { w.close(); assert.deepEqual(errors, []); });
   const change = (selector, value, event = 'change') => { const node = d.querySelector(selector); node.value = value; node.dispatchEvent(new w.Event(event, { bubbles: true })); };

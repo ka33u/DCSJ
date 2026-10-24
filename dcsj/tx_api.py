@@ -7,6 +7,7 @@ from . import tx, slots, auth
 from .tx_parameters import schema, validate
 from .tx_report import report
 from .parameters import ROOT
+from .saved_catalog import series_name
 
 router=APIRouter(tags=['TX 双层同心式绕组'])
 
@@ -24,6 +25,8 @@ class TXCalculationInput(TXInput):
 
 class TXDesignInput(TXInput):
     author: str | None = Field(default=None, max_length=120, description='登录用户名；省略时自动填写，不允许其他署名')
+    series: str | None = Field(default=None, max_length=80, description='方案系列名；省略保留原值，空串设为未分类')
+    validate_series = field_validator('series')(series_name)
 
     @field_validator('author')
     @classmethod
@@ -55,10 +58,14 @@ def status():return tx.status()
 def parameters():return schema()
 
 
+@router.get('/api/v1/tx/series')
+def series():return {'items':tx.series()}
+
+
 @router.get('/api/v1/tx/models')
 def models(q:str=Query(default='',max_length=120),limit:int=Query(default=60,ge=1,le=100),offset:int=Query(default=0,ge=0,le=20000),
-           source:Literal['original','saved','all']='original'):
-    return tx.models(q,limit,offset,source)
+           source:Literal['original','saved','all']='original',series:str=Query(default='',max_length=80)):
+    return tx.models(q,limit,offset,source,series)
 
 
 @router.get('/api/v1/tx/models/{identity}')
@@ -91,7 +98,7 @@ def designs():return {'items':tx.designs()}
 
 @router.post('/api/v1/tx/designs',status_code=201)
 def create(body:TXDesignInput,request:Request):
-    return tx.save_design(body.parameters,base_model_id=body.base_model_id,author=auth.author(request,body.author),slot_bindings=body.slot_bindings.model_dump(exclude_none=True))
+    return tx.save_design(body.parameters,base_model_id=body.base_model_id,author=auth.author(request,body.author),slot_bindings=body.slot_bindings.model_dump(exclude_none=True),series=body.series)
 
 
 @router.get('/api/v1/tx/designs/{identity}')
@@ -102,4 +109,4 @@ def design(identity:str,revision:int|None=Query(default=None,ge=1)):return tx.de
 def update(identity:str,body:TXDesignUpdate,request:Request):
     return tx.save_design(body.parameters,identity,body.expected_revision,body.base_model_id,
                           auth.author(request,body.author),
-                          body.slot_bindings.model_dump(exclude_none=True) if 'slot_bindings' in body.model_fields_set else None)
+                          body.slot_bindings.model_dump(exclude_none=True) if 'slot_bindings' in body.model_fields_set else None,body.series)

@@ -1,5 +1,21 @@
 """Search saved designs without copying them into immutable resource catalogs."""
 from .storage import connect
+import unicodedata
+
+
+def series_name(value):
+    if value is None:
+        return None
+    value = value.strip()
+    if len(value) > 80 or any(unicodedata.category(c).startswith('C') for c in value):
+        raise ValueError('系列名不能超过 80 字，不能包含换行或控制字符')
+    return value
+
+
+def series():
+    with connect() as db:
+        return [row[0] for row in db.execute("SELECT series FROM projects WHERE series<>'' "
+                    "UNION SELECT series FROM tx_designs WHERE series<>'' ORDER BY series")]
 
 
 def search(module, query='', limit=30, offset=0, **filters):
@@ -11,17 +27,17 @@ def search(module, query='', limit=30, offset=0, **filters):
             json_extract(parameters,'$.p') AS poles,
             json_extract(parameters,'$.f') AS frequency_hz,
             json_extract(parameters,'$.Ufai') AS voltage_v,
-            '' AS series, 'saved-design' AS source_table
+            series, 'saved-design' AS source_table
             FROM projects WHERE archived=0"""
     else:
-        select = """SELECT d.id, d.name, d.author, d.revision, d.updated_at, r.parameters,
+        select = """SELECT d.id, d.name, d.author, d.series, d.revision, d.updated_at, r.parameters,
             json_extract(r.parameters,'$.TYP') AS model_name
             FROM tx_designs d JOIN tx_revisions r ON r.design_id=d.id AND r.revision=d.revision"""
     conditions, args = [], []
     if query:
         escaped = query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-        conditions.append("(name LIKE ? ESCAPE '\\' OR model_name LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\')")
-        args.extend([f'%{escaped}%'] * 3)
+        conditions.append("(name LIKE ? ESCAPE '\\' OR model_name LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\' OR series LIKE ? ESCAPE '\\')")
+        args.extend([f'%{escaped}%'] * 4)
     for column in ('series', 'frequency_hz', 'poles', 'voltage_v', 'source_table'):
         value = filters.get(column)
         if value is not None and value != '':

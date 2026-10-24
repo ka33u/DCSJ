@@ -87,5 +87,36 @@ def test_schema_six_migration_retains_old_designs_and_tx_versions(tmp_path, para
         assert db.execute('PRAGMA user_version').fetchone()[0] == storage.SCHEMA_VERSION
         for table in ('projects', 'project_revisions', 'tx_designs', 'tx_revisions'):
             assert db.execute(f'SELECT author FROM {table}').fetchone()[0] == ''
+            assert db.execute(f'SELECT series FROM {table}').fetchone()[0] == ''
         assert json.loads(db.execute('SELECT parameters FROM projects').fetchone()[0]) == parameters
         assert db.execute('SELECT name FROM project_revisions').fetchone()[0] == '旧设计'
+
+
+def test_series_is_versioned_searchable_metadata_and_legacy_updates_preserve_it(client,parameters):
+    body={'name':'方案一','parameters':parameters,'series':'  独立系列%_  '}
+    response=client.post('/api/v1/projects',json=body)
+    assert response.status_code==201
+    item=response.json();assert item['series']=='独立系列%_' and 'series' not in item['parameters']
+    ref=f"saved-design:{item['id']}@1"
+    assert '独立系列%_' in client.get('/api/v1/series').json()['items']
+    for filters in ({'series':'独立系列%_'},{'q':'独立系列%_'},{'q':'%_'}):
+        result=client.get('/api/v1/models',params={'source':'saved',**filters}).json()
+        assert result['total']==1 and result['items'][0]['series']=='独立系列%_'
+    assert client.get('/api/v1/models',params={'source':'saved','series':'独立系列'}).json()['total']==0
+    update={'name':'方案二','parameters':parameters,'expected_revision':1}
+    assert client.put('/api/v1/projects/'+item['id'],json=update).json()['series']=='独立系列%_'
+    update.update(expected_revision=2,series='新系列')
+    assert client.put('/api/v1/projects/'+item['id'],json=update).json()['series']=='新系列'
+    assert client.get('/api/v1/models/'+ref).json()['series']=='独立系列%_'
+    history=client.get(f"/api/v1/projects/{item['id']}/revisions").json()['items']
+    assert [x['series'] for x in history]==['新系列','独立系列%_','独立系列%_']
+    update.update(expected_revision=3,series='')
+    assert client.put('/api/v1/projects/'+item['id'],json=update).json()['series']==''
+    assert client.get('/api/v1/models',params={'source':'saved','series':'新系列'}).json()['total']==0
+    assert client.get('/api/v1/projects').json()['items'][0]['series']==''
+
+
+def test_series_input_validation_is_separate_from_numeric_parameters(client,parameters):
+    for value in ('x'*81,'line\nline',[],42):
+        assert client.post('/api/v1/projects',json={'name':'Test','parameters':parameters,'series':value}).status_code==422
+    assert client.post('/api/v1/projects',json={'name':'Test','parameters':parameters}).json()['series']==''

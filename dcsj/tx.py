@@ -3,6 +3,7 @@ from functools import lru_cache
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 import threading
 import uuid
@@ -13,6 +14,7 @@ from .storage import connect, dumps, now, audit, ConflictError, NotFoundError
 from .tx_parameters import validate, TXInputError
 from .tx_vm import load_program, TXVM
 from .execution import BusyError
+from .saved_catalog import series_name
 
 _slots=threading.BoundedSemaphore(2)
 
@@ -71,23 +73,43 @@ def status():
         return {'available':False,'message':str(exc),'application_version':__version__}
 
 
-def models(query='',limit=60,offset=0,source='original'):
+def original_series(name):
+    # Recognize explicit motor prefixes, leaving unconventional identifiers unclassified.
+    match = re.match(r'^([A-Za-z][A-Za-z0-9]*)[-_](?=\d{2,4}[A-Za-z])', name)
+    if not match:
+        match = re.match(r'^([A-Za-z]+)(?=\d{2,4}[A-Za-z])', name)
+    return match[1] if match else ''
+
+
+def series():
+    from . import catalog
+    values = set(catalog.series())
+    try:
+        ctx=context();data=_catalog(str(ctx['paths']['tx_catalog.json']),ctx['files']['tx_catalog.json']['sha256'])
+        values.update(original_series(m['name']) for m in data['models'])
+    except (TXUnavailableError, resources.ResourceError, OSError):
+        pass
+    return sorted(values - {''})
+
+
+def models(query='',limit=60,offset=0,source='original',series=''):
     from . import saved_catalog
-    saved=saved_catalog.search('tx',query,limit,offset) if source!='original' else {'items':[],'total':0}
+    saved=saved_catalog.search('tx',query,limit,offset,series=series) if source!='original' else {'items':[],'total':0}
     items=[]
     for row in saved['items']:
         p=json.loads(row.pop('parameters'))
         row.update(design_id=row['id'],id=saved_catalog.reference(row['id'],row['revision']),
                    kind='saved_design',power_kw=p['P2'],poles=p['P'],source={'kind':'saved_design'})
         items.append(row)
-    original=_original_models(query,max(0,limit-len(items)),max(0,offset-saved['total'])) if source!='saved' else {'items':[],'total':0}
+    original=_original_models(query,max(0,limit-len(items)),max(0,offset-saved['total']),series) if source!='saved' else {'items':[],'total':0}
     return {**original,'items':items+original['items'],'total':saved['total']+original['total'],'offset':offset}
 
 
-def _original_models(query='',limit=60,offset=0):
+def _original_models(query='',limit=60,offset=0,series=''):
     ctx=context();catalog=_catalog(str(ctx['paths']['tx_catalog.json']),ctx['files']['tx_catalog.json']['sha256'])
-    items=[m for m in catalog['models'] if query.casefold() in m['name'].casefold()]
-    return {'items':[{k:m[k] for k in ('id','name','source','verified_execution')}|{'power_kw':m['parameters']['P2'],'poles':m['parameters']['P']} for m in items[offset:offset+limit]],
+    items=[m for m in catalog['models'] if query.casefold() in (m['name']+' '+original_series(m['name'])).casefold()
+           and (not series or original_series(m['name'])==series)]
+    return {'items':[{k:m[k] for k in ('id','name','source','verified_execution')}|{'power_kw':m['parameters']['P2'],'poles':m['parameters']['P'],'series':original_series(m['name'])} for m in items[offset:offset+limit]],
             'total':len(items),'resource_version':ctx['resource_version'],'offset':offset}
 
 
@@ -95,13 +117,13 @@ def model(identity, ctx=None):
     if identity.startswith('saved-design:'):
         from .saved_catalog import parse_reference
         d=design(*parse_reference(identity))
-        return {'id':identity,'name':d['name'],'author':d['author'],'parameters':d['parameters'],
+        return {'id':identity,'name':d['name'],'author':d['author'],'series':d['series'],'parameters':d['parameters'],
                 'kind':'saved_design','design':d,'source':{'kind':'saved_design','design_id':d['id'],
                                                        'revision':d['revision'],'author':d['author']}}
     ctx=ctx or context();catalog=_catalog(str(ctx['paths']['tx_catalog.json']),ctx['files']['tx_catalog.json']['sha256'])
     found=next((m for m in catalog['models'] if m['id']==identity),None)
     if found is None:raise NotFoundError('TX 型号不存在于当前资源版本')
-    return {**found,'resource_version':ctx['resource_version'],'package_id':ctx['package_id']}
+    return {**found,'series':original_series(found['name']),'resource_version':ctx['resource_version'],'package_id':ctx['package_id']}
 
 
 def lineage(base_model_id,ctx):
@@ -192,13 +214,14 @@ def design(identity,revision=None):
         version=db.execute('SELECT * FROM tx_revisions WHERE design_id=? AND revision=?',(identity,revision or row['revision'])).fetchone()
         if not version:raise NotFoundError('TX 设计版本不存在')
         versions=[r[0] for r in db.execute('SELECT revision FROM tx_revisions WHERE design_id=? ORDER BY revision DESC',(identity,))]
-        return {**dict(row),'name':json.loads(version['parameters'])['TYP'],'author':version['author'],
+        return {**dict(row),'name':json.loads(version['parameters'])['TYP'],'author':version['author'],'series':version['series'],
                 'revision':version['revision'],'latest_revision':row['revision'],'parameters':json.loads(version['parameters']),
                 'source':json.loads(version['source']),'revisions':versions,
                 'slot_bindings':json.loads(version['slot_bindings'])}
 
 
-def save_design(parameters,identity=None,expected_revision=None,base_model_id=None,author=None,slot_bindings=None):
+def save_design(parameters,identity=None,expected_revision=None,base_model_id=None,author=None,slot_bindings=None,series=None):
+    series=series_name(series)
     from . import slots
     if slot_bindings is not None:
         slots.resolve(slot_bindings, 'tx')
@@ -207,7 +230,7 @@ def save_design(parameters,identity=None,expected_revision=None,base_model_id=No
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
         if identity:
-            row=db.execute('SELECT revision,author FROM tx_designs WHERE id=?',(identity,)).fetchone()
+            row=db.execute('SELECT revision,author,series FROM tx_designs WHERE id=?',(identity,)).fetchone()
             if not row:raise NotFoundError('TX 设计不存在')
             if row['revision']!=expected_revision:raise ConflictError('TX 设计已被更新，请重新打开最新版本')
             if not base_model_id:
@@ -219,6 +242,7 @@ def save_design(parameters,identity=None,expected_revision=None,base_model_id=No
                 slot_bindings=json.loads(db.execute('SELECT slot_bindings FROM tx_revisions WHERE design_id=? AND revision=?',
                                                     (identity,expected_revision)).fetchone()[0])
             author=row['author'] if author is None else author
+            series=row['series'] if series is None else series
             db.execute('UPDATE tx_designs SET name=?,revision=?,updated_at=?,author=? WHERE id=?',(parameters['TYP'],revision,stamp,author,identity))
         else:
             identity=str(uuid.uuid4());revision=1
@@ -228,6 +252,7 @@ def save_design(parameters,identity=None,expected_revision=None,base_model_id=No
         db.execute('INSERT INTO tx_revisions(design_id,revision,parameters,source,created_at,author) VALUES(?,?,?,?,?,?)',
                    (identity,revision,dumps(parameters),dumps(source),stamp,author))
         audit(db,'tx.design_saved',identity,{'revision':revision})
-        db.execute('UPDATE tx_revisions SET slot_bindings=? WHERE design_id=? AND revision=?',
-                   (dumps(slot_bindings or {}),identity,revision))
+        db.execute('UPDATE tx_designs SET series=? WHERE id=?',(series or '',identity))
+        db.execute('UPDATE tx_revisions SET slot_bindings=?,series=? WHERE design_id=? AND revision=?',
+                   (dumps(slot_bindings or {}),series or '',identity,revision))
     return design(identity)

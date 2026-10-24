@@ -18,6 +18,7 @@ from .engine import CalculationUnavailableError
 from . import jobs, optimization
 from . import pdf_fonts
 from .pdf_report import PDFUnavailableError, PDFContentError
+from .saved_catalog import series_name
 
 
 @asynccontextmanager
@@ -77,6 +78,8 @@ class ProjectInput(DesignInput):
     slot_bindings: slots.Bindings = Field(default_factory=slots.Bindings)
     name: str = Field(min_length=1, max_length=120)
     author: str | None = Field(default=None, max_length=120, description='由登录用户名自动填写；可省略，显式提供时必须与登录用户一致')
+    series: str | None = Field(default=None, max_length=80, description='系列名；创建时省略为未分类，更新时省略保留原值，空字符串清除分类')
+    validate_series = field_validator('series')(series_name)
     notes: str = Field(default="", max_length=4000)
     base_model_id: str | None = Field(default=None, min_length=1, max_length=160)
 
@@ -529,7 +532,7 @@ def save_project(body: ProjectInput, request: Request):
     origin = catalog.lineage(body.base_model_id) if body.base_model_id else {}
     bindings = body.slot_bindings.model_dump(exclude_none=True)
     slots.resolve(bindings)
-    return projects.save_project(body.name, body.parameters, body.notes, origin, author, bindings)
+    return projects.save_project(body.name, body.parameters, body.notes, origin, author, bindings, body.series)
 
 
 @app.get("/api/v1/projects/{project_id}", tags=["保存的设计"])
@@ -552,7 +555,7 @@ def update_project(project_id: str, body: ProjectUpdate, request: Request):
     if bindings is not None:
         slots.resolve(bindings)
     return projects.update_project(project_id, body.expected_revision, body.name, body.parameters, body.notes, origin,
-                                   author, bindings)
+                                   author, bindings, body.series)
 
 
 @app.post("/api/v1/projects/{project_id}/archive", tags=["保存的设计"])
@@ -719,6 +722,11 @@ def styles():
 @app.get("/app.js", include_in_schema=False)
 def javascript():
     return FileResponse(ROOT / "frontend/app.js")
+
+
+@app.get('/series-picker.js', include_in_schema=False)
+def series_picker():
+    return FileResponse(ROOT/'frontend/series-picker.js', media_type='application/javascript')
 
 
 @app.get("/docs", include_in_schema=False)

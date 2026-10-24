@@ -10,6 +10,7 @@
     parameters: {},
     name: "",
     author: "",
+    series: "",
     model: "",
     source: null,
     baseModelId: null,
@@ -167,8 +168,9 @@
     }
     return Object.fromEntries(entries);
   }
-  function acceptDesign(parameters, name, source, model = "", baseModelId = null, author = "", slotBindings = {}) {
+  function acceptDesign(parameters, name, source, model = "", baseModelId = null, author = "", slotBindings = {}, series = "") {
     const accepted = validParameters(parameters);
+    series = window.SeriesPicker.validate(series);
     ++modelRequest;
     state.project = null;
     state.baseModelId = baseModelId;
@@ -177,6 +179,7 @@
     slotPicker?.update();
     state.name = String(name || "未命名设计");
     state.author = window.DCSJAuth.username();
+    state.series = series;
     state.model = String(model || parameters.SizeX || parameters.Model || parameters.model || "");
     state.source = source || null;
     state.revision += 1;
@@ -719,9 +722,9 @@
       if (request !== modelRequest) return;
       if (model.kind === "saved_design") {
         const design = model.project;
-        acceptDesign(design.parameters, design.name, `已保存设计 · v${design.revision} · ${design.author || "未署名"}`, "", design.lineage?.id || null, design.author, design.slot_bindings);
+        acceptDesign(design.parameters, design.name, `已保存设计 · v${design.revision} · ${design.author || "未署名"}`, "", design.lineage?.id || null, design.author, design.slot_bindings, design.series);
         state.project = design;
-      } else acceptDesign(model.parameters, model.model || String(id), model.source, model.model || "", model.id);
+      } else acceptDesign(model.parameters, model.model || String(id), model.source, model.model || "", model.id, "", {}, model.series);
       showToast(`已载入 ${model.model || id}，来源信息显示在参数区。`);
     } catch (error) { showToast(errorText(error), "error"); }
     finally { trigger.disabled = false; trigger.textContent = "载入设计 →"; }
@@ -730,11 +733,11 @@
     try {
       const data = await api("/series");
       if (!Array.isArray(data.items)) throw new Error("系列接口没有返回 items 数组。");
-      data.items.forEach(item => {
-        const option = el("option", "", item);
-        option.value = item;
-        $("#series-filter").append(option);
-      });
+      const filter = $("#series-filter"), selected = filter.value;
+      const names = [...new Set([...data.items, selected].filter(Boolean))];
+      filter.replaceChildren(new Option("全部系列", ""), ...names.map(item => new Option(item, item)));
+      filter.value = selected; filter.disabled = false;
+      seriesPicker.options(data.items);
     } catch (error) {
       showToast(`系列筛选暂不可用：${errorText(error)}`, "error");
       $("#series-filter").disabled = true;
@@ -828,7 +831,7 @@
       data.items.forEach(project => {
         const row = el("tr");
         const date = new Date(project.updated_at);
-        [`${project.name} · v${project.revision}${project.archived ? " · 已归档" : ""}`, project.author || "未署名", project.id, Number.isNaN(date.getTime()) ? project.updated_at || "—" : date.toLocaleString("zh-CN")].forEach(value => row.append(el("td", "", value)));
+        [`${project.name} · ${project.series || "未分类"} · v${project.revision}${project.archived ? " · 已归档" : ""}`, project.author || "未署名", project.id, Number.isNaN(date.getTime()) ? project.updated_at || "—" : date.toLocaleString("zh-CN")].forEach(value => row.append(el("td", "", value)));
         const action = el("td");
         const trigger = button("打开设计 →", "text-button", async () => {
           if (state.busy) return showToast("计算正在进行，请在完成后打开其他设计。", "warning");
@@ -837,7 +840,7 @@
           try {
             const design = await api(`/projects/${encodeURIComponent(project.id)}`);
             if (request !== modelRequest) return;
-            acceptDesign(design.parameters, design.name, design.source || `已保存设计 · ${design.id}`, design.model || "", design.lineage?.id || design.base_model_id || null, design.author, design.slot_bindings);
+            acceptDesign(design.parameters, design.name, design.source || `已保存设计 · ${design.id}`, design.model || "", design.lineage?.id || design.base_model_id || null, design.author, design.slot_bindings, design.series);
             state.project = design;
             showToast(`已打开设计：${design.name} · v${design.revision}`);
           } catch (error) { showToast(errorText(error), "error"); }
@@ -863,6 +866,7 @@
   function openSaveDialog() {
     if (!populated()) return showToast("请先载入设计参数。", "warning");
     $("#design-name").value = state.name;
+    seriesPicker.set(state.series);
     $("#design-author").value = window.DCSJAuth.username();
     $("#design-notes").value = state.project?.notes || "";
     $("#save-as-new").checked = !state.project || !!state.project.archived;
@@ -876,15 +880,17 @@
     const name = $("#design-name").value.trim();
     if (!name) { $("#design-name").setCustomValidity("请输入设计名称"); $("#design-name").reportValidity(); return; }
     $("#confirm-save").disabled = true;
+    seriesPicker.disable(true);
     $("#confirm-save").textContent = "保存中…";
     const revision = state.revision;
     try {
       const updating = state.project && !$("#save-as-new").checked;
-      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, author: window.DCSJAuth.username(), parameters: state.parameters, slot_bindings: state.slotBindings, base_model_id: state.baseModelId, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
+      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, series: seriesPicker.value(), author: window.DCSJAuth.username(), parameters: state.parameters, slot_bindings: state.slotBindings, base_model_id: state.baseModelId, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
       if (!saved.id) throw new Error("服务未返回设计 ID，无法确认是否保存成功。");
       state.catalog.loaded = false; ++state.catalog.request;
       if (revision === state.revision) {
         state.author = saved.author || "";
+        state.series = saved.series || "";
         state.project = saved;
         state.name = saved.name || name;
         state.dirty = false;
@@ -892,15 +898,16 @@
         $("#current-design").title = state.name;
       }
       $("#save-dialog").close();
-      showToast(`设计已保存：${saved.name || name}，可在型号库按名称或作者检索。`);
+      await loadSeries();
+      showToast(`设计已保存：${saved.name || name}，可在型号库按名称、系列或作者检索。`);
     } catch (error) {
       $("#save-error").textContent = errorText(error);
       $("#save-error").classList.remove("hidden");
-    } finally { $("#confirm-save").disabled = false; $("#confirm-save").textContent = "保存设计"; }
+    } finally { seriesPicker.disable(false); $("#confirm-save").disabled = false; $("#confirm-save").textContent = "保存设计"; }
   }
   function exportDesign() {
     if (!populated()) return showToast("请先载入设计参数。", "warning");
-    const documentData = { format: "dcsj-design", version: 1, name: state.name, author: state.author, model: state.model, source: state.source, base_model_id: state.baseModelId, parameters: state.parameters, slot_bindings: state.slotBindings, exported_at: new Date().toISOString() };
+    const documentData = { format: "dcsj-design", version: 1, name: state.name, author: state.author, series: state.series, model: state.model, source: state.source, base_model_id: state.baseModelId, parameters: state.parameters, slot_bindings: state.slotBindings, exported_at: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(documentData, null, 2)], { type: "application/json;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = el("a");
@@ -929,7 +936,7 @@
       const params = validParameters(design.parameters);
       if (state.busy) throw new Error("计算正在进行，请在完成后重新导入设计。");
       ++modelRequest;
-      acceptDesign(params, design.name || file.name.replace(/\.json$/i, ""), design.source || `导入文件：${file.name}`, design.model || "", design.lineage?.id || design.base_model_id || null, design.author, design.slot_bindings);
+      acceptDesign(params, design.name || file.name.replace(/\.json$/i, ""), design.source || `导入文件：${file.name}`, design.model || "", design.lineage?.id || design.base_model_id || null, design.author, design.slot_bindings, design.series);
       showToast("设计参数已导入。请重新运行计算检查结果。");
     } catch (error) { showToast(errorText(error), "error"); }
   }
@@ -955,7 +962,7 @@
       container.replaceChildren();
       data.items.forEach(item => {
         const row = el("div", "history-entry");
-        row.append(el("strong", "", `v${item.revision} · ${item.name}`), el("p", "muted", `${item.author || "未署名"} · ${item.created_at} ${item.notes || ""}`), button("以此版本另建方案", "button button-small", async () => {
+        row.append(el("strong", "", `v${item.revision} · ${item.name}`), el("p", "muted", `${item.series || "未分类"} · ${item.author || "未署名"} · ${item.created_at} ${item.notes || ""}`), button("以此版本另建方案", "button button-small", async () => {
           let request, applying = false;
           try {
             if (state.busy) throw new Error("请等待当前计算完成。");
@@ -963,7 +970,7 @@
             const revision = await api(`/projects/${project.id}/revisions/${item.revision}`);
             if (request !== modelRequest) return;
             applying = true;
-            acceptDesign(revision.parameters, `${revision.name} · v${item.revision} 副本`, `版本 ${project.id} / ${item.revision}`, "", revision.lineage?.id || null, revision.author, revision.slot_bindings);
+            acceptDesign(revision.parameters, `${revision.name} · v${item.revision} 副本`, `版本 ${project.id} / ${item.revision}`, "", revision.lineage?.id || null, revision.author, revision.slot_bindings, revision.series);
             state.dirty = true;
             $("#history-dialog").close();
           } catch (error) { if (applying || request === undefined || request === modelRequest) showToast(errorText(error), "error"); }
@@ -1756,7 +1763,7 @@
     loadExample();
   });
   $("#catalog-filter").addEventListener("submit", event => { event.preventDefault(); state.catalog.offset = 0; loadCatalog(); });
-  $("#catalog-source").addEventListener("change", () => { $("#series-filter").value = ""; $("#series-filter").disabled = $("#catalog-source").value === "saved"; state.catalog.offset = 0; loadCatalog(); });
+  $("#catalog-source").addEventListener("change", () => { $("#series-filter").value = ""; $("#series-filter").disabled = false; state.catalog.offset = 0; loadCatalog(); });
   $("#series-filter").addEventListener("change", () => { state.catalog.offset = 0; loadCatalog(); });
   $("#page-previous").addEventListener("click", () => { state.catalog.offset = Math.max(0, state.catalog.offset - state.catalog.limit); loadCatalog(); });
   $("#page-next").addEventListener("click", () => { state.catalog.offset += state.catalog.limit; loadCatalog(); });
@@ -1807,6 +1814,7 @@
   $("#open-import").addEventListener("click", () => $("#import-file").click());
   $("#import-file").addEventListener("change", importDesign);
   $("#export-design").addEventListener("click", exportDesign);
+  const seriesPicker = window.SeriesPicker.mount($("#design-series-control"));
   const slotPicker = window.SlotPicker?.mount($("#slot-workbench"), {
     module: "main", read: () => {
       if (state.invalidInputs.size) throw new Error("请先完成当前参数输入");
