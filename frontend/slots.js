@@ -56,5 +56,5 @@
   $('archive').onclick=()=>{if(!discard())return;task(async()=>{const item=state.item;const result=await api(`/library/slots/${item.id}/archive`,{expected_revision:item.revision,archived:!item.archived});fill({...result,origin:'user'});await load();notice(result.archived?'已归档，历史设计的引用继续有效。':'已恢复。');});};
   $('versions').onclick=()=>task(async()=>{const data=await api(`/library/slots/${state.item.id}/revisions`);$('history').replaceChildren();for(const v of data.items){const b=n('button',`v${v.revision} · ${new Date(v.created_at).toLocaleString('zh-CN')}`);b.type='button';b.className='slot-button';b.onclick=()=>{if(!discard())return;task(async()=>fill({...await api(`/library/slots/${state.item.id}?revision=${v.revision}`),origin:'user'}));};$('history').append(b);}});
   window.addEventListener('beforeunload',e=>{if(state.dirty){e.preventDefault();e.returnValue='';}});
-  task(async()=>{state.schema=await api('/slots/schema');await load();});
+  task(async()=>{await window.DCSJAuth.ready;window.DCSJAuth.beforeLogout=()=>{if(state.busy||!discard())return false;state.dirty=false;return true;};state.schema=await api('/slots/schema');await load();});
 })();

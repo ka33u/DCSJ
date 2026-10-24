@@ -7,7 +7,7 @@
   <title>DCSJ · 电磁设计工作台</title>
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="/slots.css">
-  <script src="/slot-picker.js" defer></script>
+  <link rel="stylesheet" href="/auth.css"><script src="/auth.js" defer></script><script src="/slot-picker.js" defer></script>
   <script src="./app.js" defer></script>
 </head>
 <body>
@@ -31,6 +31,7 @@
         <a class="nav-item" href="/tx"><span class="nav-icon" aria-hidden="true">∿</span>双层同心式绕组<span class="nav-index">TX</span></a>
         <a class="nav-item" href="/slots"><span class="nav-icon" aria-hidden="true">▥</span>定转子槽型库<span class="nav-index">09</span></a>
       </nav>
+      <div data-account aria-label="当前登录用户"></div>
       <div class="sidebar-label secondary">DEVELOPER</div>
       <nav class="navigation" aria-label="开发与说明">
         <a class="nav-item" href="/docs" target="_blank" rel="noopener"><span class="nav-icon" aria-hidden="true">⌘</span>API 接口文档<span class="external-icon" aria-hidden="true">↗</span></a>
@@ -173,7 +174,7 @@
     </div>
   </div>
   <input id="import-file" type="file" accept=".json,application/json" hidden>
-  <dialog id="save-dialog"><form id="save-form"><div class="dialog-heading"><div><div class="eyebrow">SAVE DESIGN</div><h2>保存当前设计</h2></div><button class="icon-button" type="button" id="close-save" aria-label="关闭保存窗口">×</button></div><p class="muted">保存当前参数与署名，可在型号库按名称或作者检索。</p><label class="field-label" for="design-name">设计名称</label><input class="text-input" id="design-name" required maxlength="120" placeholder="例如：三相异步电机方案 A"><label class="field-label" for="design-author">作者署名</label><input class="text-input" id="design-author" maxlength="120" placeholder="姓名或团队名称（可选）"><label class="field-label" for="design-notes">设计备注</label><textarea class="text-input" id="design-notes" maxlength="4000" rows="3"></textarea><label><input type="checkbox" id="save-as-new"> 另存为新设计</label><div id="save-error" class="inline-error hidden" role="alert"></div><div class="dialog-actions"><button class="button" type="button" id="cancel-save">取消</button><button class="button button-primary" type="submit" id="confirm-save">保存设计</button></div></form></dialog>
+  <dialog id="save-dialog"><form id="save-form"><div class="dialog-heading"><div><div class="eyebrow">SAVE DESIGN</div><h2>保存当前设计</h2></div><button class="icon-button" type="button" id="close-save" aria-label="关闭保存窗口">×</button></div><p class="muted">保存当前参数，作者使用当前登录用户名，可在型号库按名称或作者检索。</p><label class="field-label" for="design-name">设计名称</label><input class="text-input" id="design-name" required maxlength="120" placeholder="例如：三相异步电机方案 A"><label class="field-label" for="design-author">作者署名</label><input class="text-input" id="design-author" maxlength="120" readonly aria-readonly="true" title="使用当前登录用户名，不能修改"><label class="field-label" for="design-notes">设计备注</label><textarea class="text-input" id="design-notes" maxlength="4000" rows="3"></textarea><label><input type="checkbox" id="save-as-new"> 另存为新设计</label><div id="save-error" class="inline-error hidden" role="alert"></div><div class="dialog-actions"><button class="button" type="button" id="cancel-save">取消</button><button class="button button-primary" type="submit" id="confirm-save">保存设计</button></div></form></dialog>
   <dialog id="history-dialog" class="wide-dialog"><div class="dialog-heading"><h2>版本历史</h2><button class="button" id="close-history">关闭</button></div><div id="history-content"></div></dialog>
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 </body>

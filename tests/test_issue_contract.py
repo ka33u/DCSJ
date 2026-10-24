@@ -73,13 +73,15 @@ def test_dry_run_model_override_and_frozen_project_lineage(client, parameters, s
         return {**copy.deepcopy(snapshot), 'inputs': validate(inputs)}
     monkeypatch.setattr(api, 'compute', compute)
     before = client.get('/api/v1/calculations').json()['total']
+    with storage.connect() as db:
+        audit_before = db.execute('SELECT count(*) FROM audit_events').fetchone()[0]
     response = client.post('/api/v1/models/synthetic/calculate', json={'overrides': {'L': 170}, 'persist': False})
     assert response.status_code == 200
     trial = response.json()
     assert trial['inputs']['L'] == 170 and trial['calculation_id'] is None and trial['persisted'] is False
     assert trial['provenance']['base_model']['id'] == 'synthetic'
     with storage.connect() as db:
-        assert db.execute('SELECT count(*) FROM audit_events').fetchone()[0] == 0
+        assert db.execute('SELECT count(*) FROM audit_events').fetchone()[0] == audit_before
     assert client.get('/api/v1/calculations').json()['total'] == before
     assert client.post('/api/v1/models/synthetic/calculate', json={'overrides': {'Kw': 18}}).status_code == 422
     assert client.post('/api/v1/models/missing/calculate', json={}).status_code == 404

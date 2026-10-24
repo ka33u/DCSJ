@@ -8,7 +8,7 @@ import sqlite3
 import threading
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 _migration_lock = threading.Lock()
 _initialized = set()
 
@@ -65,6 +65,13 @@ def _migrate(db, path):
                     db.execute(f"ALTER TABLE projects ADD COLUMN {name} {declaration}")
             db.execute("UPDATE projects SET created_at=updated_at WHERE created_at IS NULL")
             for statement in [
+                "CREATE TABLE IF NOT EXISTS auth_users (id TEXT PRIMARY KEY, username TEXT NOT NULL, "
+                "username_key TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS auth_sessions (token_hash TEXT PRIMARY KEY, "
+                "user_id TEXT NOT NULL REFERENCES auth_users(id), expires_at REAL NOT NULL)",
+                "CREATE INDEX IF NOT EXISTS auth_sessions_expiry ON auth_sessions(expires_at)",
+                "CREATE TABLE IF NOT EXISTS auth_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, "
+                "expires_at REAL NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS project_revisions (project_id TEXT NOT NULL REFERENCES projects(id), "
                 "revision INTEGER NOT NULL, name TEXT NOT NULL, parameters TEXT NOT NULL, notes TEXT NOT NULL, "
                 "created_at TEXT NOT NULL, PRIMARY KEY(project_id, revision))",

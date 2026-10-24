@@ -3,22 +3,25 @@ import json
 import sys
 import time
 from pathlib import Path
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, HTTPCookieProcessor
+from http.cookiejar import CookieJar
 from urllib.error import URLError, HTTPError
 
 url, mode, state_path = sys.argv[1:]
 state_path = Path(state_path)
+urlopen = build_opener(HTTPCookieProcessor(CookieJar())).open
 
 
 def request(path, body=None, method=None):
     data = None if body is None else json.dumps(body).encode()
     with urlopen(Request(url + path, data=data, method=method,
-                         headers={'Content-Type': 'application/json'}), timeout=5) as response:
+                         headers={'Content-Type': 'application/json','X-DCSJ-Request':'1'}), timeout=5) as response:
         return json.load(response)
 
 
 for attempt in range(30):
     try:
+        request('/api/v1/auth/login',{'username':'Container test','password':'1234'})
         status = request('/api/v1/status')
         break
     # Docker may accept the forwarded TCP connection before Uvicorn is ready,

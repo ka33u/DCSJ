@@ -176,7 +176,7 @@
     state.slotBindings = slotBindings || {};
     slotPicker?.update();
     state.name = String(name || "未命名设计");
-    state.author = typeof author === "string" ? author.trim() : "";
+    state.author = window.DCSJAuth.username();
     state.model = String(model || parameters.SizeX || parameters.Model || parameters.model || "");
     state.source = source || null;
     state.revision += 1;
@@ -863,7 +863,7 @@
   function openSaveDialog() {
     if (!populated()) return showToast("请先载入设计参数。", "warning");
     $("#design-name").value = state.name;
-    $("#design-author").value = state.author;
+    $("#design-author").value = window.DCSJAuth.username();
     $("#design-notes").value = state.project?.notes || "";
     $("#save-as-new").checked = !state.project || !!state.project.archived;
     $("#save-as-new").disabled = !state.project;
@@ -880,7 +880,7 @@
     const revision = state.revision;
     try {
       const updating = state.project && !$("#save-as-new").checked;
-      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, author: $("#design-author").value.trim(), parameters: state.parameters, slot_bindings: state.slotBindings, base_model_id: state.baseModelId, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
+      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, author: window.DCSJAuth.username(), parameters: state.parameters, slot_bindings: state.slotBindings, base_model_id: state.baseModelId, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
       if (!saved.id) throw new Error("服务未返回设计 ID，无法确认是否保存成功。");
       state.catalog.loaded = false; ++state.catalog.request;
       if (revision === state.revision) {
@@ -1721,6 +1721,13 @@
   syncEntryKind();
 
   async function boot() {
+    const user = await window.DCSJAuth.ready;
+    state.author = user.username;
+    window.DCSJAuth.beforeLogout = () => {
+      if (state.busy) { showToast("请等待当前操作完成后退出登录。", "warning"); return false; }
+      if (state.dirty && !confirm("当前设计尚未保存，确定退出登录？")) return false;
+      state.dirty = false; return true;
+    };
     const tasks = await Promise.allSettled([loadStatus(), api("/schema"), loadSeries()]);
     const schemaResult = tasks[1];
     if (schemaResult.status === "fulfilled" && Array.isArray(schemaResult.value.fields) && Array.isArray(schemaResult.value.groups)) {

@@ -8,7 +8,9 @@ from dcsj.parameters import INPUT_KEYS
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv('DCSJ_PROJECTS_DB', str(tmp_path / 'designs.sqlite'))
-    with TestClient(app) as c:
+    with TestClient(app, headers={'X-DCSJ-Request':'1'}) as c:
+        response = c.post('/api/v1/auth/login', json={'username':'张工','password':'1234'})
+        assert response.status_code == 200, response.text
         yield c
 
 

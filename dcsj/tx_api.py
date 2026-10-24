@@ -1,9 +1,9 @@
 """Versioned API and standalone frontend for TX concentric windings."""
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Literal
-from . import tx, slots
+from . import tx, slots, auth
 from .tx_parameters import schema, validate
 from .tx_report import report
 from .parameters import ROOT
@@ -23,12 +23,12 @@ class TXCalculationInput(TXInput):
 
 
 class TXDesignInput(TXInput):
-    author: str = Field(default='', max_length=120, description='作者署名；不参与计算')
+    author: str | None = Field(default=None, max_length=120, description='登录用户名；省略时自动填写，不允许其他署名')
 
     @field_validator('author')
     @classmethod
     def trim_author(cls, value):
-        return value.strip()
+        return value.strip() if value is not None else None
 
 
 class TXDesignUpdate(TXDesignInput):
@@ -90,7 +90,8 @@ def designs():return {'items':tx.designs()}
 
 
 @router.post('/api/v1/tx/designs',status_code=201)
-def create(body:TXDesignInput):return tx.save_design(body.parameters,base_model_id=body.base_model_id,author=body.author,slot_bindings=body.slot_bindings.model_dump(exclude_none=True))
+def create(body:TXDesignInput,request:Request):
+    return tx.save_design(body.parameters,base_model_id=body.base_model_id,author=auth.author(request,body.author),slot_bindings=body.slot_bindings.model_dump(exclude_none=True))
 
 
 @router.get('/api/v1/tx/designs/{identity}')
@@ -98,7 +99,7 @@ def design(identity:str,revision:int|None=Query(default=None,ge=1)):return tx.de
 
 
 @router.put('/api/v1/tx/designs/{identity}')
-def update(identity:str,body:TXDesignUpdate):
+def update(identity:str,body:TXDesignUpdate,request:Request):
     return tx.save_design(body.parameters,identity,body.expected_revision,body.base_model_id,
-                          body.author if 'author' in body.model_fields_set else None,
+                          auth.author(request,body.author),
                           body.slot_bindings.model_dump(exclude_none=True) if 'slot_bindings' in body.model_fields_set else None)

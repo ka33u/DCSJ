@@ -5,6 +5,7 @@ from dcsj import catalog, projects, storage
 
 
 def create(client, parameters, name='个人方案', author='张工'):
+    assert client.post('/api/v1/auth/login', json={'username':author.strip(),'password':'1234'}).status_code == 200
     response = client.post('/api/v1/projects', json={'name': name, 'author': author, 'parameters': parameters})
     assert response.status_code == 201, response.text
     return response.json()
@@ -23,17 +24,19 @@ def test_author_revisions_legacy_updates_and_catalog_loading(client, parameters)
     loaded = client.get('/api/v1/models/' + reference).json()
     assert loaded['project']['id'] == d['id'] and loaded['project']['revision'] == 1
     assert loaded['parameters'] == parameters and loaded['project']['lineage'] == {}
-    # Older API clients omit author, preserving the existing signature.
+    # Omitted author is filled from the session; a new user signs only the new revision.
     body = {'name': '重新命名', 'parameters': parameters, 'expected_revision': 1}
     updated = client.put('/api/v1/projects/' + d['id'], json=body).json()
     assert updated['author'] == '张工'
+    assert client.post('/api/v1/auth/login',json={'username':'李工','password':'1234'}).status_code == 200
     body.update(expected_revision=2, author='李工')
     assert client.put('/api/v1/projects/' + d['id'], json=body).json()['author'] == '李工'
     assert client.get('/api/v1/models/' + reference).json()['project']['author'] == '张工'
     versions = client.get(f"/api/v1/projects/{d['id']}/revisions").json()['items']
     assert [v['author'] for v in versions] == ['李工', '张工', '张工']
     body.update(expected_revision=3, author='')
-    assert client.put('/api/v1/projects/' + d['id'], json=body).json()['author'] == ''
+    assert client.put('/api/v1/projects/' + d['id'], json=body).status_code == 403
+    body.update(expected_revision=2, author='李工')
     assert client.put('/api/v1/projects/' + d['id'], json=body).status_code == 409
     assert client.post('/api/v1/projects', json={**body, 'author': 'x' * 121}).status_code == 422
 

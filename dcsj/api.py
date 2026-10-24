@@ -10,7 +10,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import __version__, catalog, projects, calculations, comparisons, modeling, resources, library, slots
+from . import __version__, catalog, projects, calculations, comparisons, modeling, resources, library, slots, auth
 from .execution import BusyError, compute
 from .storage import ConflictError, NotFoundError, now
 from .parameters import ROOT, InputError, schema, validate, example_data, check_keys
@@ -41,6 +41,7 @@ from .tx import TXUnavailableError
 app.include_router(tx_router)
 from .slots_api import router as slots_router
 app.include_router(slots_router)
+app.include_router(auth.router)
 
 
 @app.exception_handler(TXInputError)
@@ -75,14 +76,14 @@ class DesignInput(BaseModel):
 class ProjectInput(DesignInput):
     slot_bindings: slots.Bindings = Field(default_factory=slots.Bindings)
     name: str = Field(min_length=1, max_length=120)
-    author: str = Field(default="", max_length=120, description='作者署名；留空表示未署名，不参与计算')
+    author: str | None = Field(default=None, max_length=120, description='由登录用户名自动填写；可省略，显式提供时必须与登录用户一致')
     notes: str = Field(default="", max_length=4000)
     base_model_id: str | None = Field(default=None, min_length=1, max_length=160)
 
     @field_validator("author")
     @classmethod
     def trim_author(cls, value):
-        return value.strip()
+        return value.strip() if value is not None else None
 
     @field_validator("name")
     @classmethod
@@ -321,6 +322,9 @@ async def bounded_body(request: Request, call_next):
     return response
 
 
+app.middleware('http')(auth.protect)
+
+
 @app.exception_handler(RequestValidationError)
 async def request_validation_error(request, error):
     # Pydantic error contexts may contain exceptions or nonfinite input values.
@@ -520,11 +524,12 @@ def get_projects(include_archived: bool = False):
 
 
 @app.post("/api/v1/projects", status_code=201, tags=["保存的设计"])
-def save_project(body: ProjectInput):
+def save_project(body: ProjectInput, request: Request):
+    author = auth.author(request, body.author)
     origin = catalog.lineage(body.base_model_id) if body.base_model_id else {}
     bindings = body.slot_bindings.model_dump(exclude_none=True)
     slots.resolve(bindings)
-    return projects.save_project(body.name, body.parameters, body.notes, origin, body.author, bindings)
+    return projects.save_project(body.name, body.parameters, body.notes, origin, author, bindings)
 
 
 @app.get("/api/v1/projects/{project_id}", tags=["保存的设计"])
@@ -536,7 +541,8 @@ def get_project(project_id: str):
 
 
 @app.put("/api/v1/projects/{project_id}", tags=["保存的设计"])
-def update_project(project_id: str, body: ProjectUpdate):
+def update_project(project_id: str, body: ProjectUpdate, request: Request):
+    author = auth.author(request, body.author)
     origin = None
     if 'base_model_id' in body.model_fields_set:
         previous = get_project(project_id).get('lineage', {})
@@ -546,7 +552,7 @@ def update_project(project_id: str, body: ProjectUpdate):
     if bindings is not None:
         slots.resolve(bindings)
     return projects.update_project(project_id, body.expected_revision, body.name, body.parameters, body.notes, origin,
-                                   body.author if 'author' in body.model_fields_set else None, bindings)
+                                   author, bindings)
 
 
 @app.post("/api/v1/projects/{project_id}/archive", tags=["保存的设计"])
@@ -717,13 +723,16 @@ def javascript():
 
 @app.get("/docs", include_in_schema=False)
 def api_docs():
-    return get_swagger_ui_html(
+    response = get_swagger_ui_html(
         openapi_url="/openapi.json", title="DCSJ API 文档",
         swagger_js_url="/api-assets/swagger-ui-bundle.js",
         swagger_css_url="/api-assets/swagger-ui.css",
         swagger_favicon_url="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>",
         swagger_ui_parameters={"persistAuthorization": False},
     )
+    # All interactive API writes use the same CSRF header as the workbenches.
+    return HTMLResponse(response.body.decode().replace('const ui = SwaggerUIBundle({',
+        "const ui = SwaggerUIBundle({requestInterceptor: req => { req.headers['X-DCSJ-Request']='1'; return req; },"))
 
 
 @app.get("/api-assets/{name}", include_in_schema=False)

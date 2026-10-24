@@ -160,6 +160,8 @@ def test_http_errors_and_missing_token_do_not_leak_credentials(bundle, monkeypat
 
 
 def test_api_import_conflict_and_activation_errors(client, bundle, monkeypatch):
+    # The bundle fixture switches the database after the client fixture logs in.
+    assert client.post("/api/v1/auth/login", json={"username":"张工","password":"1234"}).status_code == 200
     assert client.post('/api/v1/resources/activate', json={'package_id': '0' * 64}).status_code == 422
     assert client.get('/api/v1/resources').json()['active'] is None
     with resources.import_slot():

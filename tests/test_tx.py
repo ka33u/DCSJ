@@ -110,7 +110,7 @@ def test_missing_resources_and_standalone_routes(client,tmp_path,monkeypatch):
     assert client.get('/api/v1/tx/status').json()['available'] is False
     assert client.get('/api/v1/tx/models').status_code==503
     for path in ['/tx','/tx.js','/tx.css']:
-        response=client.get(path);assert response.status_code==200 and response.headers['cache-control']=='no-cache'
+        response=client.get(path);assert response.status_code==200 and response.headers['cache-control']=='no-store'
     assert '/api/v1/tx/calculate' in client.get('/openapi.json').json()['paths']
     assert client.get('/tx/reports/missing').status_code==404
 
@@ -174,13 +174,16 @@ def test_author_and_saved_catalog_without_private_resources(client, tx_parameter
     update={'parameters':{**tx_parameters,'TYP':'New name'},'expected_revision':1}
     assert client.put(url+'/designs/'+d['id'],json=update).json()['author']=='张工'
     update.update(expected_revision=2,author='李工')
+    assert client.put(url+'/designs/'+d['id'],json=update).status_code==403
+    assert client.post('/api/v1/auth/login',json={'username':'李工','password':'1234'}).status_code==200
     assert client.put(url+'/designs/'+d['id'],json=update).json()['author']=='李工'
     old=client.get(url+'/models/'+reference).json()['design']
     assert old['author']=='张工' and old['name']==tx_parameters['TYP'] and old['revision']==1
     assert client.get(url+'/models?source=saved&q=张工').json()['total']==0
     assert client.get(url+'/models?source=saved&q=李工').json()['total']==1
     update.update(expected_revision=3,author='')
-    assert client.put(url+'/designs/'+d['id'],json=update).json()['author']==''
+    assert client.put(url+'/designs/'+d['id'],json=update).status_code==403
+    update.update(expected_revision=2,author='李工')
     assert client.put(url+'/designs/'+d['id'],json=update).status_code==409
     assert client.get(url+'/models?source=saved&q=%25').json()['total']==0
     assert client.get(url+'/models?source=saved&offset=1').json()['items']==[]

@@ -30,12 +30,49 @@ async function settle() {
   for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
 }
 
+test('login handles errors and duplicate submission and rejects external return URLs',async t=>{
+  const {runInNewContext}=require('node:vm');
+  const dom=new JSDOM(readFileSync(resolve(root,'frontend/login.html'),'utf8'),{url:'https://dcsj.invalid/login'});
+  const doc=dom.window.document;t.after(()=>dom.window.close());
+  const pending=deferred(),calls=[],destinations=[];let fail=true;
+  const location={origin:'https://dcsj.invalid',search:'?next=https://other.invalid/',replace:path=>destinations.push(path)};
+  runInNewContext(readFileSync(resolve(root,'frontend/login.js'),'utf8'),{document:doc,location,URL,URLSearchParams,
+    fetch:async(path,options)=>{calls.push({path,options});await pending.promise;return {ok:!fail,json:async()=>fail?{detail:'密码错误'}:{username:'张工'}};}});
+  doc.querySelector('#username').value='  张工  ';doc.querySelector('#password').value='1234';
+  const submit=()=>doc.querySelector('form').dispatchEvent(new dom.window.Event('submit',{cancelable:true}));
+  submit();submit();assert.equal(calls.length,1);assert.equal(doc.querySelector('button').disabled,true);
+  pending.release();await settle();assert.match(doc.querySelector('#login-error').textContent,/密码错误/);
+  assert.equal(doc.querySelector('button').disabled,false);fail=false;submit();await settle();
+  assert.deepEqual(destinations,['/']);assert.equal(calls[0].options.headers['X-DCSJ-Request'],'1');
+  assert.equal(JSON.parse(calls[0].options.body).username,'张工');
+});
+
+test('shared session locks author, guards API writes and preserves drafts on expiry',async t=>{
+  const dom=new JSDOM('<div data-account></div><input id="design-author"><input id="draft" value="未保存的参数">',{url:'https://dcsj.invalid/tx',runScripts:'outside-only'});
+  const w=dom.window,doc=w.document;t.after(()=>w.close());w.Headers=Headers;w.Request=Request;
+  const calls=[];w.fetch=async(input,options={})=>{
+    calls.push({input,options});return input==='/api/v1/auth/me'?{ok:true,status:200,json:async()=>({username:'张工'})}:{ok:false,status:401};
+  };
+  w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));await w.DCSJAuth.ready;
+  assert.equal(doc.querySelector('#design-author').value,'张工');assert.equal(doc.querySelector('#design-author').readOnly,true);
+  assert.match(doc.querySelector('[data-account]').textContent,/张工/);
+  await w.fetch('/api/v1/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  assert.equal(calls.at(-1).options.headers.get('X-DCSJ-Request'),'1');
+  assert.equal(calls.at(-1).options.headers.get('Content-Type'),'application/json');
+  assert.equal(doc.querySelector('#draft').value,'未保存的参数');
+  assert.equal(doc.querySelector('#auth-expired a').target,'_blank');
+  await w.fetch('/api/v1/projects');assert.equal(doc.querySelectorAll('#auth-expired').length,1);
+  w.DCSJAuth.beforeLogout=()=>false;const before=calls.length;doc.querySelector('button').click();await settle();assert.equal(calls.length,before);
+  await w.fetch('https://other.invalid/api/test',{method:'POST'});assert.equal(calls.at(-1).options.headers,undefined);
+});
+
 async function app(t, route, extraFields = []) {
   const errors = [], calls = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', error => errors.push(error.message));
   const dom = new JSDOM(html, { url: 'https://dcsj.invalid/', runScripts: 'outside-only', virtualConsole });
   const w = dom.window, doc = w.document;
+  w.Headers=Headers;w.Request=Request;
   t.after(() => { w.close(); assert.deepEqual(errors, [], 'Unexpected frontend runtime errors'); });
   w.HTMLElement.prototype.scrollIntoView = function () {};
   w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -48,7 +85,8 @@ async function app(t, route, extraFields = []) {
     calls.push(request);
     const path = request.url.pathname.replace('/api/v1', '');
     let data;
-    if (path === '/status') data = { name: 'DCSJ synthetic test', version: 'test', catalog: {},
+    if (path === '/auth/me') data = {username:'张工'};
+    else if (path === '/status') data = { name: 'DCSJ synthetic test', version: 'test', catalog: {},
       engine: { name: '人工测试', limitations: [] }, reports: { pdf: { available: true } } };
     else if (path === '/schema') data = { retired_input_keys: ['ATA_req', 'PF_req', 'IST_req', 'TST_req', 'TM_req'], groups: [{ id: 'basic', label: '基本参数' }], fields: [
       { key: 'SizeX', label: '设计名称', group: 'basic', type: 'text', role: 'input' },
@@ -57,8 +95,9 @@ async function app(t, route, extraFields = []) {
     else data = await route(path, request);
     if (data === undefined && path === '/comparison-sets' && request.method === 'GET') data = { items: [], total: 0 };
     assert.notEqual(data, undefined, `Unexpected API request: ${path}`);
-    return { ok: true, status: 200, text: async () => JSON.stringify(data) };
+    return { ok: true, status: 200, json: async()=>data, text: async () => JSON.stringify(data) };
   };
+  w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));
   w.eval(script);
   await until(() => doc.querySelector('#connection-text').textContent === '服务已连接', 'App boot completed');
   await settle();
@@ -109,6 +148,7 @@ test('slot picker previews native changes, rejects stale apply and preserves ref
 test('slot catalog creates a new user entry and round-trips dimensions without overwriting resources', async t => {
   const dom=new JSDOM(readFileSync(resolve(root,'frontend/slots.html'),'utf8'),{url:'http://dcsj.invalid/slots',runScripts:'outside-only'});
   const w=dom.window,doc=w.document;t.after(()=>w.close());w.confirm=()=>true;
+  w.DCSJAuth={ready:Promise.resolve({username:'张工'}),username:()=> '张工'};
   const calls=[];let saved;
   const schema={fields:{main:{stator:[{key:'bs1',label:'槽宽',unit:'mm'}],rotor:[]},tx:{stator:[],rotor:[]}}};
   w.fetch=async(url,options={})=>{const path=new URL(url,w.location.href).pathname;const body=options.body?JSON.parse(options.body):undefined;calls.push({path,method:options.method||'GET',body});let data;
@@ -591,10 +631,11 @@ async function txApp(t, route = () => undefined) {
   const errors=[],calls=[],virtualConsole=new VirtualConsole();virtualConsole.on('jsdomError',e=>errors.push(e.message));
   const dom=new JSDOM(readFileSync(resolve(root,'frontend/tx.html'),'utf8'),{url:'https://dcsj.invalid/tx',runScripts:'outside-only',virtualConsole});
   const w=dom.window,doc=w.document;
+  w.Headers=Headers;w.Request=Request;
   w.HTMLElement.prototype.scrollIntoView=function(){};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};w.confirm=()=>true;
   w.fetch=async(url,options={})=>{
     const request={path:new URL(url,w.location.href).pathname.replace('/api/v1/tx',''),method:options.method||'GET',body:options.body?JSON.parse(options.body):null};calls.push(request);
-    let data=await route(request,{p,result});
+    let data=request.path==='/api/v1/auth/me'?{username:'张工'}:await route(request,{p,result});
     if(data===undefined){
       if(request.path==='/schema')data={fields};
       if(request.path==='/status')data={available:true,resource_version:'synthetic.2',default_id:'synthetic'};
@@ -604,7 +645,7 @@ async function txApp(t, route = () => undefined) {
     }
     assert.notEqual(data,undefined,request.path);return {ok:true,json:async()=>data};
   };
-  t.after(()=>{w.close();assert.deepEqual(errors,[]);});w.eval(readFileSync(resolve(root,'frontend/tx.js'),'utf8'));
+  t.after(()=>{w.close();assert.deepEqual(errors,[]);});w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/tx.js'),'utf8'));
   await until(()=>doc.querySelector('#design-title').textContent===p.TYP&&!doc.querySelector('#calculate').disabled,'TX starts');
   return {w,doc,calls,p,result};
 }
@@ -692,7 +733,7 @@ test('saving a signed design refreshes catalog and loading it updates the same d
   ui.doc.querySelector('#design-author').value='  张工 <team>  ';
   ui.doc.querySelector('#save-form').dispatchEvent(new ui.w.Event('submit',{cancelable:true}));
   await until(()=>project&&!ui.doc.querySelector('#save-dialog').open,'Design saved');
-  assert.equal(project.author,'张工 <team>'); assert.ok(!('author' in project.parameters));
+  assert.equal(project.author,'张工');assert.equal(ui.doc.querySelector('#design-author').readOnly,true); assert.ok(!('author' in project.parameters));
   ui.nav('catalog');
   await until(()=>ui.doc.querySelector('#model-table-body').textContent.includes(project.author),'Saved design replaces cached empty catalog');
   assert.equal(ui.doc.querySelector('#model-table-body team'),null,'Author is rendered as text');
@@ -706,7 +747,7 @@ test('saving a signed design refreshes catalog and loading it updates the same d
   ui.doc.querySelector('#save-form').dispatchEvent(new ui.w.Event('submit',{cancelable:true}));
   await until(()=>project.revision===2,'Updated in place');
   const update=ui.calls.find(c=>c.method==='PUT');
-  assert.equal(update.body.expected_revision,1);assert.equal(update.body.author,'李工');assert.equal(update.body.base_model_id,null);
+  assert.equal(update.body.expected_revision,1);assert.equal(update.body.author,'张工');assert.equal(update.body.base_model_id,null);
   ui.doc.querySelector('#catalog-source').value='saved';
   ui.doc.querySelector('#catalog-source').dispatchEvent(new ui.w.Event('change'));
   await settle();
@@ -722,7 +763,9 @@ test('TX author is revision metadata and a saved library record resumes its orig
     if(req.path==='/models/'+encodeURIComponent(reference))return {kind:'saved_design',design};
     if(req.path==='/designs/tx-author'&&req.method==='PUT')return design={...design,...req.body,revision:2};
   });
-  a.doc.querySelector('#design-author').value='张工';a.doc.querySelector('#save-design').click();
+  assert.equal(a.doc.querySelector('#design-author').readOnly,true);
+  assert.equal(a.doc.querySelector('#design-author').value,'张工');
+  a.doc.querySelector('#design-author').value='伪造姓名';a.doc.querySelector('#save-design').click();
   await until(()=>a.doc.querySelector('#models').textContent.includes('张工')&&!a.doc.querySelector('#save-design').disabled,'Saved record indexed');
   assert.equal(design.author,'张工');assert.ok(!('author' in design.parameters));
   a.doc.querySelector('#design-author').value='尚未保存';
@@ -731,7 +774,7 @@ test('TX author is revision metadata and a saved library record resumes its orig
   a.doc.querySelector('#design-author').value='李工';a.doc.querySelector('#save-design').click();
   await until(()=>design.revision===2,'Saved design updated');
   const update=a.calls.find(c=>c.method==='PUT');assert.equal(update.path,'/designs/tx-author');
-  assert.equal(update.body.expected_revision,1);assert.equal(update.body.author,'李工');assert.equal(update.body.base_model_id,'synthetic');
+  assert.equal(update.body.expected_revision,1);assert.equal(update.body.author,'张工');assert.equal(update.body.base_model_id,'synthetic');
 });
 
 test('TX tabs and global parameter search preserve every edited value and calculation input',async t=>{

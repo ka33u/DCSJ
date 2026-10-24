@@ -15,16 +15,17 @@ import sys
 import tempfile
 import time
 from urllib.error import URLError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import ProxyHandler, Request, build_opener, HTTPCookieProcessor
+from http.cookiejar import CookieJar
 
 ROOT = Path(__file__).resolve().parents[1]
-HTTP = build_opener(ProxyHandler({}))
+HTTP = build_opener(ProxyHandler({}), HTTPCookieProcessor(CookieJar()))
 
 
 def request(base, path, body=None, method=None):
     data = None if body is None else json.dumps(body).encode('utf-8')
     with HTTP.open(Request(base + path, data=data, method=method,
-                           headers={'Content-Type': 'application/json'}), timeout=5) as response:
+                           headers={'Content-Type': 'application/json','X-DCSJ-Request':'1'}), timeout=5) as response:
         return json.load(response)
 
 
@@ -76,6 +77,7 @@ def running(directory, env, log_path):
                 if process.poll() is not None:
                     raise RuntimeError(f'Launcher exited early with code {process.returncode}')
                 try:
+                    request(base, '/api/v1/auth/login', {'username':'Startup test','password':'1234'})
                     status = request(base, '/api/v1/status')
                     break
                 except (URLError, OSError):

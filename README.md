@@ -16,7 +16,7 @@ python scripts/install_pdf_font.py
 python run.py
 ```
 
-工作台：http://127.0.0.1:8767 ，API 文档：http://127.0.0.1:8767/docs 。也可使用 `start.command` 或 `start.bat`。
+工作台：http://127.0.0.1:8767 ，API 文档：http://127.0.0.1:8767/docs 。首次访问先登录：输入用户名及初始密码 `1234`，自动建立本地账号。也可使用 `start.command` 或 `start.bat`。
 
 启动脚本会核对 `requirements.txt` 中每个依赖的固定版本，缺失或不一致时安装对应版本；再次启动且版本一致时跳过安装。首次安装及升级依赖需要网络。已有 `.venv` 若使用低于 3.12 的 Python，会明确报错并停止；请先安装受支持的 Python，再重命名旧 `.venv` 并重新创建虚拟环境，设计数据无需搬动。
 
@@ -201,6 +201,8 @@ Docker 用户可运行 `docker compose up --build -d`。配置默认只映射 `1
 
 ## 0.8.2：作者署名与已保存设计检索
 
+以下为 0.8.2 的历史行为；0.10.0 起署名由登录账号确定，取代可编辑署名及空串清除规则。
+
 主工作台的保存窗口与 TX 参数区新增可选的「作者署名」。署名保存在设计和每个修订中，支持修改、另存副本及 JSON 导入导出；旧设计显示为未署名。署名是设计元数据，不进入电磁计算参数。
 
 两个模块的型号库默认同时显示原始型号和已保存设计，可按设计名称、型号或作者搜索，并切换来源。已保存设计按最近更新时间优先排列，只检索当前版本；主模块归档设计不出现在型号库中，恢复后重新可见。历史修订仍从版本入口访问。同名设计保留独立 ID，载入后继续更新同一设计，保存时仍检查版本冲突。个人设计不复制进私有资源包，更新资源不会覆盖它们。
@@ -241,3 +243,20 @@ API 兼容说明：
 - 主设计与 TX 的保存、更新和计算接口新增根级 `slot_bindings`，例如 `{"rotor":"user-slot:<记录ID>@1"}`。更新设计时省略保留已有引用，传 `{}` 清除；计算关联的项目修订与显式槽型引用不一致返回 409。
 
 用户数据库升级到 v8，为主设计修订和 TX 修订增加槽型引用字段。资源格式 v3 可携带私有槽型目录，支持既有 v1/v2 包，资源更新与用户记录保持隔离。发布源码仍不包含私有槽型数据或参考工作簿。
+
+
+## 0.10.0：登录与自动署名
+
+主工作台、TX、槽型库、历史报告及数据 API 均需先登录。输入用户名与初始密码 `1234`，首次成功登录自动建立本地账号；以后使用同一账号登录。用户名去除首尾空白并做 Unicode NFKC 规范化，大小写等价的用户名对应同一账号；作者显示首次建立账号时的规范化用户名。旧设计和历史计算保持原样，用户仍共用已有设计与资源库。
+
+主程序保存窗口与 TX 参数区的作者署名自动填写、只读。新建、修改保存及另存副本均由服务器使用当前登录用户名署名；导入文件、旧设计和历史版本中的作者不能替换本次登录身份。旧版本的原署名保留。API 的 `author` 字段可以省略或传 `null`，显式提供其他名字或空串返回 403；未登录的数据接口返回 401。退出登录撤销当前会话，未保存的页面输入会先提示确认。登录失效时页面保留当前输入，提供在新窗口登录的入口。
+
+账号与会话保存在独立用户设计数据库中，数据库结构升级到 v9；资源包与计算核心不变，无需重建私有资源。密码采用逐账号随机盐的 PBKDF2-HMAC-SHA256（600,000 次）；会话使用随机令牌，数据库只存令牌哈希，12 小时过期，Cookie 使用 HttpOnly、SameSite=Strict，HTTPS 下添加 Secure。写请求要求 `X-DCSJ-Request: 1`，浏览器提供 Origin 时还会校验同源，不启用跨域 CORS。登录失败有 15 分钟限流。实现参考 [OWASP 密码存储](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) 与 [会话管理](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)。
+
+API 客户端先调用 `POST /api/v1/auth/login`，保存响应的 Cookie，然后带 Cookie 访问原有接口；所有 POST / PUT / PATCH / DELETE 均需携带 `X-DCSJ-Request: 1`。`GET /api/v1/auth/me` 返回当前用户，`POST /api/v1/auth/logout` 退出。接口文档页面登录后可继续直接试用。服务存活检查使用公开的 `GET /healthz`。例如：
+
+```bash
+curl -c /tmp/dcsj-cookies -H 'Content-Type: application/json' -H 'X-DCSJ-Request: 1' \
+  -d '{"username":"张工","password":"1234"}' http://127.0.0.1:8767/api/v1/auth/login
+curl -b /tmp/dcsj-cookies http://127.0.0.1:8767/api/v1/auth/me
+```
