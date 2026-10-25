@@ -902,3 +902,34 @@ test('adaptive neighborhood method selected in the UI reaches the queued request
   assert.equal(submitted.algorithm,'adaptive_poll_v1');assert.equal(submitted.parameters.L,100);
   assert.equal(submitted.max_evaluations,24);assert.equal(submitted.secondary_objective,null);
 });
+
+test('curve peak constraint is distinct from TM1 and displays saved readings and unavailable sweeps',async t=>{
+  let submitted;
+  const constraints=[{metric:'TM_curve',minimum:3.1}];
+  const job={id:'curve-constraint',name:'采样峰值验证',status:'succeeded',budget:2,evaluated:2,feasible_count:1,
+    request:{parameters:{...parameters,_curve:1},variables:[{key:'L'}],constraints,objective:'efficiency'},
+    candidates:[{ordinal:1,parameters:{L:100},objective:.9,feasible:true,constraint_values:{TM_curve:3.2},torque_peak:{slip:.3}},
+      {ordinal:2,parameters:{L:101},objective:.95,feasible:false,violations:['TM_curve 无有效结果'],constraint_values:{TM_curve:null},torque_peak:{reason:'转矩曲线采样不完整：50/51'}}]};
+  const ui=await app(t,(path,request)=>{
+    if(path==='/example')return {parameters:{...parameters,L:100,_curve:0},name:'基准'};
+    if(path==='/optimization/config')return {method:'人工测试',variables:[{key:'L',label:'长度'}],objectives:[{id:'efficiency',label:'效率'}],materials:[],constraint_metrics:['TM1','TM_curve'],constraint_labels:{TM1:'最大转矩（原公式估计，倍）',TM_curve:'转矩曲线采样峰值（倍）'}};
+    if(path==='/optimization/jobs'&&request.method==='POST'){submitted=request.body;return job;}
+    if(path==='/optimization/jobs')return {items:[]};
+    if(path==='/optimization/jobs/curve-constraint')return job;
+  },[{key:'L',label:'长度',group:'basic',type:'number',role:'input'}]);
+  ui.doc.querySelector('#load-example').click();await settle();ui.nav('optimization');await settle();
+  ui.doc.querySelector('#optimization-use-current').click();ui.doc.querySelector('#add-optimization-constraint').click();
+  const row=ui.doc.querySelector('.search-constraint'),metric=row.querySelector('select');
+  assert.match(metric.textContent,/原公式估计/);assert.match(metric.textContent,/采样峰值/);
+  assert.equal(ui.doc.querySelector('#optimization-curve-note').hidden,true);
+  metric.value='TM_curve';metric.dispatchEvent(new ui.w.Event('change'));row.querySelector('[name=minimum]').value='3.1';
+  assert.equal(ui.doc.querySelector('#optimization-curve-note').hidden,false);
+  ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
+  assert.deepEqual(submitted.constraints,constraints);
+  assert.equal(submitted.parameters._curve,0,'Server resolves effective curve option; workbench draft stays unchanged');
+  const detail=ui.doc.querySelector('#optimization-detail');
+  assert.match(detail.textContent,/已启用转矩曲线计算/);
+  assert.match(detail.textContent,/TM_curve=3.2 · s=0.3/);
+  assert.match(detail.textContent,/TM_curve=—/);assert.match(detail.textContent,/50\/51/);
+  row.querySelector('button').click();assert.equal(ui.doc.querySelector('#optimization-curve-note').hidden,true);
+});

@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .parameters import INTEGER_KEYS, validate
 from .engine import available_materials
+from .curves import sampled_torque_peak
 
 SOLVER_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
@@ -38,7 +39,7 @@ OBJECTIVES = {'efficiency': ('ATA1', 'max', '效率最高'),
               'power_factor': ('PF1', 'max', '功率因数最高'),
               'copper_mass': ('Gcu', 'min', '铜重最低'),
               'total_loss': ('total_loss', 'min', '总损耗最低')}
-CONSTRAINTS = {'ATA1', 'PF1', 'IST1', 'TST1', 'TM1', 'Sf', 'Sn', 'J1', 'Bg',
+CONSTRAINTS = {'ATA1', 'PF1', 'IST1', 'TST1', 'TM1', 'TM_curve', 'Sf', 'Sn', 'J1', 'Bg',
                'Gcu', 'Gfe', 'Gal', 'CostFx', 'total_loss'}
 
 
@@ -120,13 +121,18 @@ class SearchInput(BaseModel):
         self.parameters = validate(self.parameters, strict=True)
         if self.parameters['_wire_target'] != 0:
             raise ValueError('寻优前请将目标槽满率设为 0，以固定线规，避免内核覆盖搜索变量')
+        if any(c.metric == 'TM_curve' for c in self.constraints):
+            # Store the effective option in the queued request and every snapshot.
+            self.parameters['_curve'] = 1
         return self
 
 
 def config():
     return {'variables': [{'key': k, 'label': v, 'integer': k in DISCRETE} for k, v in VARIABLES.items()],
             'objectives': [{'id': k, 'metric': v[0], 'direction': v[1], 'label': v[2]} for k, v in OBJECTIVES.items()],
-            'constraint_metrics': sorted(CONSTRAINTS), 'materials': sorted(available_choices()),
+            'constraint_metrics': sorted(CONSTRAINTS),
+            'constraint_labels': {'TM_curve': '转矩曲线采样峰值（倍）', 'TM1': '最大转矩（原公式估计，倍）'},
+            'materials': sorted(available_choices()),
             'max_evaluations': 128,
             'algorithms': [{'id': 'stratified_v1', 'label': '分层采样 + 局部搜索'},
                            {'id': 'adaptive_poll_v1', 'label': '自适应邻域搜索'},
@@ -135,7 +141,9 @@ def config():
 
 
 def metrics(result):
-    return {**result['values'], 'total_loss': sum(result['values'][k] for k in ('Pcu', 'Pal', 'Pfe', 'Pfw1', 'Ps1'))}
+    peak = sampled_torque_peak(result.get('curves', []))
+    return {**result['values'], 'total_loss': sum(result['values'][k] for k in ('Pcu', 'Pal', 'Pfe', 'Pfw1', 'Ps1')),
+            'TM_curve': peak['value']}
 
 
 def assess(request, values):

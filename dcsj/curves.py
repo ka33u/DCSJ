@@ -6,6 +6,39 @@ from bisect import bisect_right
 COLORS = ['#26795e', '#385faa', '#b46a16', '#8d4d91', '#222222']
 
 
+def sampled_torque_peak(curves):
+    """Peak of the complete legacy motoring samples, never of the display spline.
+
+    SM returns s=1,.98,...,.02,.01 (the final point is not zero). This
+    observation is deliberately separate from TM1 and from the drawn origin.
+    Incomplete or malformed sweeps cannot certify an optimizer constraint.
+    """
+    curve = next((c for c in curves if c.get('id') == 'slip'), None)
+    info = {'status': 'unavailable', 'value': None, 'slip': None, 'unit': '倍',
+            'source': 'slip.series[1].points', 'method': 'complete-sample-maximum-v1',
+            'expected_samples': 51, 'sample_count': 0,
+            'note': '完整计算采样的最大值，不是样条峰值；未计算采样点之间及 s<0.01 的最大转矩。'}
+    if curve is None or len(curve.get('series', [])) < 2:
+        return {**info, 'reason': '未生成转矩曲线'}
+    points = curve['series'][1].get('points', [])
+    info['sample_count'] = len(points)
+    if len(points) != 51:
+        return {**info, 'reason': f'转矩曲线采样不完整：{len(points)}/51'}
+    if any(not isinstance(p.get(k), (int, float)) or isinstance(p[k], bool) or not math.isfinite(p[k])
+           for p in points for k in ('x', 'y')):
+        return {**info, 'reason': '转矩曲线存在无效数值'}
+    expected = [1 - i / 50 for i in range(50)] + [.01]
+    if any(abs(p['x'] - x) > 1e-5 for p, x in zip(points, expected)):
+        return {**info, 'reason': '转矩曲线采样轴不符合完整转差率扫描'}
+    if any(p['y'] < 0 for p in points) or max(p['y'] for p in points) <= 0:
+        return {**info, 'reason': '转矩曲线包含非电动状态的转矩值'}
+    index = max(range(len(points)), key=lambda i: points[i]['y'])
+    peak = points[index]
+    return {**info, 'status': 'available', 'value': peak['y'], 'slip': peak['x'],
+            'sample_index': index, 'domain': [points[-1]['x'], points[0]['x']],
+            'adjacent_slips': [points[i]['x'] for i in (index-1, index+1) if 0 <= i < len(points)]}
+
+
 def quadratic_fit(xs, ys):
     """Least-squares trend used by the legacy load chart; coefficients in x units.
 

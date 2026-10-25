@@ -91,6 +91,7 @@ def metric_info(key, value):
 
 
 def result_metadata(p, values, material, curves):
+    from .curves import sampled_torque_peak
     loss = losses(p)
     for curve in curves:
         curve.update(authoritative=False, authority_scope='trend-only',
@@ -108,13 +109,15 @@ def result_metadata(p, values, material, curves):
             peak = max(points, key=lambda p: p['y'])
             checks.append({'metric': 'TM1', 'check_value': values['TM1'], 'curve_value': peak['y'],
                            'delta': peak['y'] - values['TM1'], 'position': {'s': peak['x']}})
-    return {'contract': {'version': '1.2', 'values': 'canonical-numerical-output',
+    return {'contract': {'version': '1.3', 'values': 'canonical-numerical-output',
                          'metrics': 'metadata-view-of-values', 'decision_values': ['IST1', 'TST1', 'TM1'],
-                         'curve_authority': 'trend-only', 'effective_wire': 'wire_selection.used'},
+                         'curve_authority': 'trend-only', 'effective_wire': 'wire_selection.used',
+                         'optional_optimizer_metrics': {'TM_curve': 'curve_metrics.torque_peak.value'}},
             'values_units': {key: field_info(key)['unit'] for key in values},
             'values_si': {key: {'value': value / 10000, 'unit': 'T'} for key, value in values.items() if field_info(key)['unit'] == 'G'},
             'electrical': electrical(p), 'requirements': requirements(p, values),
             'loss_semantics': loss, 'curve_checks': checks,
+            'curve_metrics': {'torque_peak': sampled_torque_peak(curves)},
             'material_semantics': {'loss_curve_frequency_hz': 50 if material.get('kind') == 'user_native' else None,
                                    'measurement_status': 'user_declared' if material.get('kind') == 'user_native' else 'not_declared_in_table',
                                    'loss_unit': 'kernel_native', 'loss_frequency_model': frequency_model(p['f'])},

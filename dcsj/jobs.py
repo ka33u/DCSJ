@@ -11,6 +11,7 @@ from .execution import BusyError, compute
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_keys,
                            objective_values, violation_score, pareto_front, SOLVER_SHA256)
 from .parameters import InputError, RETIRED_INPUT_KEYS
+from .curves import sampled_torque_peak
 from .storage import ConflictError, NotFoundError, audit, connect, database_path, dumps, now
 
 TERMINAL = {'succeeded', 'failed', 'cancelled', 'interrupted'}
@@ -43,6 +44,8 @@ def get(identity, *, database=None, candidates=True):
                 evaluation = json.loads(item.pop('evaluation') or '{}')
                 item['objectives'] = evaluation.get('objectives', {})
                 item['violation_score'] = evaluation.get('violation_score')
+                item['constraint_values'] = evaluation.get('constraint_values', {})
+                item['torque_peak'] = evaluation.get('torque_peak')
                 result['candidates'].append(item)
             keys = [key for key in (result['request']['objective'], result['request'].get('secondary_objective')) if key]
             result['pareto_ids'] = [c['calculation_id'] for c in pareto_front(result['candidates'], keys)] if len(keys) > 1 else []
@@ -177,7 +180,10 @@ class Worker:
                 result['optimization'] = {'algorithm': request.algorithm,
                                          'solver_sha256': SOLVER_SHA256,
                                          'objectives': objective_values(request, values),
-                                         'violation_score': violation_score(request, values)}
+                                         'violation_score': violation_score(request, values),
+                                         'constraint_values': {c.metric: values.get(c.metric) for c in request.constraints},
+                                         'constraints': [c.model_dump() for c in request.constraints],
+                                         'torque_peak': sampled_torque_peak(result.get('curves', []))}
                 saved = calculations.save(result, f'{request.name} / {ordinal}', database=self.database)
                 calculation_id = saved['calculation_id']
                 completed += 1

@@ -24,7 +24,7 @@ def local_time(value):
         return str(value)
 
 
-CURVE_NOTE = '曲线用于观察趋势；设计校核与寻优使用计算结果 IST1、TST1、TM1，曲线采样值单独列示。'
+CURVE_NOTE = '平滑曲线用于观察趋势；默认校核使用 IST1、TST1、TM1。寻优可另选完整转矩采样的峰值约束，不使用平滑插值值。'
 
 
 def targets(snapshot):
@@ -46,7 +46,13 @@ def targets(snapshot):
         delta = result - target if result is not None and target is not None else None
         rows.append((label, number(target), number(result), f'{delta:+.5g}' if delta is not None else '—', unit))
     curve = next((c for c in snapshot.get('curves', []) if c.get('id') == 'slip'), None)
-    if curve and len(curve.get('series', [])) > 1:
+    recorded_peak = snapshot.get('curve_metrics', {}).get('torque_peak')
+    if recorded_peak is not None and curve:
+        target = next((c for c in snapshot.get('optimization', {}).get('constraints', []) if c['metric'] == 'TM_curve'), {})
+        bounds = [symbol + number(target[key]) for key, symbol in [('minimum', '≥'), ('maximum', '≤')] if target.get(key) is not None]
+        rows.append(('转矩曲线采样峰值', ' / '.join(bounds) or '—', number(recorded_peak.get('value')),
+                     's=' + number(recorded_peak['slip'], 4) if recorded_peak.get('status') == 'available' else '采样无效', '倍'))
+    elif curve and len(curve.get('series', [])) > 1:
         points = [p for p in curve['series'][1].get('points', []) if finite(p.get('x')) and finite(p.get('y'))]
         if points:
             peak = max(points, key=lambda p: p['y'])

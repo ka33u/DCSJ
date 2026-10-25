@@ -503,7 +503,7 @@
   function renderCurve(curve) {
     const card = el("div", "chart-card");
     card.append(el("h3", "chart-title", curve.title || "数据曲线"));
-    if (curve.authoritative === false) card.append(el("p", "chart-explanation", "曲线用于观察趋势；设计校核与寻优使用计算结果 IST1、TST1、TM1。"));
+    if (curve.authoritative === false) card.append(el("p", "chart-explanation", "平滑曲线用于观察趋势；默认校核使用 IST1、TST1、TM1。寻优可另选完整转矩采样的峰值约束，不使用平滑插值值。"));
     const plot = curve.plot || {}, rawSeries = Array.isArray(curve.series) ? curve.series : [];
     let invalidCount = 0;
     const validPoints = points => (Array.isArray(points) ? points : []).filter(point => {
@@ -1290,9 +1290,14 @@
     if (!optimizationConfig) return;
     if ($$(".search-constraint").length >= 15) return;
     const row = el("div", "quick-form search-constraint"), label = el("label", "", "指标"), select = el("select", "text-input"); select.name = "metric";
-    optimizationConfig.constraint_metrics.forEach(key => { const field = state.schema.fields.find(f => f.key === key); const option = el("option", "", `${key} · ${field?.label || (key === "total_loss" ? "总损耗 W" : "")}`); option.value = key; select.append(option); });
-    label.append(select); row.append(label, inputField("最小值（可选）", "number", "minimum"), inputField("最大值（可选）", "number", "maximum"), button("移除", "text-button", () => row.remove()));
+    optimizationConfig.constraint_metrics.forEach(key => { const field = state.schema.fields.find(f => f.key === key); const option = el("option", "", `${key} · ${optimizationConfig.constraint_labels?.[key] || field?.label || (key === "total_loss" ? "总损耗 W" : "")}`); option.value = key; select.append(option); });
+    label.append(select); row.append(label, inputField("最小值（可选）", "number", "minimum"), inputField("最大值（可选）", "number", "maximum"), button("移除", "text-button", () => { row.remove(); updateCurveConstraintNote(); }));
+    select.addEventListener('change', updateCurveConstraintNote);
     $("#optimization-constraints").append(row);
+    updateCurveConstraintNote();
+  }
+  function updateCurveConstraintNote() {
+    $('#optimization-curve-note').hidden = !$$('.search-constraint select[name=metric]').some(input => input.value === 'TM_curve');
   }
   function readBounds(row) {
     const result = {};
@@ -1343,6 +1348,8 @@
     const methodId = job.request.algorithm || 'stratified_v1';
     const methodLabel = optimizationConfig?.algorithms?.find(item => item.id === methodId)?.label || ({stratified_v1:'分层采样 + 局部搜索',adaptive_poll_v1:'自适应邻域搜索',hybrid_de_v1:'混合差分进化'}[methodId] || '历史搜索方法');
     container.append(el('p', 'muted', `本任务方法：${methodLabel} · 随机种子 ${job.request.seed ?? '—'}`));
+    const constraints = job.request.constraints || [];
+    if (constraints.some(c => c.metric === 'TM_curve')) container.append(el('p', 'muted', '本任务已启用转矩曲线计算；峰值约束取完整 51 个计算采样的最大值，采样不完整的候选不满足约束。'));
     const progress = el("progress"); progress.max = job.budget; progress.value = job.evaluated;
     progress.setAttribute("aria-label", `已评估 ${job.evaluated}，预算 ${job.budget}`);
     container.append(progress, el("p", "muted", `已评估 ${job.evaluated} / ${job.budget}；满足约束 ${job.feasible_count ?? job.candidates.filter(c => c.feasible).length} 个；失败与基准计算均计入预算。`), el("p", "", job.message));
@@ -1387,12 +1394,18 @@
       container.append(section);
     }
     const scroll = el("div", "table-scroll"), table = el("table", "data-table"), head = el("thead"), heading = el("tr"), body = el("tbody");
-    ["序号", "搜索变量", "目标值", "约束与诊断", "操作"].forEach(title => heading.append(el("th", "", title))); head.append(heading);
+    ["序号", "搜索变量", "目标值", ...(constraints.length ? ['约束计算值'] : []), "约束与诊断", "操作"].forEach(title => heading.append(el("th", "", title))); head.append(heading);
     job.candidates.forEach(candidate => {
       const row = el("tr"); row.append(el("td", "", `${candidate.ordinal}${candidate.ordinal === 1 ? " 基准" : ""}${candidate.calculation_id === job.best_id ? " ★" : ""}`));
       const secondary = job.request.secondary_objective;
       const objectiveText = `${fmt(candidate.objective, 7)}${secondary ? '\n第二目标：' + fmt(candidate.objectives?.[secondary], 7) : ''}`;
-      row.append(el("td", "", job.request.variables.map(v => `${v.key}=${fmt(candidate.parameters[v.key])}`).join("\n")), el("td", "", objectiveText), el("td", "", candidate.error || (candidate.feasible ? (pareto.has(candidate.calculation_id) ? "满足约束 · 折中候选" : "满足约束") : candidate.violations.join("；"))));
+      row.append(el("td", "", job.request.variables.map(v => `${v.key}=${fmt(candidate.parameters[v.key])}`).join("\n")), el("td", "", objectiveText));
+      if (constraints.length) {
+        const readings = constraints.map(c => `${c.metric}=${fmt(candidate.constraint_values?.[c.metric], 7)}${c.metric === 'TM_curve' && Number.isFinite(candidate.torque_peak?.slip) ? ' · s=' + fmt(candidate.torque_peak.slip, 5) : ''}`);
+        if (candidate.torque_peak?.reason && constraints.some(c => c.metric === 'TM_curve')) readings.push(candidate.torque_peak.reason);
+        row.append(el('td', '', readings.join('\n')));
+      }
+      row.append(el("td", "", candidate.error || (candidate.feasible ? (pareto.has(candidate.calculation_id) ? "满足约束 · 折中候选" : "满足约束") : candidate.violations.join("；"))));
       const action = el("td"); if (candidate.calculation_id) action.append(button("打开", "text-button", () => openSnapshot(candidate.calculation_id)), reportLink(candidate.calculation_id)); row.append(action); body.append(row);
     });
     table.append(head, body); scroll.append(table); container.append(scroll);
