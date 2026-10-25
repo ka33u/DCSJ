@@ -45,6 +45,54 @@ def test_all_protocols_validate_before_any_engine_call(suite,fake_engine):
     assert not calls
 
 
+def test_quality_protocol_validates_all_cases_before_engine_calls(suite,fake_engine):
+    compute,calls=fake_engine
+    invalid=copy.deepcopy(suite['cases'][0]);invalid.update(id='invalid',reference_point={'efficiency':float('nan')})
+    suite['cases'].append(invalid)
+    with pytest.raises(ValueError,match='reference_point'):list(benchmark.compare(suite,compute))
+    assert not calls
+
+
+def test_quality_cli_emits_complete_matched_summary(tmp_path,monkeypatch,suite,fake_engine):
+    compute,calls=fake_engine;suite['algorithms']=['adaptive_poll_v1','hybrid_de_v1']
+    suite['cases'][0]['reference_point']={'efficiency':.8}
+    source=tmp_path/'suite.json';source.write_text(json.dumps(suite));output=tmp_path/'results.jsonl';summary=tmp_path/'summary.json'
+    original=benchmark.compare;monkeypatch.setattr(benchmark,'compare',lambda s:original(s,compute))
+    monkeypatch.setattr(sys,'argv',['benchmark',str(source),'--output',str(output),'--summary',str(summary)])
+    benchmark.main();rows=[json.loads(line) for line in output.read_text().splitlines()];result=json.loads(summary.read_text())
+    assert result['complete'] and result['expected_runs']==result['completed_runs']==2
+    assert rows[0]['quality']['hypervolume']==pytest.approx(.1)
+    assert result['pairs'][0]['hypervolume']['outcome']=='tie'
+    assert result['totals']['hybrid_de_v1']['hypervolume_by_objectives']['efficiency']['tie']==1
+    assert result['suite_sha256']==rows[0]['suite_sha256']
+
+
+@pytest.mark.parametrize('same_path',[True,False])
+def test_summary_path_checks_happen_before_evaluation(tmp_path,monkeypatch,suite,fake_engine,same_path):
+    compute,calls=fake_engine
+    source=tmp_path/'suite.json';source.write_text(json.dumps(suite));output=tmp_path/'results.jsonl'
+    summary=output if same_path else tmp_path/'summary.json'
+    if not same_path:summary.write_text('preserve')
+    original=benchmark.compare;monkeypatch.setattr(benchmark,'compare',lambda s:original(s,compute))
+    monkeypatch.setattr(sys,'argv',['benchmark',str(source),'--output',str(output),'--summary',str(summary)])
+    with pytest.raises((ValueError,FileExistsError)):benchmark.main()
+    assert not calls and not output.exists()
+    if not same_path:assert summary.read_text()=='preserve'
+
+
+def test_failed_cli_keeps_completed_evidence_without_success_summary(tmp_path,monkeypatch,suite,fake_engine):
+    compute,calls=fake_engine;suite['algorithms']=['adaptive_poll_v1','hybrid_de_v1']
+    source=tmp_path/'suite.json';source.write_text(json.dumps(suite));output=tmp_path/'results.jsonl';summary=tmp_path/'summary.json'
+    original=benchmark.compare
+    def failed(s):
+        yield next(original(s,compute))
+        raise RuntimeError('interrupted benchmark')
+    monkeypatch.setattr(benchmark,'compare',failed)
+    monkeypatch.setattr(sys,'argv',['benchmark',str(source),'--output',str(output),'--summary',str(summary)])
+    with pytest.raises(RuntimeError,match='interrupted'):benchmark.main()
+    assert len(output.read_text().splitlines())==1 and not summary.exists()
+
+
 def test_failed_points_still_consume_search_budget_and_are_cached(suite,fake_engine):
     compute,calls=fake_engine
     def partial(parameters):

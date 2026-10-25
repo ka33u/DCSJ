@@ -11,9 +11,11 @@ import time
 
 from .engine import calculate_design, CalculationError
 from .parameters import InputError
-from . import load_cycle, manufacturing, robustness, torque_refinement
+from . import benchmark_quality, load_cycle, manufacturing, robustness, torque_refinement
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_values,
                            objective_keys, pareto_front, OBJECTIVES, SOLVER_SHA256)
+
+BENCHMARK_SHA256 = hashlib.sha256(Path(__file__).read_bytes() + Path(benchmark_quality.__file__).read_bytes()).hexdigest()
 
 
 def compare(suite, compute=calculate_design):
@@ -36,9 +38,10 @@ def compare(suite, compute=calculate_design):
                 for algorithm in suite['algorithms']:
                     request = SearchInput.model_validate({**case['request'], 'max_evaluations': budget,
                                                          'seed': seed, 'algorithm': algorithm})
-                    configurations.append((case['id'], request))
+                    plan = benchmark_quality.protocol(case, request)
+                    configurations.append((case['id'], request, plan))
     cache, identity = {}, None
-    for case_id, request in configurations:
+    for case_id, request, plan in configurations:
         group_size = robustness.sample_count(request)
         search = Search(request.model_copy(update={'max_evaluations':request.max_evaluations // group_size}))
         candidates = []
@@ -111,6 +114,9 @@ def compare(suite, compute=calculate_design):
         best = max(feasible, key=lambda c: sign*c['objectives'][key]) if feasible else None
         frontier = pareto_front(candidates, objective_keys(request))
         yield {'case_id': case_id, 'request': request.model_dump(), 'solver_sha256': SOLVER_SHA256,
+               'benchmark_sha256': BENCHMARK_SHA256,
+               'assessment_policy': benchmark_quality.assessment_policy(request.model_dump()),
+               'quality': benchmark_quality.measure(candidates, plan),
                'resource_identity': identity, 'evaluated': evaluated, 'engine_calls': new_calls,
                'cached_evaluations': cached, 'validation_failures':rejected, 'feasible': len(feasible),
                'best_objective': best['objectives'][key] if best else None,
@@ -123,18 +129,34 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('suite', type=Path)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--summary', type=Path, help='Optional matched comparison summary; must not exist')
     args = parser.parse_args()
     document = args.suite.read_bytes()
     suite = json.loads(document)
     digest = hashlib.sha256(document).hexdigest()
+    outputs = [args.output] + ([args.summary] if args.summary else [])
+    if len({p.resolve() for p in outputs}) != len(outputs):
+        raise ValueError('Output and summary must be different files')
+    for path in outputs:
+        if path.exists(): raise FileExistsError(path)
+        if not path.parent.is_dir(): raise FileNotFoundError(path.parent)
+    reports = []
     with args.output.open('x', encoding='utf-8') as stream:
         for report in compare(suite):
             report['suite_sha256'] = digest
             stream.write(json.dumps(report, ensure_ascii=False, allow_nan=False)+'\n'); stream.flush()
+            if args.summary:
+                reports.append({k:v for k,v in report.items() if k != 'candidates'})
             print(json.dumps({'case':report['case_id'], 'algorithm':report['request']['algorithm'],
                               'seed':report['request']['seed'], 'budget':report['request']['max_evaluations'],
                               'feasible':report['feasible'], 'best':report['best_objective'],
-                              'engine_calls':report['engine_calls']},ensure_ascii=False),flush=True)
+                              'engine_calls':report['engine_calls'],
+                              'quality_status':report['quality']['status'],
+                              'hypervolume':report['quality']['hypervolume']},ensure_ascii=False),flush=True)
+    if args.summary:
+        summary = {**benchmark_quality.summarize(reports, suite), 'suite_sha256': digest}
+        with args.summary.open('x', encoding='utf-8') as stream:
+            json.dump(summary, stream, ensure_ascii=False, allow_nan=False, indent=2)
 
 
 if __name__ == '__main__':
