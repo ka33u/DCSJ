@@ -5,7 +5,7 @@ import itertools
 import hashlib
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, StrictFloat, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, model_validator
 from .parameters import INTEGER_KEYS, validate
 from .engine import available_materials
 from .curves import sampled_torque_peak
@@ -132,6 +132,7 @@ class SearchInput(BaseModel):
     rotor_gap_mode: Literal['independent', 'fixed_neck_bottom'] = 'independent'
     tolerances: list[robustness.Tolerance] | None = Field(default=None, min_length=1, max_length=3)
     tolerance_gap_mode: Literal['independent', 'fixed_neck_bottom'] = 'independent'
+    tolerance_interior_samples: StrictInt = Field(default=0, ge=0, le=32)
     algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1'] = 'stratified_v1'
     constraints: list[Constraint] = Field(default_factory=list, max_length=15)
     max_evaluations: int = Field(default=24, ge=2, le=128)
@@ -156,6 +157,10 @@ class SearchInput(BaseModel):
         self.parameters = validate(self.parameters, strict=True)
         if self.parameters['_wire_target'] != 0:
             raise ValueError('寻优前请将目标槽满率设为 0，以固定线规，避免内核覆盖搜索变量')
+        if self.tolerance_interior_samples not in robustness.INTERIOR_COUNTS:
+            raise ValueError('区间内部采样数须为 0、4、8、16 或 32')
+        if self.tolerance_interior_samples and not self.tolerances:
+            raise ValueError('区间内部采样需要先配置制造公差')
         if self.tolerances:
             if len({t.key for t in self.tolerances}) != len(self.tolerances):
                 raise ValueError('同一尺寸的公差只能配置一次')
@@ -190,7 +195,8 @@ def config():
                            'sample_loads': list(reversed(load_cycle.SAMPLE_LOADS)), 'note': load_cycle.NOTE},
             'materials': sorted(available_choices()),
             'manufacturing': {'max_values': 64, 'rotor_gap_modes': ['independent', 'fixed_neck_bottom']},
-            'tolerances': {'keys':['L','g','Djj','Dmm'], 'max_variables':3, 'note':robustness.NOTE},
+            'tolerances': {'keys':['L','g','Djj','Dmm'], 'max_variables':3, 'note':robustness.NOTE,
+                           'interior_sample_counts':list(robustness.INTERIOR_COUNTS)},
             'max_evaluations': 128,
             'algorithms': [{'id': 'stratified_v1', 'label': '分层采样 + 局部搜索'},
                            {'id': 'adaptive_poll_v1', 'label': '自适应邻域搜索'},

@@ -1030,9 +1030,15 @@ test('tolerance search keeps drafts, validates budget and distinguishes worst sa
   delta.value='.02';d.querySelector('#optimization-budget').value='5';await submit();assert.equal(submitted,null);assert.match(d.querySelector('#optimization-error').textContent,/预算不足/);
   d.querySelector('#optimization-budget').value='8';d.querySelector('#tolerance-gap-mode').value='fixed_neck_bottom';await submit();
   assert.deepEqual(submitted.tolerances,[{key:'g',delta:.02}]);assert.equal(submitted.tolerance_gap_mode,'fixed_neck_bottom');
+  const interior=d.querySelector('#tolerance-interior-samples');assert.equal(interior.value,'0');
+  interior.value='4';change(interior);
+  assert.match(d.querySelector('#tolerance-budget-note').textContent,/计算 7 次/);
+  assert.match(d.querySelector('#tolerance-budget-note').textContent,/至少需 14 次/);
+  d.querySelector('#optimization-budget').value='13';await submit();assert.equal(submitted,null);
+  d.querySelector('#optimization-budget').value='14';await submit();assert.equal(submitted.tolerance_interior_samples,4);
   const detail=d.querySelector('#optimization-detail');assert.match(detail.textContent,/最不利采样目标值/);assert.match(detail.textContent,/ATA1=0.88–0.92/);assert.match(detail.textContent,/次情景计算/);
-  enabled.checked=false;change(enabled);assert.equal(form.disabled,true);await submit();assert.equal(submitted.tolerances,undefined);assert.equal(submitted.tolerance_gap_mode,undefined);
-  enabled.checked=true;change(enabled);assert.equal(delta.value,'.02');
+  enabled.checked=false;change(enabled);assert.equal(form.disabled,true);await submit();assert.equal(submitted.tolerances,undefined);assert.equal(submitted.tolerance_gap_mode,undefined);assert.equal(submitted.tolerance_interior_samples,undefined);
+  enabled.checked=true;change(enabled);assert.equal(delta.value,'.02');assert.equal(interior.value,'4');
   d.querySelector('#add-tolerance').click();const second=form.querySelectorAll('[name=key]')[1];second.value='g';change(second);await submit();assert.equal(submitted,null);
   ui.find('#optimization-detail button','打开最佳候选').click();await settle();
   assert.match(d.querySelector('.tolerance-result').textContent,/名义尺寸结果/);

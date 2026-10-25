@@ -1,4 +1,5 @@
-"""Finite center/corner tolerance sampling; not a continuous worst-case proof."""
+"""Finite tolerance sampling with optional stratified interior points."""
+import hashlib
 import itertools
 import math
 from typing import Literal
@@ -6,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictFloat
 
 NOTE = ('按名义尺寸和公差角点逐一计算，以采样中最不利的目标值寻优，全部采样均须满足约束。'
         '不推定公差分布或合格概率，也不保证角点之间没有更差值；气隙偏差表示均匀气隙变化，不模拟偏心。')
+INTERIOR_COUNTS = (0, 4, 8, 16, 32)
 
 
 class Tolerance(BaseModel):
@@ -15,20 +17,44 @@ class Tolerance(BaseModel):
 
 
 def sample_count(request):
-    return 1 + 2**len(request.tolerances) if request.tolerances else 1
+    return 1 + 2**len(request.tolerances) + request.tolerance_interior_samples if request.tolerances else 1
+
+
+def interior_offsets(request):
+    """Centered LHS: one midpoint per stratum in each dimension.
+
+    Hash-ordered permutations give each dimension its own reproducible stream,
+    independent of the search RNG, candidate order and tolerance field order.
+    Even sample counts exclude the nominal coordinate and all corner coordinates.
+    These are coverage points, not draws from a manufacturing distribution.
+    """
+    count = request.tolerance_interior_samples
+    if not count:
+        return []
+    columns = {}
+    for tolerance in sorted(request.tolerances, key=lambda t: t.key):
+        prefix = f'dcsj-tolerance-lhs-v1:{request.seed}:{count}:{tolerance.key}:'
+        bins = sorted(range(count), key=lambda i: hashlib.sha256((prefix+str(i)).encode()).digest())
+        columns[tolerance.key] = [((i+.5)*2/count-1)*tolerance.delta for i in bins]
+    return [{key: values[i] for key, values in columns.items()} for i in range(count)]
 
 
 def scenarios(request, nominal):
     result = [{'index': 0, 'label': '名义尺寸', 'offsets': {}, 'parameters': dict(nominal)}]
     if not request.tolerances:
         return result
-    for index, signs in enumerate(itertools.product((-1, 1), repeat=len(request.tolerances)), 1):
-        offsets = {t.key: sign*t.delta for t, sign in zip(request.tolerances, signs)}
+    def append(offsets, label):
         p = {**nominal, **{key: nominal[key] + offset for key, offset in offsets.items()}}
         if 'g' in offsets and request.tolerance_gap_mode == 'fixed_neck_bottom':
             p['hr0'] = nominal['hr0'] - offsets['g']
-        result.append({'index': index, 'label': '；'.join(f'{k}{v:+g}' for k,v in offsets.items()),
-                       'offsets': offsets, 'parameters': p})
+        result.append({'index': len(result), 'label': label, 'offsets': offsets, 'parameters': p})
+
+    for signs in itertools.product((-1, 1), repeat=len(request.tolerances)):
+        offsets = {t.key: sign*t.delta for t, sign in zip(request.tolerances, signs)}
+        append(offsets, '；'.join(f'{k}{v:+g}' for k,v in offsets.items()))
+    for i, offsets in enumerate(interior_offsets(request), 1):
+        append(offsets, f'内部采样 {i}')
+        result[-1]['kind'] = 'interior'
     return result
 
 
@@ -94,4 +120,12 @@ def summarize(request, nominal, samples, *, complete=True):
               'status':'incomplete' if not complete else 'complete' if valid else 'failed',
               'objectives':objectives, 'worst_samples':worst_samples, 'metric_ranges':ranges,
               'samples':samples, 'feasible':not violations, 'violations':violations}
+    if request.tolerance_interior_samples:
+        record.update(method='center-corners-lhs-v1',
+                      note=f'名义尺寸与全部角点之外，增加 {request.tolerance_interior_samples} 个区间内部分层点（种子 {request.seed}）。'
+                           '每个尺寸的允许区间等分，每段取一个中点，各尺寸的组合按种子打乱；所有候选共用同一组相对偏差。'
+                           '以全部采样中最不利的目标值寻优，全部采样均须满足约束。'
+                           '有限采样不保证整个区间合格，不推定公差分布或合格概率；气隙偏差不模拟偏心。',
+                      sampling_plan={'interior_method':'centered-lhs-sha256-v1', 'seed':request.seed,
+                                     'interior_samples':request.tolerance_interior_samples})
     return record, values, score

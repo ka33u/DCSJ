@@ -1399,8 +1399,8 @@
     $('#optimization-tolerances').hidden=!enabled;$('#optimization-tolerances').disabled=!enabled;
     const gap=rows.some(row=>$('[name=key]',row).value==='g');
     $('#tolerance-gap-field').hidden=!gap;$('#tolerance-gap-mode').disabled=!enabled||!gap;
-    const count=1+2**rows.length,budget=Number($('#optimization-budget').value);
-    $('#tolerance-budget-note').textContent=`每个名义方案计算 ${count} 次（含中心点）；当前预算最多评估 ${Math.floor(budget/count)} 组。失败情景也计入预算，至少需 ${count*2} 次以评估基准和一个候选。`;
+    const interior=Number($('#tolerance-interior-samples').value),count=1+2**rows.length+interior,budget=Number($('#optimization-budget').value);
+    $('#tolerance-budget-note').textContent=`每个名义方案计算 ${count} 次（含名义尺寸、角点和 ${interior} 个内部点）；当前预算最多评估 ${Math.floor(budget/count)} 组。失败情景也计入预算，至少需 ${count*2} 次以评估基准和一个候选。`;
     $('#add-tolerance').disabled=rows.length>=3;
   }
   function addTolerance() {
@@ -1455,7 +1455,9 @@
       if ($('#optimization-tolerance-enabled').checked) {
         request.tolerances=$$('#optimization-tolerance-rows .tolerance-row').map(row=>({key:$('[name=key]',row).value,delta:Number($('[name=delta]',row).value)}));
         if(!request.tolerances.length||new Set(request.tolerances.map(t=>t.key)).size!==request.tolerances.length||request.tolerances.some(t=>!Number.isFinite(t.delta)||t.delta<=0||t.delta>1000000))throw new Error('请选择不重复的公差尺寸，偏差须大于 0 且不超过 1000000 mm。');
-        if(request.max_evaluations<2*(1+2**request.tolerances.length))throw new Error('计算预算不足以评估基准和一个完整公差候选，请增加预算。');
+        request.tolerance_interior_samples=Number($('#tolerance-interior-samples').value);
+        if(![0,4,8,16,32].includes(request.tolerance_interior_samples))throw new Error('请选择有效的内部采样数。');
+        if(request.max_evaluations<2*(1+2**request.tolerances.length+request.tolerance_interior_samples))throw new Error('计算预算不足以评估基准和一个完整公差候选，请增加预算。');
         request.tolerance_gap_mode=$('#tolerance-gap-mode').disabled?'independent':$('#tolerance-gap-mode').value;
       }
       if (request.secondary_objective === request.objective) throw new Error("第二目标请选择不同的指标。");
@@ -1495,6 +1497,7 @@
     container.append(el('p', 'muted', `本任务方法：${methodLabel} · 随机种子 ${job.request.seed ?? '—'}`));
     const constraints = job.request.constraints || [];
     const robust=!!job.request.tolerances?.length;
+    if(robust&&job.request.tolerance_interior_samples)container.append(el('p','source-box',`区间内部采样：每组增加 ${job.request.tolerance_interior_samples} 个分层点 · 种子 ${job.request.seed}；与名义尺寸、全部角点一起参与约束和最不利目标评估。`));
     if(robust)container.append(el('p','source-box',`公差情景：${job.request.tolerances.map(t=>`${t.key} ± ${fmt(t.delta,8)} mm`).join('；')}。目标值与约束范围取全部采样，常规快照与曲线保留名义结果。气隙偏差时${job.request.tolerance_gap_mode==='fixed_neck_bottom'?'槽颈底位置固定，联动 hr0':'保持名义 hr0'}。`));
     if (constraints.some(c => c.metric === 'TM_curve')) container.append(el('p', 'muted', '本任务已启用转矩曲线计算；峰值约束取完整 51 个计算采样的最大值，采样不完整的候选不满足约束。'));
     if (constraints.some(c => c.metric === 'TM_refined')) container.append(el('p','muted','本任务使用加密转矩峰值约束：各点独立迭代，末次电流倍数差小于 0.00001；在 s=0.01–1 的采样局部峰值附近加密。未收敛的候选不满足约束，原计算输出保持独立。'));
@@ -1525,7 +1528,7 @@
         container.append(el('p','source-box',`${robust?'名义尺寸 · ':''}同一负载周期下，第一目标最佳候选比基准${saved>=0?'少':'多'}耗电 ${fmt(Math.abs(saved),7)} kWh（${fmt(Math.abs(saved)/baseCycle.input_energy_kwh*100,5)}%）；仅比较本次保存的计算结果。`));
       }
     }
-    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, load_cycle: job.request.load_cycle, rotor_gap_mode:job.request.rotor_gap_mode, tolerances:job.request.tolerances, tolerance_gap_mode:job.request.tolerance_gap_mode, seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
+    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, load_cycle: job.request.load_cycle, rotor_gap_mode:job.request.rotor_gap_mode, tolerances:job.request.tolerances, tolerance_gap_mode:job.request.tolerance_gap_mode, tolerance_interior_samples:job.request.tolerance_interior_samples||0, seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
     if (!job.candidates.length) { container.append(el("p", "muted", "尚无完成的候选。")); return; }
     const pareto = new Set(job.pareto_ids || []);
     if (job.request.secondary_objective) {
@@ -1999,6 +2002,7 @@
   $('#optimization-objective').addEventListener('change',updateCycleForm);
   $('#optimization-secondary').addEventListener('change',updateCycleForm);
   $('#optimization-tolerance-enabled').addEventListener('change',updateToleranceForm);
+  $('#tolerance-interior-samples').addEventListener('change',updateToleranceForm);
   $('#optimization-budget').addEventListener('input',updateToleranceForm);
   $('#add-tolerance').addEventListener('click',addTolerance);
   $('#add-cycle-stage').addEventListener('click',()=>addCycleStage());

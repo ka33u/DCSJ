@@ -213,3 +213,95 @@ def test_saved_tolerance_report_preserves_nominal_and_sample_results(robust_work
         assert '不保证角点之间没有更差值' in output
         assert 'g=0.55' in output and 'g=0.65' in output
     assert '公差情景评估' in reader.pages[1].extract_text()
+
+
+@pytest.mark.parametrize('count',[4,8,16,32])
+@pytest.mark.parametrize('dimensions',[1,2,3])
+def test_interior_strata_are_complete_reproducible_and_independent_of_field_order(robust_body,count,dimensions):
+    tolerances=[{'key':'g','delta':.05},{'key':'L','delta':1},{'key':'Djj','delta':.01}][:dimensions]
+    req=optimization.SearchInput.model_validate({**robust_body,'max_evaluations':128,
+        'tolerances':tolerances,'tolerance_interior_samples':count,'tolerance_gap_mode':'fixed_neck_bottom'})
+    samples=robustness.scenarios(req,req.parameters)
+    legacy=robustness.scenarios(req.model_copy(update={'tolerance_interior_samples':0}),req.parameters)
+    assert samples[:len(legacy)]==legacy and len(samples)==robustness.sample_count(req)==len(legacy)+count
+    interior=samples[len(legacy):]
+    for t in req.tolerances:
+        fractions=sorted(s['offsets'][t.key]/t.delta for s in interior)
+        assert fractions==pytest.approx([(i+.5)*2/count-1 for i in range(count)])
+    assert len({tuple(sorted(s['offsets'].items())) for s in samples})==len(samples)
+    assert all(s['parameters']['g']+s['parameters']['hr0']==pytest.approx(1.1) for s in samples)
+    again=robustness.scenarios(req,req.parameters)
+    assert samples==again
+    reordered=req.model_copy(update={'tolerances':list(reversed(req.tolerances))})
+    assert robustness.interior_offsets(reordered)==robustness.interior_offsets(req)
+    changed=req.model_copy(update={'seed':req.seed+1})
+    assert robustness.interior_offsets(changed)!=robustness.interior_offsets(req)
+    shifted=robustness.scenarios(req,{**req.parameters,'L':170})
+    assert [s['offsets'] for s in shifted]==[s['offsets'] for s in samples]
+
+
+@pytest.mark.parametrize('extra',[{'tolerance_interior_samples':n} for n in [-1,1,3,33,True,'4',4.0,None]]+[
+    {'tolerance_interior_samples':4,'tolerances':None},
+    {'tolerance_interior_samples':4,'max_evaluations':13}])
+def test_interior_configuration_and_budget_rejected_before_execution(robust_body,extra):
+    with pytest.raises(ValidationError):
+        optimization.SearchInput.model_validate({**robust_body,'max_evaluations':128,**extra})
+
+
+def test_interior_violation_changes_selection_and_survives_retry_and_reports(robust_worker,robust_body,monkeypatch):
+    from io import BytesIO
+    from pypdf import PdfReader
+    from dcsj import reports,pdf_report
+    worker,_=robust_worker;original=jobs.compute
+    def trough(p,**kwargs):
+        r=original(p,**kwargs)
+        r['values']['ATA1']=(.9 if .61<p['g']<.62 else .95) if p['L']==160 else .94
+        return r
+    monkeypatch.setattr(jobs,'compute',trough)
+    body={**robust_body,'constraints':[{'metric':'ATA1','minimum':.91}]}
+    corners=execute(worker,body)
+    assert calculations.get(corners['best_id'])['inputs']['L']==160
+    req={**body,'tolerance_interior_samples':4,'max_evaluations':14}
+    interior=execute(worker,req)
+    assert interior['evaluated']==14 and len(interior['samples'])==14
+    base,best=interior['candidates'];assert not base['feasible'] and best['feasible']
+    assert any('内部采样' in violation for violation in base['violations'])
+    assert base['robustness']['metric_ranges']['ATA1']['minimum']==.9
+    saved=calculations.get(interior['best_id'])
+    assert saved['inputs']['L']==170 and saved['values']['ATA1']==.94
+    record=saved['optimization']['robustness']
+    assert record['method']=='center-corners-lhs-v1' and record['sampling_plan']['interior_samples']==4
+    retried=jobs.retry(interior['id'])
+    assert retried['request']['tolerance_interior_samples']==4 and retried['request']['seed']==42
+    monkeypatch.setattr(robustness,'scenarios',lambda *a,**kw:pytest.fail('Saved reports must not sample again'))
+    text='\n'.join(p.extract_text() for p in PdfReader(BytesIO(pdf_report.render(saved))).pages)
+    for output in (text,reports.render(saved)):
+        assert '内部采样' in output and '4 个区间内部分层点' in output
+        assert '种子 42' in output and '0.6125' in output
+
+
+def test_failed_interior_cannot_be_ranked_and_is_charged_to_budget(robust_worker,robust_body,monkeypatch):
+    worker,_=robust_worker;original=jobs.compute
+    def fail(p,**kwargs):
+        if .61<p['g']<.62:raise jobs.CalculationError('synthetic interior failure')
+        r=original(p,**kwargs);r['values']['ATA1']=.9;return r
+    monkeypatch.setattr(jobs,'compute',fail)
+    job=execute(worker,{**robust_body,'tolerance_interior_samples':4,'max_evaluations':14})
+    assert job['evaluated']==14 and job['status']=='failed' and job['best_id'] is None
+    assert all(c['objective'] is None and c['robustness']['status']=='failed' for c in job['candidates'])
+    failed=[s for s in job['samples'] if s['error']]
+    assert len(failed)==2 and all(s['kind']=='interior' and s['calculation_id'] is None for s in failed)
+
+
+def test_benchmark_and_jobs_use_the_same_interior_points_and_accounting(robust_worker,robust_body):
+    from dcsj import benchmark
+    worker,_=robust_worker
+    body={**robust_body,'tolerance_interior_samples':4,'max_evaluations':14}
+    job=execute(worker,body)
+    suite={'cases':[{'id':'synthetic','request':body}], 'budgets':[14], 'seeds':[42],
+           'algorithms':['stratified_v1','adaptive_poll_v1']}
+    runs=list(benchmark.compare(suite,compute=jobs.compute))
+    assert all(run['evaluated']==14 for run in runs)
+    assert runs[0]['engine_calls']==14 and runs[1]['cached_evaluations']==14
+    assert [s['parameters'] for c in runs[0]['candidates'] for s in c['robustness']['samples']]==[s['parameters'] for s in job['samples']]
+    assert runs[0]['best_ordinal']==next(c['ordinal'] for c in job['candidates'] if c['calculation_id']==job['best_id'])
