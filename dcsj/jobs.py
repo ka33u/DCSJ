@@ -35,6 +35,9 @@ def get(identity, *, database=None, candidates=True):
         result['verifications'] = [dict(r) for r in db.execute(
             "SELECT id,name,status,evaluated,budget,best_id FROM optimization_jobs "
             "WHERE json_extract(request,'$.verification.source_job_id')=? ORDER BY created_at,id", (identity,))]
+        result['continuations'] = [dict(r) for r in db.execute(
+            "SELECT id,name,status,evaluated,budget,best_id FROM optimization_jobs "
+            "WHERE json_extract(request,'$.feedback.source_job_id')=? ORDER BY created_at,id", (identity,))]
         if candidates:
             result['candidates'] = []
             for row in db.execute("SELECT c.*, COALESCE(a.record,json_extract(s.result,'$.optimization')) AS evaluation "
@@ -73,13 +76,15 @@ def list_jobs():
             'FROM optimization_jobs ORDER BY created_at DESC LIMIT 100')]
 
 
-def create(request, *, database=None, verification=None):
+def create(request, *, database=None, verification=None, feedback=None):
     if engine_status()['status'] == 'unavailable':
         raise CalculationUnavailableError('寻优需要先安装本地计算资源。')
     identity, timestamp = str(uuid.uuid4()), now()
     document = request.model_dump()
     if verification is not None:
         document['verification'] = verification
+    if feedback is not None:
+        document['feedback'] = feedback
     with connect(database) as db:
         db.execute('BEGIN IMMEDIATE')
         pending = db.execute("SELECT count(*) FROM optimization_jobs WHERE status IN ('queued','running','cancelling')").fetchone()[0]
@@ -110,7 +115,7 @@ def saved_request(document):
     """Reopen old jobs without reviving the removed comparison-only inputs."""
     from .verification import VerificationSearch
     model = VerificationSearch if document.get('verification') else SearchInput
-    document = {k:v for k,v in document.items() if k != 'verification'}
+    document = {k:v for k,v in document.items() if k not in {'verification','feedback'}}
     return model.model_validate({'algorithm': 'stratified_v1', 'tolerance_sampling':'centered_lhs_v1',
                                       **document, 'parameters': {
         key: value for key, value in document['parameters'].items() if key not in RETIRED_INPUT_KEYS}})
@@ -122,7 +127,7 @@ def retry(identity):
         raise ConflictError('只能重新运行已结束的任务。')
     request = saved_request(previous['request'])
     request.name = (request.name[:110] + ' · 重试')
-    return create(request, verification=previous['request'].get('verification'))
+    return create(request, verification=previous['request'].get('verification'), feedback=previous['request'].get('feedback'))
 
 
 class Worker:
@@ -169,7 +174,7 @@ class Worker:
         request = saved_request(job['request'])
         if request.tolerances:
             from .robust_jobs import run
-            return run(self, identity, request, compute, verification=job['request'].get('verification'))
+            return run(self, identity, request, compute, verification=job['request'].get('verification'), feedback=job['request'].get('feedback'))
         search = Search(request)
         best_id, completed = None, 0
         resource_identity = None

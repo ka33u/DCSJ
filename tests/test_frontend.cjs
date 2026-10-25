@@ -1143,3 +1143,35 @@ test('post-search verification freezes a selected candidate, exposes its budget 
   assert.match(d.querySelector('#optimization-detail').textContent,/关联复核/);
   assert.equal(source.best_id,'best');
 });
+
+test('failed verification retains all scenarios for a new search with explicit budget',async t=>{
+  const source={id:'failed-check',name:'复核失败',status:'failed',evaluated:11,budget:11,best_id:null,
+    request:{seed:42,objective:'efficiency',variables:[{key:'L',values:[133,140]}],parameters:{...parameters,L:133},tolerances:[{key:'g',delta:.04}],constraints:[],
+      verification:{source_job_id:'root',source_calculation_id:'base',source_candidate_ordinal:2,seed:43,prior_samples:3,interior_samples:8,plan:Array.from({length:11},(_,index)=>({index}))}},
+    samples:Array.from({length:11},(_,index)=>({index,parameters:{},label:'情景'})),
+    candidates:[{ordinal:1,parameters:{L:133},feasible:false,violations:['计算失败']}],continuations:[]};
+  const child={...source,id:'continued',name:'纳入情景寻优',status:'queued',evaluated:0,budget:33,candidates:[],samples:[],
+    request:{...source.request,verification:undefined,tolerance_interior_samples:4,feedback:{source_job_id:source.id,retained_samples:11,source_failed_samples:4}}};
+  let posted,count=0;const pending=deferred();
+  const ui=await app(t,(path,req)=>{
+    if(path==='/optimization/config')return {method:'测试',variables:[{key:'L',label:'长度'}],objectives:[{id:'efficiency',label:'效率'}],materials:[],constraint_metrics:[]};
+    if(path==='/optimization/jobs')return {items:[source]};
+    if(path==='/optimization/jobs/failed-check')return source;
+    if(path==='/optimization/jobs/failed-check/resume-search'){posted=req.body;count++;source.continuations=[child];return pending.promise.then(()=>child);}
+    if(path==='/optimization/jobs/continued')return child;
+  });
+  ui.nav('optimization');await until(()=>ui.doc.querySelector('#optimization-jobs button'),'Jobs ready');
+  ui.find('#optimization-jobs button','查看任务').click();await until(()=>ui.doc.querySelector('#feedback-form'),'Feedback form ready');
+  const d=ui.doc,form=d.querySelector('#feedback-form');
+  assert.equal(d.querySelector('#verification-form'),null);
+  assert.equal(d.querySelector('#feedback-budget').value,'22');assert.equal(d.querySelector('#feedback-seed').value,'44');
+  d.querySelector('#feedback-budget').value='33';d.querySelector('#feedback-budget').dispatchEvent(new ui.w.Event('input'));
+  assert.match(form.textContent,/3 个完整候选/);
+  form.dispatchEvent(new ui.w.Event('submit',{cancelable:true}));form.dispatchEvent(new ui.w.Event('submit',{cancelable:true}));
+  await until(()=>posted,'Request sent');assert.equal(count,1);assert.deepEqual(posted,{max_evaluations:33,seed:44});
+  pending.release();await until(()=>d.querySelector('#optimization-detail').textContent.includes('复核情景参与搜索'),'New search displayed');
+  assert.match(d.querySelector('#optimization-detail').textContent,/全部 11 个相对偏差/);
+  assert.doesNotMatch(d.querySelector('#optimization-detail').textContent,/区间内部采样：每组增加/);
+  ui.find('#optimization-detail button','查看源复核').click();await until(()=>d.querySelector('#feedback-form'),'Source restored');
+  assert.match(d.querySelector('#optimization-detail').textContent,/后续搜索/);
+});

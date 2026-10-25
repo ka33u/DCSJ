@@ -14,7 +14,8 @@ from .load_cycle import LoadStage
 
 SOLVER_SHA256 = hashlib.sha256(b''.join(Path(p).read_bytes() for p in
     (__file__, load_cycle.__file__, manufacturing.__file__, robustness.__file__,
-     Path(__file__).with_name('robust_jobs.py'), Path(__file__).with_name('verification.py')))).hexdigest()
+     Path(__file__).with_name('robust_jobs.py'), Path(__file__).with_name('verification.py'),
+     Path(__file__).with_name('feedback.py')))).hexdigest()
 
 
 def available_choices():

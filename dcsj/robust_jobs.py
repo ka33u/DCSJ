@@ -8,15 +8,18 @@ from .storage import connect, dumps, now
 from .curves import sampled_torque_peak
 
 
-def run(worker, identity, request, compute, *, verification=None):
+def run(worker, identity, request, compute, *, verification=None, feedback=None):
     from .verification import RESOURCE_KEYS, annotate
-    group_size = len(verification['plan']) if verification else robustness.sample_count(request)
+    from . import feedback as feedback_module
+    retained = verification or feedback
+    group_size = len(retained['plan']) if retained else robustness.sample_count(request)
     # Search scheduling uses the number of complete nominal candidates we can afford.
     search = None if verification else Search(request.model_copy(update={'max_evaluations':request.max_evaluations // group_size}))
     evaluated, best_id, completed, fingerprint = 0, None, 0, None
     resource_keys = RESOURCE_KEYS if verification else ('kernel_sha256','wrapper_sha256','resource_package')
-    if verification:
-        fingerprint = tuple(verification['resource_fingerprint'].get(k) for k in resource_keys)
+    if retained:
+        fingerprint = tuple(retained['resource_fingerprint'].get(k) for k in resource_keys)
+    materials = {feedback['source_material']:feedback['resource_fingerprint']['material_sha256']} if feedback else {}
 
     def status():
         with connect(worker.database) as db:
@@ -40,7 +43,8 @@ def run(worker, identity, request, compute, *, verification=None):
             db.execute('INSERT INTO optimization_candidates VALUES (?,?,?,?,?,?,?,?)',
                        (identity,ordinal,dumps(nominal),None,None,0,dumps(['公差评估未完成。']),None))
         samples, nominal_result, reason, drift = [], None, None, False
-        for scenario in (verification['plan'] if verification else robustness.scenarios(request, nominal)):
+        plan = verification['plan'] if verification else feedback_module.scenarios(request, nominal, feedback) if feedback else robustness.scenarios(request, nominal)
+        for scenario in plan:
             reason = status()
             if reason: break
             try:
@@ -52,6 +56,12 @@ def run(worker, identity, request, compute, *, verification=None):
                     drift = True
                     raise CalculationError('计算资源发生变化，停止公差评估，避免混合不同资源。')
                 fingerprint = current
+                if feedback:
+                    material = result['provenance'].get('material_sha256')
+                    if not material or (p['Paihao'] in materials and materials[p['Paihao']] != material):
+                        drift = True
+                        raise CalculationError('材料版本与已记录资源不一致，停止纳入情景寻优。')
+                    materials[p['Paihao']] = material
                 sample = robustness.measured(request, scenario, result)
                 if status() == 'lost': return
                 result['provenance'].update(optimization_job_id=identity, optimization_candidate=ordinal,
@@ -74,6 +84,8 @@ def run(worker, identity, request, compute, *, verification=None):
                 reason = 'interrupted'; break
         if reason == 'lost': return
         robust, values, violation = robustness.summarize(request, nominal, samples, complete=not drift, expected_samples=group_size)
+        if feedback:
+            feedback_module.annotate(robust, feedback)
         if verification:
             annotate(robust, verification)
             objective, improved = robust['objectives'][request.objective], robust['feasible']

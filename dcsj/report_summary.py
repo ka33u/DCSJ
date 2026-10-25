@@ -42,7 +42,7 @@ def robustness_summary(snapshot):
     ranges = [[k, number(r['minimum'], 8), number(r['maximum'], 8), '是' if r['complete'] else '否']
               for k, r in record['metric_ranges'].items()]
     keys = list(dict.fromkeys([t['key'] for t in record['tolerances']] + ['hr0']))
-    rows = [[f"{s['index']} · {'复算 · ' if s.get('phase') == 'recheck' else ''}{s['label']}",
+    rows = [[f"{s['index']} · { {'recheck':'复算 · ', 'retained':'继承情景 · '}.get(s.get('phase'),'')}{s['label']}",
              '；'.join(f"{k}={number(s['parameters'].get(k),8)}" for k in keys),
              '；'.join(f"{o['metric']}={number(s.get('values',{}).get(o['metric']),8)}" for o in specs.values()),
              s.get('error') or '；'.join(s.get('violations', [])) or '满足约束', s.get('calculation_id') or '—']
@@ -50,7 +50,7 @@ def robustness_summary(snapshot):
     state = '未完成' if record['status']=='incomplete' else '存在计算失败' if record['status']=='failed' else '全部采样满足约束' if record['feasible'] else '存在约束不满足'
     tolerances = '；'.join(f"{t['key']} ± {number(t['delta'],8)} mm" for t in record['tolerances'])
     gap = '气隙偏差时保持槽颈底位置，hr0 反向变化' if record['gap_mode']=='fixed_neck_bottom' else '气隙偏差时保持名义 hr0'
-    return {'title':'补充采样复核' if record.get('verification') else '公差情景评估',
+    return {'title':'补充采样复核' if record.get('verification') else '复核情景参与搜索' if record.get('feedback') else '公差情景评估',
             'text':f"{tolerances}；{gap}。已评估 {record['evaluated_samples']}/{record['expected_samples']} 个情景 · {state}。",
             'note':record['note'], 'objectives':objectives, 'ranges':ranges, 'rows':rows}
 

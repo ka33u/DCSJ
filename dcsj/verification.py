@@ -87,18 +87,21 @@ def create(identity, options, *, database=None):
         raise ConflictError('旧情景与新点合计超过单次 128 次预算，请减少补充点数。')
     ancestor = source['request'].get('verification') or {}
     seed = options.seed if options.seed is not None else (ancestor.get('seed', source['request']['seed'])+1) % 2**32
-    document = {k:v for k,v in source['request'].items() if k != 'verification'}
+    document = {k:v for k,v in source['request'].items() if k not in {'verification','feedback'}}
     document.update(parameters=candidate['parameters'], max_evaluations=budget, name=source['name'][:105]+' · 补充复核')
     request = VerificationSearch.model_validate(document)
     root_id = ancestor.get('root_job_id', identity)
+    training_ids = list(dict.fromkeys([*(ancestor.get('training_job_ids') or
+        (source['request'].get('feedback') or {}).get('training_job_ids', [])), root_id]))
     forbidden = {fingerprint(s['parameters']) for s in samples}
     with connect(database) as db:
         row = db.execute('SELECT result FROM calculations WHERE id=?', (candidate['calculation_id'],)).fetchone()
         if row is None:
             raise ConflictError('源计算快照不存在。')
         snapshot = json.loads(row['result'])
-        for row in db.execute('SELECT record FROM optimization_samples WHERE job_id=?', (root_id,)):
-            forbidden.add(fingerprint(json.loads(row['record'])['parameters']))
+        for job_id in training_ids:
+            for row in db.execute('SELECT record FROM optimization_samples WHERE job_id=?', (job_id,)):
+                forbidden.add(fingerprint(json.loads(row['record'])['parameters']))
     provenance = snapshot['provenance']
     if any(not provenance.get(k) for k in ('kernel_sha256', 'wrapper_sha256', 'material_sha256')):
         raise ConflictError('源快照缺少计算核或材料指纹，请先重新运行搜索。')
@@ -109,7 +112,8 @@ def create(identity, options, *, database=None):
     for index, s in enumerate(plan):
         s['index'] = index
     metadata = {'method':METHOD, 'seed':seed, 'interior_samples':options.interior_samples, 'prior_samples':len(samples),
-                'source_job_id':identity, 'root_job_id':root_id, 'source_candidate_ordinal':candidate['ordinal'],
+                'source_job_id':identity, 'root_job_id':root_id, 'training_job_ids':training_ids,
+                'source_candidate_ordinal':candidate['ordinal'],
                 'source_calculation_id':candidate['calculation_id'],
                 'source_solver_sha256':snapshot.get('optimization',{}).get('solver_sha256'),
                 'resource_fingerprint':{k:provenance.get(k) for k in RESOURCE_KEYS}, 'plan':plan}
