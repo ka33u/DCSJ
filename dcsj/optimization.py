@@ -1,9 +1,15 @@
 """Bounded derivative-free search with real engine evaluations and explicit feasibility."""
 import math
 import random
+import itertools
+import hashlib
+from pathlib import Path
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .parameters import INTEGER_KEYS, validate
 from .engine import available_materials
+
+SOLVER_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 def available_choices():
@@ -94,6 +100,8 @@ class SearchInput(BaseModel):
     parameters: dict[str, str | float | int | None]
     variables: list[Variable] = Field(min_length=1, max_length=6)
     objective: str = 'efficiency'
+    secondary_objective: str | None = None
+    algorithm: Literal['hybrid_de_v1', 'stratified_v1'] = 'stratified_v1'
     constraints: list[Constraint] = Field(default_factory=list, max_length=15)
     max_evaluations: int = Field(default=24, ge=2, le=128)
     seed: int = Field(default=42, ge=0, le=2**32-1)
@@ -102,6 +110,9 @@ class SearchInput(BaseModel):
     def valid_search(self):
         if self.objective not in OBJECTIVES:
             raise ValueError('不支持的目标')
+        if self.secondary_objective is not None and (
+                self.secondary_objective not in OBJECTIVES or self.secondary_objective == self.objective):
+            raise ValueError('第二目标须为不同的有效指标')
         if len({v.key for v in self.variables}) != len(self.variables):
             raise ValueError('搜索变量不能重复')
         if len({c.metric for c in self.constraints}) != len(self.constraints):
@@ -117,7 +128,9 @@ def config():
             'objectives': [{'id': k, 'metric': v[0], 'direction': v[1], 'label': v[2]} for k, v in OBJECTIVES.items()],
             'constraint_metrics': sorted(CONSTRAINTS), 'materials': sorted(available_choices()),
             'max_evaluations': 128,
-            'method': '固定随机种子的分层采样 + 局部扰动，使用真实数值核逐项评估；不保证全局最优。'}
+            'algorithms': [{'id': 'stratified_v1', 'label': '分层采样 + 局部搜索'},
+                           {'id': 'hybrid_de_v1', 'label': '混合差分进化（新方法）'}],
+            'method': '默认保留分层采样，可选混合差分进化：边界检查、制造网格与约束引导。两种方法均支持双目标折中方案；每个候选均使用真实计算核，预算含基准和失败计算。'}
 
 
 def metrics(result):
@@ -136,6 +149,17 @@ def assess(request, values):
         elif ((constraint.minimum is not None and value < constraint.minimum) or
               (constraint.maximum is not None and value > constraint.maximum)):
             violations.append(f'{constraint.metric}={value:.7g} 不满足约束')
+    for key in objective_keys(request):
+        value = values.get(OBJECTIVES[key][0])
+        if value is None or not math.isfinite(value):
+            violations.append(f'{key} 目标没有有效结果')
+    if request.algorithm == 'hybrid_de_v1':
+        for key in ('ATA1', 'PF1'):
+            if not 0 < values.get(key, math.nan) <= 1:
+                violations.append(f'{key} 必须在 (0, 1] 范围')
+        for key in ('Pcu', 'Pal', 'Pfe', 'Pfw1', 'Ps1', 'CostFx'):
+            if key in values and (not math.isfinite(values[key]) or values[key] < 0):
+                violations.append(f'{key} 不能为负数或无效值')
     # Baseline may lie outside the requested region. It remains visible but is not eligible as best.
     return violations
 
@@ -159,7 +183,7 @@ def in_region(request, parameters):
                for v in request.variables)
 
 
-class Search:
+class StratifiedSearch:
     def __init__(self, request):
         self.request = request
         self.rng = random.Random(request.seed)
@@ -207,3 +231,186 @@ class Search:
         if improved:
             self.best, self.best_score = parameters, score
         return value, improved
+
+
+def objective_keys(request):
+    return [key for key in (request.objective, request.secondary_objective) if key]
+
+
+def objective_values(request, values):
+    return {key: values.get(OBJECTIVES[key][0]) for key in objective_keys(request)}
+
+
+def dominates(left, right, objectives):
+    """Strict Pareto dominance; equal objective vectors remain separate designs."""
+    a = [left[key] * (1 if OBJECTIVES[key][1] == 'max' else -1) for key in objectives]
+    b = [right[key] * (1 if OBJECTIVES[key][1] == 'max' else -1) for key in objectives]
+    return all(x >= y for x, y in zip(a, b)) and any(x > y for x, y in zip(a, b))
+
+
+def pareto_front(records, objectives):
+    valid = [r for r in records if r['feasible'] and all(
+        isinstance(r['objectives'].get(k), (int, float)) and math.isfinite(r['objectives'][k]) for k in objectives)]
+    return [r for r in valid if not any(dominates(s['objectives'], r['objectives'], objectives) for s in valid)]
+
+
+def violation_score(request, values):
+    """Dimensionless distance to explicit bounds; never a weighted objective penalty."""
+    score = 0.0
+    bounds = [('Sf', 0, 1, True), ('Sn', 0, 1, True)]
+    bounds += [(c.metric, c.minimum, c.maximum, False) for c in request.constraints]
+    for key, low, high, strict in bounds:
+        value = values.get(key)
+        if value is None or not math.isfinite(value):
+            score += 1e6
+            continue
+        scale = max(abs(low or 0), abs(high or 0), 1e-9)
+        if low is not None and (value < low or strict and value == low):
+            score += max(1e-12, (low - value) / scale)
+        if high is not None and (value > high or strict and value == high):
+            score += max(1e-12, (value - high) / scale)
+    # Missing physical/objective validity must never rank as a zero-violation design.
+    if not score and assess(request, values):
+        score = 1e6
+    return score
+
+
+class HybridSearch(StratifiedSearch):
+    """Budgeted mixed-variable DE with local polling and feasibility-first selection.
+
+    Uses its own RNG and rounds every proposal to the declared manufacturing grid.
+    Materials use categorical crossover, never arithmetic on material identifiers.
+    """
+    def __init__(self, request):
+        super().__init__(request)
+        self.records = []
+        self.population_size = max(6, 4 * len(request.variables))
+        self.sample_count = min(max(6, 2 * len(request.variables)), max(2, request.max_evaluations // 3))
+        self.strata = {}
+        for v in request.variables:
+            order = list(range(self.sample_count)); self.rng.shuffle(order)
+            self.strata[v.key] = order
+        self.grid = None
+        count = 1
+        for v in request.variables:
+            if v.key != 'Paihao' and not v.step:
+                count = 4097; break
+            count *= len(v.choices) if v.key == 'Paihao' else math.floor((v.maximum - v.minimum) / v.step + 1e-10) + 1
+            if count > 4096: break
+        if count <= 4096:
+            axes = [v.choices if v.key == 'Paihao' else [snap(v, v.minimum + i * v.step)
+                    for i in range(math.floor((v.maximum - v.minimum) / v.step + 1e-10) + 1)] for v in request.variables]
+            self.grid = list(itertools.product(*axes)); self.rng.shuffle(self.grid)
+        self.grid_cursor = 0
+        self.exhaustive = self.grid is not None and len(self.grid) <= request.max_evaluations - 1
+        # Under small budgets, population-only proposals can miss every boundary.
+        # Screen each axis against the projected baseline before adapting the population.
+        center = dict(request.parameters)
+        for v in request.variables:
+            center[v.key] = (center[v.key] if center[v.key] in v.choices else v.choices[0]) if v.key == 'Paihao' else snap(v, center[v.key])
+        self.screening = []
+        for v in request.variables:
+            edges = [x for x in v.choices if x != center[v.key]][:2] if v.key == 'Paihao' else [snap(v, v.minimum), snap(v, v.maximum)]
+            for value in edges:
+                self.screening.append({**center, v.key: value})
+        self.rng.shuffle(self.screening)
+        self.screen_cursor = 0
+
+    def _remember(self, p):
+        identity = tuple((v.key, p[v.key]) for v in self.request.variables)
+        if identity in self.visited:
+            return None
+        self.visited.add(identity); self.iteration += 1
+        return p
+
+    def _grid_candidate(self):
+        while self.grid_cursor < len(self.grid):
+            values = self.grid[self.grid_cursor]; self.grid_cursor += 1
+            p = dict(self.request.parameters)
+            p.update({v.key: value for v, value in zip(self.request.variables, values)})
+            accepted = self._remember(p)
+            if accepted is not None: return accepted
+        return None
+
+    def _population(self):
+        keys = objective_keys(self.request)
+        remaining = [r for r in self.records if r['feasible']]
+        population = []
+        while remaining and len(population) < self.population_size:
+            front = pareto_front(remaining, keys)
+            # Crowding distance retains both objective extremes when a front is large.
+            distances = {id(r): 0.0 for r in front}
+            for key in keys:
+                ordered = sorted(front, key=lambda r: r['objectives'][key])
+                distances[id(ordered[0])] = distances[id(ordered[-1])] = math.inf
+                span = ordered[-1]['objectives'][key] - ordered[0]['objectives'][key]
+                if span:
+                    for i in range(1, len(ordered) - 1):
+                        distances[id(ordered[i])] += (ordered[i+1]['objectives'][key] - ordered[i-1]['objectives'][key]) / span
+            front.sort(key=lambda r: -distances[id(r)])
+            population.extend(front[:self.population_size-len(population)])
+            selected = {id(r) for r in front}
+            remaining = [r for r in remaining if id(r) not in selected]
+        infeasible = sorted((r for r in self.records if not r['feasible']), key=lambda r: r['violation'])
+        return population + infeasible[:self.population_size-len(population)]
+
+    def candidate(self):
+        if not self.iteration:
+            return self._remember(dict(self.request.parameters))
+        if self.exhaustive:
+            return self._grid_candidate()
+        while self.screen_cursor < len(self.screening):
+            p = self.screening[self.screen_cursor]; self.screen_cursor += 1
+            accepted = self._remember(p)
+            if accepted is not None: return accepted
+        request = self.request
+        population = self._population()
+        front = pareto_front(population, objective_keys(request))
+        guide = self.rng.choice(front) if front else (population[0] if population else None)
+        for attempt in range(200):
+            p = dict(request.parameters)
+            exploring = self.iteration <= self.sample_count + len(self.screening) or len(population) < 3 or attempt > 20 or self.iteration % 7 == 0
+            if exploring:
+                for v in request.variables:
+                    if v.key == 'Paihao':
+                        p[v.key] = self.rng.choice(v.choices)
+                    else:
+                        index = (self.iteration - 1 + attempt) % self.sample_count
+                        fraction = (self.strata[v.key][index] + self.rng.random()) / self.sample_count
+                        p[v.key] = snap(v, v.minimum + fraction * (v.maximum - v.minimum))
+            elif self.iteration % 3 == 0:
+                p.update(guide['parameters'])
+                v = request.variables[(self.iteration // 3 + attempt) % len(request.variables)]
+                if v.key == 'Paihao': p[v.key] = self.rng.choice(v.choices)
+                else:
+                    radius = max(v.step or 0, (v.maximum - v.minimum) * max(.02, .2 * (1 - self.iteration/request.max_evaluations)))
+                    p[v.key] = snap(v, p[v.key] + self.rng.choice([-1, 1]) * radius)
+            else:
+                target, first, second = self.rng.sample(population, 3)
+                forced = self.rng.randrange(len(request.variables)); weight = self.rng.uniform(.5, 1.0)
+                for i, v in enumerate(request.variables):
+                    if i != forced and self.rng.random() > .8:
+                        p[v.key] = target['parameters'][v.key]
+                    elif v.key == 'Paihao':
+                        p[v.key] = self.rng.choice([guide['parameters'][v.key], first['parameters'][v.key], self.rng.choice(v.choices)])
+                    else:
+                        value = guide['parameters'][v.key] + weight * (first['parameters'][v.key] - second['parameters'][v.key])
+                        p[v.key] = snap(v, value)
+            accepted = self._remember(p)
+            if accepted is not None: return accepted
+        return self._grid_candidate() if self.grid is not None else None
+
+    def consider(self, parameters, values, feasible):
+        objectives = objective_values(self.request, values)
+        if not all(v is not None and math.isfinite(v) for v in objectives.values()):
+            return None, False
+        feasible = feasible and in_region(self.request, parameters)
+        value, improved = super().consider(parameters, values, feasible)
+        if in_region(self.request, parameters):
+            self.records.append({'parameters': dict(parameters), 'objectives': objectives,
+                                 'feasible': feasible, 'violation': violation_score(self.request, values)})
+        return value, improved
+
+
+def Search(request):
+    return HybridSearch(request) if request.algorithm == 'hybrid_de_v1' else StratifiedSearch(request)

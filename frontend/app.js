@@ -1245,6 +1245,8 @@
       $("#optimization-method").textContent = optimizationConfig.method;
       $("#optimization-objective").replaceChildren();
       optimizationConfig.objectives.forEach(item => { const option = el("option", "", item.label); option.value = item.id; $("#optimization-objective").append(option); });
+      $("#optimization-secondary").replaceChildren(new Option("不启用，使用单目标", ""), ...optimizationConfig.objectives.map(item => new Option(item.label, item.id)));
+      $("#optimization-algorithm").replaceChildren(...(optimizationConfig.algorithms || [{id: 'stratified_v1', label: '分层采样 + 局部搜索'}]).map(item => new Option(item.label, item.id)));
       addOptimizationVariable("L");
     } catch (error) { showToast(errorText(error), "error"); }
   }
@@ -1309,6 +1311,9 @@
       });
       const constraints = $$(".search-constraint").map(row => ({ metric: $("select[name=metric]", row).value, ...readBounds(row) }));
       const request = { name: $("#optimization-name").value, parameters: optimizationBase, variables, constraints, objective: $("#optimization-objective").value, max_evaluations: Number($("#optimization-budget").value), seed: Number($("#optimization-seed").value) };
+      request.secondary_objective = $("#optimization-secondary").value || null;
+      request.algorithm = $("#optimization-algorithm").value;
+      if (request.secondary_objective === request.objective) throw new Error("第二目标请选择不同的指标。");
       const job = await api("/optimization/jobs", { method: "POST", body: JSON.stringify(request) });
       selectedJob = job.id; showJob(job); loadOptimizationJobs(); watchJob(job.id);
       showToast("寻优任务已排队，可离开此页继续设计。");
@@ -1337,7 +1342,7 @@
     container.replaceChildren(el("h2", "", `${job.name} · ${jobStatus[job.status] || job.status}`));
     const progress = el("progress"); progress.max = job.budget; progress.value = job.evaluated;
     progress.setAttribute("aria-label", `已评估 ${job.evaluated}，预算 ${job.budget}`);
-    container.append(progress, el("p", "muted", `已评估 ${job.evaluated} / ${job.budget}；失败与基准计算均计入预算。`), el("p", "", job.message));
+    container.append(progress, el("p", "muted", `已评估 ${job.evaluated} / ${job.budget}；满足约束 ${job.feasible_count ?? job.candidates.filter(c => c.feasible).length} 个；失败与基准计算均计入预算。`), el("p", "", job.message));
     const actions = el("div", "feature-actions");
     if (!terminalJobs.has(job.status)) {
       const cancel = button(job.status === "cancelling" ? "当前计算结束后停止" : "取消任务", "button", async () => { try { showJob(await api(`/optimization/jobs/${job.id}/cancel`, { method: "POST" })); watchJob(job.id); } catch (error) { showToast(errorText(error), "error"); } });
@@ -1349,13 +1354,42 @@
       if (baseline && baseline !== job.best_id) actions.append(button("与基准对比", "button", () => { state.selectedCalculations.clear(); selectCalculation({ id: baseline, name: `${job.name} / 基准` }); selectCalculation({ id: job.best_id, name: `${job.name} / 最佳候选` }); navigate("comparisons"); runComparison(); }));
     }
     container.append(actions);
-    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ objective: job.request.objective, variables: job.request.variables, constraints: job.request.constraints, seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
+    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
     if (!job.candidates.length) { container.append(el("p", "muted", "尚无完成的候选。")); return; }
+    const pareto = new Set(job.pareto_ids || []);
+    if (job.request.secondary_objective) {
+      const section = el('section', 'feature-content'); section.append(el('h3', '', `折中候选 · ${pareto.size} 个`), el('p', 'muted', '在本次已评估且满足约束的方案中，这些方案没有被其他方案同时超越两个目标。★ 仍表示第一目标最佳；可选择任意折中方案继续设计。'));
+      const keys = [job.request.objective, job.request.secondary_objective];
+      const labels = keys.map(key => optimizationConfig?.objectives.find(o => o.id === key)?.label || key);
+      const points = job.candidates.filter(c => c.feasible && keys.every(k => Number.isFinite(c.objectives?.[k])));
+      if (points.length) {
+        const ranges = keys.map(k => { const values = points.map(c => c.objectives[k]), lo = Math.min(...values), hi = Math.max(...values); const pad = (hi-lo || Math.abs(lo)*.01 || 1)*.08; return [lo-pad, hi+pad]; });
+        const svg = svgNode('svg', {viewBox:'0 0 640 290',class:'curve-svg optimization-pareto-chart',role:'img','aria-label':`${labels[0]}与${labels[1]}折中图`});
+        svg.append(svgNode('title', {}, '绿色表示折中候选，灰色表示被支配的可行方案；数值与操作见下方表格'));
+        svg.append(svgNode('rect',{x:80,y:30,width:520,height:200,fill:'none',stroke:'#aabdb0'}));
+        for(let i=0;i<=4;i++) {
+          svg.append(svgNode('text',{x:80+130*i,y:248,'text-anchor':'middle','font-size':11},fmt(ranges[0][0]+(ranges[0][1]-ranges[0][0])*i/4,5)));
+          svg.append(svgNode('text',{x:73,y:234-50*i,'text-anchor':'end','font-size':11},fmt(ranges[1][0]+(ranges[1][1]-ranges[1][0])*i/4,5)));
+        }
+        svg.append(svgNode('text',{x:340,y:278,'text-anchor':'middle','font-size':12},labels[0]),svgNode('text',{x:80,y:17,'font-size':12},labels[1]));
+        for(const c of [...points].sort((a,b)=>Number(pareto.has(a.calculation_id))-Number(pareto.has(b.calculation_id)))) {
+          const circle=svgNode('circle',{cx:80+(c.objectives[keys[0]]-ranges[0][0])/(ranges[0][1]-ranges[0][0])*520,cy:230-(c.objectives[keys[1]]-ranges[1][0])/(ranges[1][1]-ranges[1][0])*200,r:pareto.has(c.calculation_id)?5:3,fill:pareto.has(c.calculation_id)?'#18766c':'#bac7c2'});
+          circle.append(svgNode('title',{},`#${c.ordinal} · ${keys.map((k,i)=>labels[i]+': '+fmt(c.objectives[k],7)).join('；')}`)); svg.append(circle);
+        }
+        section.append(svg);
+      }
+      const choices = el('div', 'feature-actions');
+      job.candidates.filter(c => pareto.has(c.calculation_id)).forEach(c => choices.append(button(`#${c.ordinal} · ${keys.map((k,i)=>labels[i]+' '+fmt(c.objectives[k],6)).join(' / ')}`, 'button button-small', () => openSnapshot(c.calculation_id))));
+      section.append(choices);
+      container.append(section);
+    }
     const scroll = el("div", "table-scroll"), table = el("table", "data-table"), head = el("thead"), heading = el("tr"), body = el("tbody");
     ["序号", "搜索变量", "目标值", "约束与诊断", "操作"].forEach(title => heading.append(el("th", "", title))); head.append(heading);
     job.candidates.forEach(candidate => {
       const row = el("tr"); row.append(el("td", "", `${candidate.ordinal}${candidate.ordinal === 1 ? " 基准" : ""}${candidate.calculation_id === job.best_id ? " ★" : ""}`));
-      row.append(el("td", "", job.request.variables.map(v => `${v.key}=${fmt(candidate.parameters[v.key])}`).join("\n")), el("td", "", fmt(candidate.objective, 7)), el("td", "", candidate.error || (candidate.feasible ? "满足约束" : candidate.violations.join("；"))));
+      const secondary = job.request.secondary_objective;
+      const objectiveText = `${fmt(candidate.objective, 7)}${secondary ? '\n第二目标：' + fmt(candidate.objectives?.[secondary], 7) : ''}`;
+      row.append(el("td", "", job.request.variables.map(v => `${v.key}=${fmt(candidate.parameters[v.key])}`).join("\n")), el("td", "", objectiveText), el("td", "", candidate.error || (candidate.feasible ? (pareto.has(candidate.calculation_id) ? "满足约束 · 折中候选" : "满足约束") : candidate.violations.join("；"))));
       const action = el("td"); if (candidate.calculation_id) action.append(button("打开", "text-button", () => openSnapshot(candidate.calculation_id)), reportLink(candidate.calculation_id)); row.append(action); body.append(row);
     });
     table.append(head, body); scroll.append(table); container.append(scroll);

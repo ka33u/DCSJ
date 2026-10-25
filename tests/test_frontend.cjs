@@ -853,3 +853,35 @@ test('TX tabs support keyboard navigation and reveal invalid hidden parameters',
   hidden.value='18';hidden.dispatchEvent(new a.w.Event('input',{bubbles:true}));
   assert.equal(hidden.hasAttribute('aria-invalid'),false);
 });
+
+test('multiobjective search submits independent goals and renders only feasible Pareto points', async t => {
+  let submitted;
+  const job={id:'tradeoffs',name:'折中验收',status:'succeeded',evaluated:3,budget:3,best_id:'b',feasible_count:2,pareto_ids:['a','b'],
+    request:{objective:'efficiency',secondary_objective:'material_cost',algorithm:'hybrid_de_v1',variables:[{key:'L'}],parameters},
+    candidates:[{ordinal:1,calculation_id:'a',parameters:{L:100},objective:.90,objectives:{efficiency:.90,material_cost:100},feasible:true},
+      {ordinal:2,calculation_id:'b',parameters:{L:110},objective:.91,objectives:{efficiency:.91,material_cost:110},feasible:true},
+      {ordinal:3,calculation_id:'c',parameters:{L:90},objective:.95,objectives:{efficiency:.95,material_cost:90},feasible:false,violations:['功率因数低于约束']}]};
+  const ui=await app(t,(path,request)=>{
+    if(path==='/optimization/config')return {method:'人工混合算法',variables:[{key:'L',label:'长度'}],objectives:[{id:'efficiency',label:'效率最高'},{id:'material_cost',label:'材料成本最低'}],algorithms:[{id:'hybrid_de_v1',label:'混合差分进化'},{id:'stratified_v1',label:'原方法'}],materials:[],constraint_metrics:[]};
+    if(path==='/example')return {parameters:{...parameters,L:100},name:'基准'};
+    if(path==='/optimization/jobs'&&request.method==='POST'){submitted=request.body;return job;}
+    if(path==='/optimization/jobs')return {items:[job]};
+    if(path==='/optimization/jobs/tradeoffs')return job;
+    if(path==='/calculations/a')return snapshot('a','折中候选A');
+  },[{key:'L',label:'铁心长度',group:'basic',type:'number',role:'input'}]);
+  ui.doc.querySelector('#load-example').click();await settle();ui.nav('optimization');await settle();
+  ui.doc.querySelector('#optimization-use-current').click();
+  ui.doc.querySelector('#optimization-secondary').value='efficiency';
+  ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
+  assert.equal(submitted,undefined);assert.match(ui.doc.querySelector('#optimization-error').textContent,/不同/);
+  ui.doc.querySelector('#optimization-secondary').value='material_cost';
+  ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
+  assert.equal(submitted.secondary_objective,'material_cost');assert.equal(submitted.algorithm,'hybrid_de_v1');
+  assert.equal(submitted.objective,'efficiency');assert.equal(submitted.parameters.L,100);
+  const detail=ui.doc.querySelector('#optimization-detail');assert.match(detail.textContent,/折中候选 · 2 个/);
+  assert.equal(detail.querySelectorAll('svg circle').length,2);
+  assert.match(detail.textContent,/第二目标：100/);assert.match(detail.textContent,/功率因数低于约束/);
+  assert.equal(detail.querySelectorAll('tbody tr').length,3);
+  [...detail.querySelectorAll('button')].find(b=>b.textContent.startsWith('#1 ·')).click();await settle();
+  assert.equal(ui.doc.querySelector('#current-design').textContent,'折中候选A');
+});

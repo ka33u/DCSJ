@@ -8,7 +8,8 @@ import uuid
 from . import calculations
 from .engine import CalculationError, CalculationUnavailableError, engine_status
 from .execution import BusyError, compute
-from .optimization import SearchInput, Search, assess, in_region, metrics
+from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_keys,
+                           objective_values, violation_score, pareto_front, SOLVER_SHA256)
 from .parameters import InputError, RETIRED_INPUT_KEYS
 from .storage import ConflictError, NotFoundError, audit, connect, database_path, dumps, now
 
@@ -32,12 +33,20 @@ def get(identity, *, database=None, candidates=True):
         result = _decode(row)
         if candidates:
             result['candidates'] = []
-            for row in db.execute('SELECT * FROM optimization_candidates WHERE job_id=? ORDER BY ordinal', (identity,)):
+            for row in db.execute("SELECT c.*, json_extract(s.result,'$.optimization') AS evaluation "
+                                  'FROM optimization_candidates c LEFT JOIN calculations s ON s.id=c.calculation_id '
+                                  'WHERE c.job_id=? ORDER BY c.ordinal', (identity,)):
                 item = dict(row)
                 for key in ('parameters', 'violations'):
                     item[key] = json.loads(item[key])
                 item['feasible'] = bool(item['feasible'])
+                evaluation = json.loads(item.pop('evaluation') or '{}')
+                item['objectives'] = evaluation.get('objectives', {})
+                item['violation_score'] = evaluation.get('violation_score')
                 result['candidates'].append(item)
+            keys = [key for key in (result['request']['objective'], result['request'].get('secondary_objective')) if key]
+            result['pareto_ids'] = [c['calculation_id'] for c in pareto_front(result['candidates'], keys)] if len(keys) > 1 else []
+            result['feasible_count'] = sum(c['feasible'] for c in result['candidates'])
     result['progress'] = result['evaluated'] / result['budget']
     return result
 
@@ -81,7 +90,7 @@ def cancel(identity, *, database=None):
 
 def saved_request(document):
     """Reopen old jobs without reviving the removed comparison-only inputs."""
-    return SearchInput.model_validate({**document, 'parameters': {
+    return SearchInput.model_validate({'algorithm': 'stratified_v1', **document, 'parameters': {
         key: value for key, value in document['parameters'].items() if key not in RETIRED_INPUT_KEYS}})
 
 
@@ -138,6 +147,7 @@ class Worker:
         request = saved_request(job['request'])
         search = Search(request)
         best_id, completed = None, 0
+        resource_identity = None
         for ordinal in range(1, request.max_evaluations + 1):
             current = get(identity, database=self.database, candidates=False)
             if self.stop.is_set():
@@ -149,16 +159,25 @@ class Worker:
             parameters = search.candidate()
             if parameters is None:
                 self.finish(identity, 'succeeded' if completed else 'failed',
-                            '有限搜索已结束：未找到新的不重复候选；不保证全局最优。'); return
+                            '搜索已结束：未生成新的不重复候选。' + ('已有满足约束的候选。' if best_id else '没有找到满足全部约束的候选。')); return
             error, objective, calculation_id, violations = None, None, None, []
             try:
                 result = compute(parameters, wait=True, stop_event=self.stop)
+                fingerprint = tuple(result['provenance'].get(key) for key in
+                                    ('kernel_sha256', 'wrapper_sha256', 'resource_package'))
+                if resource_identity is not None and fingerprint != resource_identity:
+                    self.finish(identity, 'interrupted', '计算资源在寻优期间发生变化，已停止；先前候选保留，请按新资源重新运行。'); return
+                resource_identity = fingerprint
                 values = metrics(result)
                 violations = assess(request, values)
                 if not in_region(request, parameters):
                     violations.append('基准方案位于指定搜索范围或步长网格之外，仅作为参考。')
                 objective, improved = search.consider(parameters, values, not violations)
                 result['provenance']['optimization_job_id'] = identity
+                result['optimization'] = {'algorithm': request.algorithm,
+                                         'solver_sha256': SOLVER_SHA256,
+                                         'objectives': objective_values(request, values),
+                                         'violation_score': violation_score(request, values)}
                 saved = calculations.save(result, f'{request.name} / {ordinal}', database=self.database)
                 calculation_id = saved['calculation_id']
                 completed += 1

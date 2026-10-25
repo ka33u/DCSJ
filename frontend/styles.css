@@ -24,3 +24,5 @@
 @media(max-width:570px){.material-point-editor{padding:11px}.material-point-table th,.material-point-table td{padding:7px 4px}.material-point-table .text-input{font-size:11px;padding:7px 5px}.material-table-heading{display:block}.material-table-heading span{display:block;margin-top:5px}#entry-material-fields>.quick-form{grid-template-columns:minmax(0,1fr)}}
 .curve-viewport{overflow-x:auto;max-width:100%;margin-top:10px}.chart-card .curve-svg{min-width:560px;max-height:none}.chart-note{line-height:1.6;margin-top:8px}
 .wire-mode-note{margin:12px 24px 0;padding:10px 12px;border-left:3px solid #287b60;background:#f0f6f3;color:#355e4f;font-size:12px;line-height:1.6}.wire-result{padding:0 0 14px;border-bottom:1px solid #e0e8e5;margin-bottom:16px}.wire-result .result-section-title{margin-top:12px}.wire-result p{line-height:1.6}.input-wrap input[readonly]{background:#f1f5f3;color:#526b62}
+
+.optimization-pareto-chart { max-width: 760px; margin: 10px auto; }
