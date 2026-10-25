@@ -95,9 +95,9 @@ def measured(request, scenario, result):
             'error':error, 'calculation_id':None}
 
 
-def summarize(request, nominal, samples, *, complete=True):
+def summarize(request, nominal, samples, *, complete=True, expected_samples=None):
     from .optimization import OBJECTIVES, objective_keys, in_region, violation_score
-    expected = sample_count(request)
+    expected = sample_count(request) if expected_samples is None else expected_samples
     complete = complete and len(samples) == expected
     valid = complete and all(not s.get('error') for s in samples)
     violations = [f"{s['label']}：{message}" for s in samples for message in s.get('violations', [])]

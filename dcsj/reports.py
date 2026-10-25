@@ -135,7 +135,7 @@ def render(snapshot):
         content += [table(refined['headers'], refined['rows'])]
     robust = summary.robustness_summary(snapshot)
     if robust:
-        content += ['<h2 class="break">公差情景评估</h2><p>' + text(summary.TOLERANCE_NOTE) + '</p>',
+        content += ['<h2 class="break">' + text(robust['title']) + '</h2><p>' + text(summary.TOLERANCE_NOTE) + '</p>',
                     '<p>' + text(robust['text']) + '</p><p>' + text(robust['note']) + '</p>',
                     table(['目标', '最不利采样值', '情景编号'], robust['objectives']),
                     table(['指标', '采样最小值', '采样最大值', '完整'], robust['ranges']),

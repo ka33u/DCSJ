@@ -15,7 +15,7 @@ from .execution import BusyError, compute
 from .storage import ConflictError, NotFoundError, now
 from .parameters import ROOT, InputError, schema, validate, example_data, check_keys
 from .engine import CalculationUnavailableError
-from . import jobs, optimization
+from . import jobs, optimization, verification
 from . import pdf_fonts
 from .pdf_report import PDFUnavailableError, PDFContentError
 from .saved_catalog import series_name
@@ -707,6 +707,12 @@ def cancel_optimization(identity: str):
 @app.post("/api/v1/optimization/jobs/{identity}/retry", status_code=202, tags=["自动寻优"])
 def retry_optimization(identity: str):
     return jobs.retry(identity)
+
+
+@app.post("/api/v1/optimization/jobs/{identity}/verify", status_code=202, tags=["自动寻优"])
+def verify_optimization(identity: str, body: verification.VerificationInput):
+    """Freeze a feasible tolerance candidate and enqueue fresh supplemental checks."""
+    return verification.create(identity, body)
 
 
 @app.get("/", include_in_schema=False)

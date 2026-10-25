@@ -8,11 +8,15 @@ from .storage import connect, dumps, now
 from .curves import sampled_torque_peak
 
 
-def run(worker, identity, request, compute):
-    group_size = robustness.sample_count(request)
+def run(worker, identity, request, compute, *, verification=None):
+    from .verification import RESOURCE_KEYS, annotate
+    group_size = len(verification['plan']) if verification else robustness.sample_count(request)
     # Search scheduling uses the number of complete nominal candidates we can afford.
-    search = Search(request.model_copy(update={'max_evaluations':request.max_evaluations // group_size}))
+    search = None if verification else Search(request.model_copy(update={'max_evaluations':request.max_evaluations // group_size}))
     evaluated, best_id, completed, fingerprint = 0, None, 0, None
+    resource_keys = RESOURCE_KEYS if verification else ('kernel_sha256','wrapper_sha256','resource_package')
+    if verification:
+        fingerprint = tuple(verification['resource_fingerprint'].get(k) for k in resource_keys)
 
     def status():
         with connect(worker.database) as db:
@@ -30,20 +34,20 @@ def run(worker, identity, request, compute):
         if reason:
             if reason != 'lost': finish(reason)
             return
-        nominal = search.candidate()
+        nominal = dict(request.parameters) if verification else search.candidate()
         if nominal is None: break
         with connect(worker.database) as db:
             db.execute('INSERT INTO optimization_candidates VALUES (?,?,?,?,?,?,?,?)',
                        (identity,ordinal,dumps(nominal),None,None,0,dumps(['公差评估未完成。']),None))
         samples, nominal_result, reason, drift = [], None, None, False
-        for scenario in robustness.scenarios(request, nominal):
+        for scenario in (verification['plan'] if verification else robustness.scenarios(request, nominal)):
             reason = status()
             if reason: break
             try:
                 p = robustness.validate_scenario(scenario['parameters'])
                 extra = torque_refinement.options(request)
                 result = compute(p, wait=True, stop_event=worker.stop, **extra)
-                current = tuple(result['provenance'].get(k) for k in ('kernel_sha256','wrapper_sha256','resource_package'))
+                current = tuple(result['provenance'].get(k) for k in resource_keys)
                 if fingerprint is not None and current != fingerprint:
                     drift = True
                     raise CalculationError('计算资源发生变化，停止公差评估，避免混合不同资源。')
@@ -69,8 +73,12 @@ def run(worker, identity, request, compute):
             if drift:
                 reason = 'interrupted'; break
         if reason == 'lost': return
-        robust, values, violation = robustness.summarize(request, nominal, samples, complete=not drift)
-        objective, improved = search.consider(nominal, values, robust['feasible'], violation=violation)
+        robust, values, violation = robustness.summarize(request, nominal, samples, complete=not drift, expected_samples=group_size)
+        if verification:
+            annotate(robust, verification)
+            objective, improved = robust['objectives'][request.objective], robust['feasible']
+        else:
+            objective, improved = search.consider(nominal, values, robust['feasible'], violation=violation)
         baseline_sample = samples[0] if samples else {}
         evaluation = {'algorithm':request.algorithm, 'solver_sha256':SOLVER_SHA256,
                       'objectives':robust['objectives'], 'violation_score':violation,
@@ -105,5 +113,7 @@ def run(worker, identity, request, compute):
         if reason != 'lost': finish(reason)
     else:
         worker.finish(identity,'succeeded' if completed else 'failed',
+                      (f'补充复核结束：固定一个方案，已评估 {evaluated} / {group_size} 次。'
+                       + ('全部复核采样满足约束。' if best_id else '未通过补充复核，请检查超限或失败情景。')) if verification else
                       f'公差搜索结束：已评估 {evaluated} 次；每个名义方案需 {group_size} 次。剩余预算不足完整一组或已无新方案。'
                       + ('最优方案仅限全部采样满足约束的候选。' if best_id else '没有找到全部采样满足约束的候选。'))

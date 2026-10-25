@@ -32,6 +32,9 @@ def get(identity, *, database=None, candidates=True):
         if row is None:
             raise NotFoundError('寻优任务不存在')
         result = _decode(row)
+        result['verifications'] = [dict(r) for r in db.execute(
+            "SELECT id,name,status,evaluated,budget,best_id FROM optimization_jobs "
+            "WHERE json_extract(request,'$.verification.source_job_id')=? ORDER BY created_at,id", (identity,))]
         if candidates:
             result['candidates'] = []
             for row in db.execute("SELECT c.*, COALESCE(a.record,json_extract(s.result,'$.optimization')) AS evaluation "
@@ -70,17 +73,20 @@ def list_jobs():
             'FROM optimization_jobs ORDER BY created_at DESC LIMIT 100')]
 
 
-def create(request, *, database=None):
+def create(request, *, database=None, verification=None):
     if engine_status()['status'] == 'unavailable':
         raise CalculationUnavailableError('寻优需要先安装本地计算资源。')
     identity, timestamp = str(uuid.uuid4()), now()
+    document = request.model_dump()
+    if verification is not None:
+        document['verification'] = verification
     with connect(database) as db:
         db.execute('BEGIN IMMEDIATE')
         pending = db.execute("SELECT count(*) FROM optimization_jobs WHERE status IN ('queued','running','cancelling')").fetchone()[0]
         if pending >= 8:
             raise BusyError('待处理寻优任务已达 8 个，请等待或取消现有任务。')
         db.execute('INSERT INTO optimization_jobs(id,name,request,status,created_at,updated_at,budget) '
-                   "VALUES (?,?,?,'queued',?,?,?)", (identity, request.name, dumps(request.model_dump()), timestamp, timestamp, request.max_evaluations))
+                   "VALUES (?,?,?,'queued',?,?,?)", (identity, request.name, dumps(document), timestamp, timestamp, request.max_evaluations))
         audit(db, 'optimization.created', identity, {'budget': request.max_evaluations, 'objective': request.objective})
     return get(identity, database=database)
 
@@ -102,7 +108,10 @@ def cancel(identity, *, database=None):
 
 def saved_request(document):
     """Reopen old jobs without reviving the removed comparison-only inputs."""
-    return SearchInput.model_validate({'algorithm': 'stratified_v1', 'tolerance_sampling':'centered_lhs_v1',
+    from .verification import VerificationSearch
+    model = VerificationSearch if document.get('verification') else SearchInput
+    document = {k:v for k,v in document.items() if k != 'verification'}
+    return model.model_validate({'algorithm': 'stratified_v1', 'tolerance_sampling':'centered_lhs_v1',
                                       **document, 'parameters': {
         key: value for key, value in document['parameters'].items() if key not in RETIRED_INPUT_KEYS}})
 
@@ -113,7 +122,7 @@ def retry(identity):
         raise ConflictError('只能重新运行已结束的任务。')
     request = saved_request(previous['request'])
     request.name = (request.name[:110] + ' · 重试')
-    return create(request)
+    return create(request, verification=previous['request'].get('verification'))
 
 
 class Worker:
@@ -160,7 +169,7 @@ class Worker:
         request = saved_request(job['request'])
         if request.tolerances:
             from .robust_jobs import run
-            return run(self, identity, request, compute)
+            return run(self, identity, request, compute, verification=job['request'].get('verification'))
         search = Search(request)
         best_id, completed = None, 0
         resource_identity = None

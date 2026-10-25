@@ -1111,3 +1111,35 @@ test('continuous torque opt-in shows model scope and keeps both saved results di
   assert.match(sections[0].textContent,/3.3216/);assert.match(sections[1].textContent,/3.3298/);
   assert.match(sections[1].textContent,/第二状态差/);assert.match(sections[1].textContent,/2.000e-7/);
 });
+
+test('post-search verification freezes a selected candidate, exposes its budget and links source records',async t=>{
+  const robust={status:'complete',feasible:true,expected_samples:7,metric_ranges:{},objectives:{efficiency:.9}};
+  const source={id:'search-source',name:'源搜索',status:'succeeded',evaluated:14,budget:14,best_id:'best',
+    request:{seed:42,objective:'efficiency',variables:[{key:'L'}],parameters:{...parameters,L:100},tolerances:[{key:'g',delta:.02}],constraints:[]},
+    candidates:[{ordinal:1,calculation_id:'best',feasible:true,parameters:{L:100},objective:.9,robustness:robust},
+      {ordinal:2,calculation_id:'other',feasible:true,parameters:{L:110},objective:.89,robustness:robust}]};
+  const child={...source,id:'check-child',name:'补充复核',best_id:null,candidates:[{ordinal:1,parameters:{L:110},calculation_id:null,feasible:false,violations:['公差评估未完成。']}],evaluated:0,budget:23,status:'running',
+    request:{...source.request,verification:{source_job_id:source.id,source_calculation_id:'other',source_candidate_ordinal:2,prior_samples:7,interior_samples:16,seed:99}}};
+  let posted;
+  const ui=await app(t,(path,req)=>{
+    if(path==='/optimization/config')return {method:'测试',variables:[{key:'L',label:'长度'}],objectives:[{id:'efficiency',label:'效率'}],materials:[],constraint_metrics:[]};
+    if(path==='/optimization/jobs')return {items:[source]};
+    if(path==='/optimization/jobs/search-source')return source;
+    if(path==='/optimization/jobs/search-source/verify'){posted=req.body;source.verifications=[child];return child;}
+    if(path==='/optimization/jobs/check-child')return child;
+  });
+  ui.nav('optimization');await until(()=>ui.doc.querySelector('#optimization-jobs button'),'List ready');
+  ui.find('#optimization-jobs button','查看任务').click();await until(()=>ui.doc.querySelector('#verification-form'),'Verification controls ready');
+  const d=ui.doc,form=d.querySelector('#verification-form');
+  assert.equal(d.querySelector('#verification-candidate').value,'1');assert.equal(d.querySelector('#verification-seed').value,'43');
+  assert.match(form.textContent,/复算 7 \+ 新增 8 = 15 次计算/);
+  d.querySelector('#verification-candidate').value='2';d.querySelector('#verification-count').value='16';d.querySelector('#verification-count').dispatchEvent(new ui.w.Event('change'));d.querySelector('#verification-seed').value='99';
+  assert.match(form.textContent,/复算 7 \+ 新增 16 = 23 次计算/);
+  form.dispatchEvent(new ui.w.Event('submit',{cancelable:true}));await until(()=>posted&&d.querySelector('#optimization-detail').textContent.includes('新点种子 99'),'Queued verification');
+  assert.deepEqual(posted,{candidate_ordinal:2,interior_samples:16,seed:99});assert.equal(posted.parameters,undefined);
+  assert.match(d.querySelector('#optimization-detail').textContent,/未参与原搜索/);
+  assert.doesNotMatch(d.querySelector('#optimization-detail').textContent,/★/,'An unfinished candidate is not marked as best');
+  ui.find('#optimization-detail button','查看源任务').click();await until(()=>d.querySelector('#verification-form'),'Source reopened');
+  assert.match(d.querySelector('#optimization-detail').textContent,/关联复核/);
+  assert.equal(source.best_id,'best');
+});

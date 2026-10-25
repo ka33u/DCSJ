@@ -270,11 +270,11 @@ def _render(snapshot):
         story += [table(refined['headers'], refined['rows'], [WIDTH/len(refined['headers'])]*len(refined['headers']), compact=True)]
     robust = summary.robustness_summary(snapshot)
     if robust:
-        story += [PageBreak(), paragraph('公差情景评估', 'h2'), paragraph(summary.TOLERANCE_NOTE),
+        story += [PageBreak(), paragraph(robust['title'], 'h2'), paragraph(summary.TOLERANCE_NOTE),
                   paragraph(robust['text']), paragraph(robust['note'], 'small'),
                   table(['目标', '最不利采样值', '情景编号'], robust['objectives'], [WIDTH/3]*3),
                   table(['指标', '采样最小值', '采样最大值', '完整'], robust['ranges'], [WIDTH/4]*4),
-                  table(summary.TOLERANCE_HEADERS, robust['rows'], [WIDTH*f for f in (.15,.21,.20,.24,.20)])]
+                  table(summary.TOLERANCE_HEADERS, robust['rows'], [WIDTH*f for f in (.15,.21,.20,.24,.20)], compact=True)]
     manufacturing = summary.manufacturing_summary(snapshot)
     if manufacturing:
         story += [PageBreak(), paragraph('寻优规格与尺寸联动', 'h2'), paragraph(manufacturing['text']), paragraph(manufacturing['note'], 'small')]

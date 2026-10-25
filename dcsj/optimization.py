@@ -4,7 +4,7 @@ import random
 import itertools
 import hashlib
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, model_validator
 from .parameters import INTEGER_KEYS, validate
 from .engine import available_materials
@@ -14,7 +14,7 @@ from .load_cycle import LoadStage
 
 SOLVER_SHA256 = hashlib.sha256(b''.join(Path(p).read_bytes() for p in
     (__file__, load_cycle.__file__, manufacturing.__file__, robustness.__file__,
-     Path(__file__).with_name('robust_jobs.py')))).hexdigest()
+     Path(__file__).with_name('robust_jobs.py'), Path(__file__).with_name('verification.py')))).hexdigest()
 
 
 def available_choices():
@@ -122,6 +122,7 @@ class Constraint(BaseModel):
 
 
 class SearchInput(BaseModel):
+    minimum_groups: ClassVar[int] = 2
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     name: str = Field(default='自动寻优', min_length=1, max_length=120)
     parameters: dict[str, str | float | int | None]
@@ -165,8 +166,8 @@ class SearchInput(BaseModel):
         if self.tolerances:
             if len({t.key for t in self.tolerances}) != len(self.tolerances):
                 raise ValueError('同一尺寸的公差只能配置一次')
-            if self.max_evaluations < 2 * robustness.sample_count(self):
-                raise ValueError(f'公差寻优至少需要 {2*robustness.sample_count(self)} 次评估预算（含基准和一个候选）')
+            if self.max_evaluations < self.minimum_groups * robustness.sample_count(self):
+                raise ValueError(f'公差寻优至少需要 {self.minimum_groups*robustness.sample_count(self)} 次评估预算（含完整候选组）')
         if self.tolerance_gap_mode == 'fixed_neck_bottom' and not any(t.key == 'g' for t in self.tolerances or []):
             raise ValueError('公差槽颈联动需要配置气隙 g 的公差')
         if self.rotor_gap_mode == 'fixed_neck_bottom':
@@ -200,6 +201,8 @@ def config():
                            'interior_sample_counts':list(robustness.INTERIOR_COUNTS),
                            'sampling_methods':['nested_lhs_v1','centered_lhs_v1'],
                            'default_sampling_method':'nested_lhs_v1'},
+            'verification': {'interior_sample_counts':[4,8,16,32], 'max_evaluations':128,
+                             'method':'post-selection-jittered-lhs-v1'},
             'max_evaluations': 128,
             'algorithms': [{'id': 'stratified_v1', 'label': '分层采样 + 局部搜索'},
                            {'id': 'adaptive_poll_v1', 'label': '自适应邻域搜索'},

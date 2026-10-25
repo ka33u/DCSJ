@@ -1279,7 +1279,7 @@
   }
 
   let optimizationConfig = null, optimizationBase = null, selectedJob = null, jobPoll = null, jobRequest = 0;
-  const jobStatus = { queued: "排队中", running: "计算中", cancelling: "正在取消", cancelled: "已取消", succeeded: "搜索结束", failed: "失败", interrupted: "执行中断" };
+  const jobStatus = { queued: "排队中", running: "计算中", cancelling: "正在取消", cancelled: "已取消", succeeded: "已完成", failed: "失败", interrupted: "执行中断" };
   const terminalJobs = new Set(["cancelled", "succeeded", "failed", "interrupted"]);
   async function loadOptimizationConfig() {
     if (optimizationConfig) return;
@@ -1415,7 +1415,7 @@
   }
   function robustnessView(record) {
     const section=el('section','feature-content tolerance-result');
-    section.append(el('h3','','公差情景评估'),el('p','source-box','下方常规指标、曲线与负载周期均为名义尺寸结果；本节目标值取最不利采样。'),el('p','muted',record.note||''));
+    section.append(el('h3','',record.verification?'补充采样复核':'公差情景评估'),el('p','source-box','下方常规指标、曲线与负载周期均为名义尺寸结果；本节目标值取最不利采样。'),el('p','muted',record.note||''));
     section.append(el('p','',`已评估 ${record.evaluated_samples}/${record.expected_samples} 个情景 · ${record.status==='incomplete'?'未完成':record.status==='failed'?'存在计算失败':record.feasible?'全部采样满足约束':'存在约束不满足'}`));
     section.append(featureTable(['目标','最不利采样值','情景编号'],Object.entries(record.objectives||{}).map(([key,value])=>[record.objective_specs?.[key]?.label||key,fmt(value,8),record.worst_samples?.[key]??'—'])));
     section.append(featureTable(['指标','采样最小值','采样最大值','完整'],Object.entries(record.metric_ranges||{}).map(([key,r])=>[key,fmt(r.minimum,8),fmt(r.maximum,8),r.complete?'是':'否'])));
@@ -1426,7 +1426,7 @@
     const rows=samples.map(s=>{
       const link=s.calculation_id?button('打开采样','text-button',()=>openSnapshot(s.calculation_id)):'—';
       const fields=[...new Set([...tolerances.map(t=>t.key),'hr0'])];
-      return [`${s.ordinal?'候选 '+s.ordinal+' / ':''}${s.index} · ${s.label}`,fields.map(k=>`${k}=${fmt(s.parameters?.[k],8)}`).join('；'),
+      return [`${s.ordinal?'候选 '+s.ordinal+' / ':''}${s.index} · ${s.phase==='recheck'?'复算 · ':''}${s.label}`,fields.map(k=>`${k}=${fmt(s.parameters?.[k],8)}`).join('；'),
         Object.values(specs).map(o=>`${o.metric}=${fmt(s.values?.[o.metric],8)}`).join('；')||'—',s.error||s.violations?.join('；')||'满足约束',link];
     });
     return featureTable(['情景','输入尺寸 mm','采样目标指标','校核结果','原始快照'],rows);
@@ -1494,10 +1494,14 @@
     container.replaceChildren(el("h2", "", `${job.name} · ${jobStatus[job.status] || job.status}`));
     const methodId = job.request.algorithm || 'stratified_v1';
     const methodLabel = optimizationConfig?.algorithms?.find(item => item.id === methodId)?.label || ({stratified_v1:'分层采样 + 局部搜索',adaptive_poll_v1:'自适应邻域搜索',hybrid_de_v1:'混合差分进化'}[methodId] || '历史搜索方法');
-    container.append(el('p', 'muted', `本任务方法：${methodLabel} · 随机种子 ${job.request.seed ?? '—'}`));
+    const verification=job.request.verification;
+    container.append(el('p', 'muted', verification?`补充采样复核 · 固定候选 #${verification.source_candidate_ordinal} · 新点种子 ${verification.seed}`:`本任务方法：${methodLabel} · 随机种子 ${job.request.seed ?? '—'}`));
+    if(verification){
+      container.append(el('p','source-box',`重新计算 ${verification.prior_samples} 个已有情景，增加 ${verification.interior_samples} 个未参与原搜索的分层点；共 ${job.budget} 次。原搜索记录与本次复核结论独立保留。有限采样不代表整个公差区间都满足约束。`),button('查看源任务','button',()=>{selectedJob=verification.source_job_id;watchJob(selectedJob);}),reportLink(verification.source_calculation_id));
+    }
     const constraints = job.request.constraints || [];
     const robust=!!job.request.tolerances?.length;
-    if(robust&&job.request.tolerance_interior_samples)container.append(el('p','source-box',`区间内部采样：每组增加 ${job.request.tolerance_interior_samples} 个分层点${job.request.tolerance_sampling==='nested_lhs_v1'?'（逐级保留已有点）':'（独立分层，旧版方法）'} · 种子 ${job.request.seed}；与名义尺寸、全部角点一起参与约束和最不利目标评估。`));
+    if(robust&&!verification&&job.request.tolerance_interior_samples)container.append(el('p','source-box',`区间内部采样：每组增加 ${job.request.tolerance_interior_samples} 个分层点${job.request.tolerance_sampling==='nested_lhs_v1'?'（逐级保留已有点）':'（独立分层，旧版方法）'} · 种子 ${job.request.seed}；与名义尺寸、全部角点一起参与约束和最不利目标评估。`));
     if(robust)container.append(el('p','source-box',`公差情景：${job.request.tolerances.map(t=>`${t.key} ± ${fmt(t.delta,8)} mm`).join('；')}。目标值与约束范围取全部采样，常规快照与曲线保留名义结果。气隙偏差时${job.request.tolerance_gap_mode==='fixed_neck_bottom'?'槽颈底位置固定，联动 hr0':'保持名义 hr0'}。`));
     if (constraints.some(c => c.metric === 'TM_curve')) container.append(el('p', 'muted', '本任务已启用转矩曲线计算；峰值约束取完整 51 个计算采样的最大值，采样不完整的候选不满足约束。'));
     if (constraints.some(c => c.metric === 'TM_refined')) container.append(el('p','muted','本任务使用加密转矩峰值约束：各点独立迭代，末次电流倍数差小于 0.00001；在 s=0.01–1 的采样局部峰值附近加密。未收敛的候选不满足约束，原计算输出保持独立。'));
@@ -1520,6 +1524,12 @@
       if (baseline && baseline !== job.best_id) actions.append(button("与基准对比", "button", () => { state.selectedCalculations.clear(); selectCalculation({ id: baseline, name: `${job.name} / 基准` }); selectCalculation({ id: job.best_id, name: `${job.name} / 最佳候选` }); navigate("comparisons"); runComparison(); }));
     }
     container.append(actions);
+    if(terminalJobs.has(job.status)&&robust)verificationControls(container,job);
+    if(job.verifications?.length){
+      const links=el('div','feature-actions');links.append(el('strong','','关联复核：'));
+      for(const child of job.verifications)links.append(button(`${child.name} · ${jobStatus[child.status]||child.status} · ${child.evaluated}/${child.budget}`,'button button-small',()=>{selectedJob=child.id;watchJob(child.id);}));
+      container.append(links);
+    }
     if (job.request.load_cycle?.length && job.best_id) {
       const baseCycle=job.candidates.find(c=>c.ordinal===1)?.load_cycle;
       const bestCycle=job.candidates.find(c=>c.calculation_id===job.best_id)?.load_cycle;
@@ -1528,7 +1538,7 @@
         container.append(el('p','source-box',`${robust?'名义尺寸 · ':''}同一负载周期下，第一目标最佳候选比基准${saved>=0?'少':'多'}耗电 ${fmt(Math.abs(saved),7)} kWh（${fmt(Math.abs(saved)/baseCycle.input_energy_kwh*100,5)}%）；仅比较本次保存的计算结果。`));
       }
     }
-    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, load_cycle: job.request.load_cycle, rotor_gap_mode:job.request.rotor_gap_mode, tolerances:job.request.tolerances, tolerance_gap_mode:job.request.tolerance_gap_mode, tolerance_interior_samples:job.request.tolerance_interior_samples||0, tolerance_sampling:job.request.tolerance_sampling||'centered_lhs_v1', seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
+    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的任务配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, load_cycle: job.request.load_cycle, rotor_gap_mode:job.request.rotor_gap_mode, tolerances:job.request.tolerances, tolerance_gap_mode:job.request.tolerance_gap_mode, tolerance_interior_samples:job.request.tolerance_interior_samples||0, tolerance_sampling:job.request.tolerance_sampling||'centered_lhs_v1', seed: job.request.seed, baseline: job.request.parameters.SizeX, verification:verification?Object.fromEntries(Object.entries(verification).filter(([key])=>key!=='plan')):undefined }, null, 2))); container.append(settings);
     if (!job.candidates.length) { container.append(el("p", "muted", "尚无完成的候选。")); return; }
     const pareto = new Set(job.pareto_ids || []);
     if (job.request.secondary_objective) {
@@ -1560,7 +1570,7 @@
     const scroll = el("div", "table-scroll"), table = el("table", "data-table"), head = el("thead"), heading = el("tr"), body = el("tbody");
     ["序号", "搜索变量", robust?'最不利采样目标值':'目标值', ...(job.request.load_cycle?.length ? [robust?'名义尺寸 · 负载周期':'负载周期结果'] : []), ...(constraints.length ? [robust?'约束采样范围':'约束计算值'] : []), "约束与诊断", "操作"].forEach(title => heading.append(el("th", "", title))); head.append(heading);
     job.candidates.forEach(candidate => {
-      const row = el("tr"); row.append(el("td", "", `${candidate.ordinal}${candidate.ordinal === 1 ? " 基准" : ""}${candidate.calculation_id === job.best_id ? " ★" : ""}`));
+      const row = el("tr"); row.append(el("td", "", `${candidate.ordinal}${verification?' 固定方案':candidate.ordinal === 1 ? " 基准" : ""}${candidate.calculation_id && candidate.calculation_id === job.best_id ? " ★" : ""}`));
       const secondary = job.request.secondary_objective;
       const objectiveText = `${fmt(candidate.objective, 7)}${secondary ? '\n第二目标：' + fmt(candidate.objectives?.[secondary], 7) : ''}`;
       row.append(el("td", "", job.request.variables.map(v => `${v.key}=${fmt(candidate.parameters[v.key])}`).join("\n")), el("td", "", objectiveText));
@@ -1586,6 +1596,31 @@
     if(robust&&job.samples?.length) {
       const details=el('details','trace-details');details.append(el('summary','',`已保存的公差采样 · ${job.samples.length} 次（含未完成组）`),sampleTable(job.samples,job.request.tolerances,job.candidates.find(c=>c.robustness)?.robustness?.objective_specs));container.append(details);
     }
+  }
+
+  function verificationControls(container,job){
+    const choices=job.candidates.filter(c=>c.feasible&&c.calculation_id&&c.robustness?.status==='complete');
+    if(!choices.length)return;
+    const form=el('form','feature-content verification-form');form.id='verification-form';
+    form.append(el('h3','','搜索后的补充复核'),el('p','muted','固定所选方案，复算已有情景并加入新的分层点。旧情景或新点超限、计算失败时，本次复核不通过。'));
+    const fields=el('div','feature-actions');
+    function field(title,id,control){control.id=id;const label=el('label','',title);label.htmlFor=id;label.append(control);fields.append(label);return control;}
+    const candidate=field('待复核候选','verification-candidate',el('select','text-input'));
+    for(const c of choices)candidate.append(new Option(`#${c.ordinal}${c.calculation_id===job.best_id?' · 第一目标最佳':''}`,String(c.ordinal)));
+    candidate.value=String(choices.find(c=>c.calculation_id===job.best_id)?.ordinal||choices[0].ordinal);
+    const count=field('新增采样点','verification-count',el('select','text-input'));
+    for(const n of [4,8,16,32])count.append(new Option(`${n} 点`,String(n)));count.value='8';
+    const seed=field('新点种子','verification-seed',el('input','text-input'));
+    seed.type='number';seed.min='0';seed.max=String(2**32-1);seed.step='1';seed.required=true;seed.value=String(((job.request.verification?.seed??job.request.seed??42)+1)%2**32);
+    const cost=el('p','muted'),submit=el('button','button button-primary','开始补充复核');submit.type='submit';
+    function update(){const c=choices.find(c=>c.ordinal===Number(candidate.value));const previous=c.robustness.expected_samples,total=previous+Number(count.value);cost.textContent=`复算 ${previous} + 新增 ${count.value} = ${total} 次计算${total>128?'，超过单次 128 次上限':''}`;submit.disabled=total>128;}
+    candidate.onchange=count.onchange=update;update();
+    form.append(fields,cost,submit);
+    form.onsubmit=async event=>{event.preventDefault();if(!form.reportValidity())return;submit.disabled=true;try{
+      const next=await api(`/optimization/jobs/${job.id}/verify`,{method:'POST',body:JSON.stringify({candidate_ordinal:Number(candidate.value),interior_samples:Number(count.value),seed:Number(seed.value)})});
+      selectedJob=next.id;showJob(next);watchJob(next.id);loadOptimizationJobs();
+    }catch(error){showToast(errorText(error),'error');update();}};
+    container.append(form);
   }
 
   let resourceState = null, resourceBusy = false, resourceRequest = 0;
