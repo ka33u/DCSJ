@@ -933,3 +933,38 @@ test('curve peak constraint is distinct from TM1 and displays saved readings and
   assert.match(detail.textContent,/TM_curve=—/);assert.match(detail.textContent,/50\/51/);
   row.querySelector('button').click();assert.equal(ui.doc.querySelector('#optimization-curve-note').hidden,true);
 });
+
+test('load cycle form submits hours and load fractions and hides unused fields without losing draft',async t=>{
+  let submitted;
+  const job={id:'cycle',name:'周期验收',status:'succeeded',budget:2,evaluated:2,feasible_count:1,
+    request:{parameters:{...parameters,_load_curve:1},variables:[{key:'L'}],constraints:[],objective:'cycle_energy',load_cycle:[{load_fraction:.5,hours:4},{load_fraction:.75,hours:2},{load_fraction:1,hours:2}]},
+    candidates:[{ordinal:1,parameters:{L:100},objective:18.75,feasible:true,load_cycle:{status:'available',input_energy_kwh:18.75,efficiency:.88}},
+      {ordinal:2,parameters:{L:101},objective:null,feasible:false,violations:['无有效周期结果'],load_cycle:{status:'unavailable',reason:'负载特性必须包含全部 9 个原始采样点'}}]};
+  const ui=await app(t,(path,req)=>{
+    if(path==='/example')return {parameters:{...parameters,L:100,_load_curve:0},name:'基准'};
+    if(path==='/optimization/config')return {method:'人工测试',variables:[{key:'L',label:'长度'}],objectives:[{id:'efficiency',label:'效率'},{id:'cycle_energy',label:'周期耗电 kWh'},{id:'cycle_efficiency',label:'周期效率'}],materials:[],constraint_metrics:['cycle_efficiency']};
+    if(path==='/optimization/jobs'&&req.method==='POST'){submitted=req.body;return job;}
+    if(path==='/optimization/jobs')return {items:[]};
+    if(path==='/optimization/jobs/cycle')return job;
+  },[{key:'L',label:'长度',group:'basic',type:'number',role:'input'}]);
+  ui.doc.querySelector('#load-example').click();await settle();ui.nav('optimization');await settle();
+  ui.doc.querySelector('#optimization-use-current').click();
+  const form=ui.doc.querySelector('#optimization-cycle'),objective=ui.doc.querySelector('#optimization-objective');
+  assert.equal(form.hidden,true);assert.equal(form.disabled,true);
+  objective.value='cycle_energy';objective.dispatchEvent(new ui.w.Event('change'));
+  assert.equal(form.hidden,false);assert.equal(form.disabled,false);
+  ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
+  assert.deepEqual(submitted.load_cycle,job.request.load_cycle);assert.equal(submitted.parameters._load_curve,0);
+  assert.match(ui.doc.querySelector('#optimization-detail').textContent,/18.75 kWh/);
+  assert.match(ui.doc.querySelector('#optimization-detail').textContent,/周期效率 88%/);
+  assert.match(ui.doc.querySelector('#optimization-detail').textContent,/全部 9 个原始采样点/);
+  const hours=form.querySelector('[name=hours]');hours.value='7';
+  objective.value='efficiency';objective.dispatchEvent(new ui.w.Event('change'));
+  assert.equal(form.hidden,true);assert.equal(form.disabled,true);
+  ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
+  assert.equal(submitted.load_cycle,undefined);
+  ui.doc.querySelector('#add-optimization-constraint').click();assert.equal(form.hidden,false);assert.equal(hours.value,'7');
+  form.querySelector('[name=load]').value='20';submitted=null;
+  ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
+  assert.equal(submitted,null);assert.match(ui.doc.querySelector('#optimization-error').textContent,/30%–120%/);
+});

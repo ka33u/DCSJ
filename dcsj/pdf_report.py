@@ -251,8 +251,13 @@ def _render(snapshot):
               paragraph('差值＝计算结果−设计目标；效率与槽满率的差值单位为百分点。s 表示峰值处转差率。', 'small'),
               paragraph('运行与电磁指标', 'sh2'), summary_table(summary.performance(values))]
     curves = [curve for curve in snapshot.get('curves', []) if curve.get('display') is not False]
+    cycle = summary.cycle_summary(snapshot)
+    if cycle:
+        story += [PageBreak(), paragraph('负载周期能耗', 'h2'), paragraph(cycle['text']), paragraph(cycle['note'], 'small')]
+        if cycle['rows']:
+            story.append(table(summary.CYCLE_HEADERS, cycle['rows'], [WIDTH/6]*6))
     if curves:
-        story += [PageBreak(), paragraph('性能曲线', 'h2')]
+        story += ([] if cycle else [PageBreak()]) + [paragraph('性能曲线', 'h2')]
         story.append(paragraph(summary.CURVE_NOTE, 'small'))
         for index, curve in enumerate(curves):
             if index and index % 2 == 0:

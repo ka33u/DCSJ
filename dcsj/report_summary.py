@@ -26,6 +26,23 @@ def local_time(value):
 
 CURVE_NOTE = '平滑曲线用于观察趋势；默认校核使用 IST1、TST1、TM1。寻优可另选完整转矩采样的峰值约束，不使用平滑插值值。'
 
+CYCLE_HEADERS = ['负载 %', '小时', '输入 kW', '输出 kW', '耗电 kWh', '取值']
+
+
+def cycle_summary(snapshot):
+    """Read stored period energy; never derive a new result for an old report."""
+    cycle = snapshot.get('optimization', {}).get('load_cycle')
+    if not cycle:
+        return None
+    if cycle['status'] != 'available':
+        return {'text': cycle.get('reason', '没有有效的周期能耗结果'), 'note': cycle.get('note', ''), 'rows': []}
+    text = (f"运行 {number(cycle['total_hours'])} 小时 · 输入 {number(cycle['input_energy_kwh'], 8)} kWh · "
+            f"输出 {number(cycle['output_energy_kwh'], 8)} kWh · 周期效率 {number(cycle['efficiency']*100)}%")
+    rows = [[number(s['load_fraction']*100), number(s['hours']), number(s['input_power_kw']),
+             number(s['output_power_kw']), number(s['input_energy_kwh']),
+             '原始采样' if s['basis'] == 'sample' else '线性插值'] for s in cycle['stages']]
+    return {'text': text, 'note': cycle.get('note', ''), 'rows': rows}
+
 
 def targets(snapshot):
     p, v = snapshot['inputs'], snapshot['values']

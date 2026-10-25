@@ -11,6 +11,7 @@ import time
 
 from .engine import calculate_design, CalculationError
 from .parameters import InputError
+from . import load_cycle
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_values,
                            objective_keys, pareto_front, OBJECTIVES, SOLVER_SHA256)
 
@@ -56,19 +57,21 @@ def compare(suite, compute=calculate_design):
                     if identity is not None and identity != fingerprint:
                         raise RuntimeError('Benchmark resources changed; comparison stopped')
                     identity = fingerprint
-                    cache[encoded] = {'values': metrics(result), 'provenance': result['provenance']}
+                    cache[encoded] = {'result': result}
                 except (CalculationError, InputError) as error:
                     cache[encoded] = {'error': str(error)}
             measured = cache[encoded]
             if 'error' in measured:
                 entry['error'] = measured['error']
             else:
-                values = measured['values']
+                result = measured['result']
+                cycle = load_cycle.evaluate(result, request.load_cycle)
+                values = metrics(result, cycle=cycle)
                 violations = assess(request, values)
                 if not in_region(request, p): violations.append('Reference outside search region')
                 entry.update(feasible=not violations, violations=violations,
                              objectives=objective_values(request, values), values=values,
-                             input_sha256=measured['provenance'].get('input_sha256'))
+                             load_cycle=cycle, input_sha256=result['provenance'].get('input_sha256'))
                 search.consider(p, values, not violations)
             candidates.append(entry)
         feasible = [c for c in candidates if c['feasible']]

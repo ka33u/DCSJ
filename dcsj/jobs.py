@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 
-from . import calculations
+from . import calculations, load_cycle
 from .engine import CalculationError, CalculationUnavailableError, engine_status
 from .execution import BusyError, compute
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_keys,
@@ -46,6 +46,7 @@ def get(identity, *, database=None, candidates=True):
                 item['violation_score'] = evaluation.get('violation_score')
                 item['constraint_values'] = evaluation.get('constraint_values', {})
                 item['torque_peak'] = evaluation.get('torque_peak')
+                item['load_cycle'] = evaluation.get('load_cycle')
                 result['candidates'].append(item)
             keys = [key for key in (result['request']['objective'], result['request'].get('secondary_objective')) if key]
             result['pareto_ids'] = [c['calculation_id'] for c in pareto_front(result['candidates'], keys)] if len(keys) > 1 else []
@@ -171,7 +172,8 @@ class Worker:
                 if resource_identity is not None and fingerprint != resource_identity:
                     self.finish(identity, 'interrupted', '计算资源在寻优期间发生变化，已停止；先前候选保留，请按新资源重新运行。'); return
                 resource_identity = fingerprint
-                values = metrics(result)
+                cycle = load_cycle.evaluate(result, request.load_cycle)
+                values = metrics(result, cycle=cycle)
                 violations = assess(request, values)
                 if not in_region(request, parameters):
                     violations.append('基准方案位于指定搜索范围或步长网格之外，仅作为参考。')
@@ -183,7 +185,8 @@ class Worker:
                                          'violation_score': violation_score(request, values),
                                          'constraint_values': {c.metric: values.get(c.metric) for c in request.constraints},
                                          'constraints': [c.model_dump() for c in request.constraints],
-                                         'torque_peak': sampled_torque_peak(result.get('curves', []))}
+                                         'torque_peak': sampled_torque_peak(result.get('curves', [])),
+                                         'load_cycle': cycle}
                 saved = calculations.save(result, f'{request.name} / {ordinal}', database=self.database)
                 calculation_id = saved['calculation_id']
                 completed += 1

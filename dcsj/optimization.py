@@ -9,8 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .parameters import INTEGER_KEYS, validate
 from .engine import available_materials
 from .curves import sampled_torque_peak
+from . import load_cycle
+from .load_cycle import LoadStage
 
-SOLVER_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+SOLVER_SHA256 = hashlib.sha256(Path(__file__).read_bytes() + Path(load_cycle.__file__).read_bytes()).hexdigest()
 
 
 def available_choices():
@@ -38,9 +40,12 @@ OBJECTIVES = {'efficiency': ('ATA1', 'max', '效率最高'),
               'material_cost': ('CostFx', 'min', '材料成本最低'),
               'power_factor': ('PF1', 'max', '功率因数最高'),
               'copper_mass': ('Gcu', 'min', '铜重最低'),
-              'total_loss': ('total_loss', 'min', '总损耗最低')}
+              'total_loss': ('total_loss', 'min', '总损耗最低'),
+              'cycle_energy': ('cycle_energy', 'min', '负载周期耗电最低（kWh）'),
+              'cycle_efficiency': ('cycle_efficiency', 'max', '负载周期效率最高（比例）')}
 CONSTRAINTS = {'ATA1', 'PF1', 'IST1', 'TST1', 'TM1', 'TM_curve', 'Sf', 'Sn', 'J1', 'Bg',
-               'Gcu', 'Gfe', 'Gal', 'CostFx', 'total_loss'}
+               'Gcu', 'Gfe', 'Gal', 'CostFx', 'total_loss', 'cycle_energy', 'cycle_efficiency'}
+CYCLE_METRICS = {'cycle_energy', 'cycle_efficiency'}
 
 
 class Variable(BaseModel):
@@ -102,6 +107,7 @@ class SearchInput(BaseModel):
     variables: list[Variable] = Field(min_length=1, max_length=6)
     objective: str = 'efficiency'
     secondary_objective: str | None = None
+    load_cycle: list[LoadStage] | None = Field(default=None, min_length=1, max_length=32)
     algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1'] = 'stratified_v1'
     constraints: list[Constraint] = Field(default_factory=list, max_length=15)
     max_evaluations: int = Field(default=24, ge=2, le=128)
@@ -118,12 +124,19 @@ class SearchInput(BaseModel):
             raise ValueError('搜索变量不能重复')
         if len({c.metric for c in self.constraints}) != len(self.constraints):
             raise ValueError('同一指标的约束请写在一项中')
+        objectives = {self.objective, self.secondary_objective}
+        if CYCLE_METRICS <= objectives:
+            raise ValueError('额定功率与负载周期固定时，周期耗电和周期效率等价；第二目标请选择其他指标')
+        if CYCLE_METRICS & (objectives | {c.metric for c in self.constraints}) and not self.load_cycle:
+            raise ValueError('周期目标或约束需要提供负载周期 load_cycle')
         self.parameters = validate(self.parameters, strict=True)
         if self.parameters['_wire_target'] != 0:
             raise ValueError('寻优前请将目标槽满率设为 0，以固定线规，避免内核覆盖搜索变量')
         if any(c.metric == 'TM_curve' for c in self.constraints):
             # Store the effective option in the queued request and every snapshot.
             self.parameters['_curve'] = 1
+        if self.load_cycle:
+            self.parameters['_load_curve'] = 1
         return self
 
 
@@ -131,7 +144,10 @@ def config():
     return {'variables': [{'key': k, 'label': v, 'integer': k in DISCRETE} for k, v in VARIABLES.items()],
             'objectives': [{'id': k, 'metric': v[0], 'direction': v[1], 'label': v[2]} for k, v in OBJECTIVES.items()],
             'constraint_metrics': sorted(CONSTRAINTS),
-            'constraint_labels': {'TM_curve': '转矩曲线采样峰值（倍）', 'TM1': '最大转矩（原公式估计，倍）'},
+            'constraint_labels': {'TM_curve': '转矩曲线采样峰值（倍）', 'TM1': '最大转矩（原公式估计，倍）',
+                                  'cycle_energy': '负载周期耗电（kWh）', 'cycle_efficiency': '负载周期效率（比例）'},
+            'load_cycle': {'minimum_load': .3, 'maximum_load': 1.2, 'max_stages': 32,
+                           'sample_loads': list(reversed(load_cycle.SAMPLE_LOADS)), 'note': load_cycle.NOTE},
             'materials': sorted(available_choices()),
             'max_evaluations': 128,
             'algorithms': [{'id': 'stratified_v1', 'label': '分层采样 + 局部搜索'},
@@ -140,10 +156,13 @@ def config():
             'method': '可选择分层采样、自适应邻域搜索或混合差分进化。邻域搜索围绕当前较优方案试探，无改善时缩小步长；各方法均保留可行的折中方案，每个候选使用真实计算核。'}
 
 
-def metrics(result):
+def metrics(result, request=None, *, cycle=None):
     peak = sampled_torque_peak(result.get('curves', []))
+    if cycle is None and request is not None:
+        cycle = load_cycle.evaluate(result, request.load_cycle)
     return {**result['values'], 'total_loss': sum(result['values'][k] for k in ('Pcu', 'Pal', 'Pfe', 'Pfw1', 'Ps1')),
-            'TM_curve': peak['value']}
+            'TM_curve': peak['value'], 'cycle_energy': (cycle or {}).get('input_energy_kwh'),
+            'cycle_efficiency': (cycle or {}).get('efficiency')}
 
 
 def assess(request, values):
@@ -236,7 +255,9 @@ class StratifiedSearch:
 
     def consider(self, parameters, values, feasible):
         metric, direction, _ = OBJECTIVES[self.request.objective]
-        value = values[metric]
+        value = values.get(metric)
+        if value is None or not math.isfinite(value):
+            return None, False
         score = value if direction == 'max' else -value
         improved = feasible and (self.best_score is None or score > self.best_score)
         if improved:

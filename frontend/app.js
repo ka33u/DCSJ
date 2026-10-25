@@ -419,6 +419,17 @@
     if (warningBox) container.append(warningBox);
     const wire = renderWireSelection(result);
     if (wire) container.append(wire);
+    const cycle = result.optimization?.load_cycle;
+    if (cycle) {
+      const section = el('section','feature-content cycle-result');
+      section.append(el('h3','','负载周期能耗'),el('p','muted',cycle.note || ''));
+      if (cycle.status === 'available') {
+        section.append(el('p','',`运行 ${fmt(cycle.total_hours)} 小时 · 输入 ${fmt(cycle.input_energy_kwh,7)} kWh · 输出 ${fmt(cycle.output_energy_kwh,7)} kWh · 周期效率 ${fmt(cycle.efficiency*100,5)}%`));
+        section.append(featureTable(['负载 %','小时','输入 kW','输出 kW','耗电 kWh','取值'],cycle.stages.map(s=>[
+          fmt(s.load_fraction*100),fmt(s.hours),fmt(s.input_power_kw,6),fmt(s.output_power_kw,6),fmt(s.input_energy_kwh,6),s.basis==='sample'?'原始采样':'线性插值'])));
+      } else section.append(el('p','inline-error',cycle.reason || '没有有效的周期能耗结果'));
+      container.append(section);
+    }
     if (metrics.length) {
       const cards = el("div", "metric-grid");
       metrics.slice(0, 6).forEach(metric => {
@@ -1248,6 +1259,8 @@
       $("#optimization-secondary").replaceChildren(new Option("不启用，使用单目标", ""), ...optimizationConfig.objectives.map(item => new Option(item.label, item.id)));
       $("#optimization-algorithm").replaceChildren(...(optimizationConfig.algorithms || [{id: 'stratified_v1', label: '分层采样 + 局部搜索'}]).map(item => new Option(item.label, item.id)));
       addOptimizationVariable("L");
+      if (!$('#optimization-cycle-stages').children.length) [[50,4],[75,2],[100,2]].forEach(([load,hours]) => addCycleStage(load,hours));
+      updateCycleForm();
     } catch (error) { showToast(errorText(error), "error"); }
   }
   function useOptimizationBase() {
@@ -1298,6 +1311,26 @@
   }
   function updateCurveConstraintNote() {
     $('#optimization-curve-note').hidden = !$$('.search-constraint select[name=metric]').some(input => input.value === 'TM_curve');
+    updateCycleForm();
+  }
+  function needsCycle() {
+    return [$('#optimization-objective').value, $('#optimization-secondary').value,
+      ...$$('.search-constraint select[name=metric]').map(input => input.value)].some(value => ['cycle_energy','cycle_efficiency'].includes(value));
+  }
+  function updateCycleForm() {
+    const enabled = needsCycle();
+    $('#optimization-cycle').hidden = !enabled; $('#optimization-cycle').disabled = !enabled;
+  }
+  function addCycleStage(load = '', hours = '') {
+    const host = $('#optimization-cycle-stages');
+    if (host.children.length >= 32) return showToast('最多配置 32 个负载段。', 'warning');
+    const row = el('div', 'quick-form cycle-stage');
+    row.append(inputField('负载（额定输出功率 %）','number','load',load),inputField('运行小时','number','hours',hours),
+      button('移除负载段','text-button',()=>{if(host.children.length>1)row.remove();else showToast('至少保留一个负载段。','warning');}));
+    const loadInput = $('input[name=load]',row), hoursInput = $('input[name=hours]',row);
+    loadInput.min=30;loadInput.max=120;loadInput.required=true;
+    hoursInput.min='0.000001';hoursInput.max=1000000;hoursInput.required=true;
+    host.append(row);
   }
   function readBounds(row) {
     const result = {};
@@ -1319,6 +1352,11 @@
       request.secondary_objective = $("#optimization-secondary").value || null;
       request.algorithm = $("#optimization-algorithm").value;
       if (request.secondary_objective === request.objective) throw new Error("第二目标请选择不同的指标。");
+      if ([request.objective,request.secondary_objective].every(key=>['cycle_energy','cycle_efficiency'].includes(key))) throw new Error('周期耗电与周期效率在同一负载周期下等价，第二目标请选择其他指标。');
+      if (needsCycle()) {
+        request.load_cycle = $$('#optimization-cycle-stages .cycle-stage').map(row=>({load_fraction:Number($('input[name=load]',row).value)/100,hours:Number($('input[name=hours]',row).value)}));
+        if (!request.load_cycle.length || request.load_cycle.some(s=>!Number.isFinite(s.load_fraction)||s.load_fraction<.3||s.load_fraction>1.2||!Number.isFinite(s.hours)||s.hours<=0||s.hours>1000000)) throw new Error('负载须为 30%–120%，运行小时须大于 0。');
+      }
       const job = await api("/optimization/jobs", { method: "POST", body: JSON.stringify(request) });
       selectedJob = job.id; showJob(job); loadOptimizationJobs(); watchJob(job.id);
       showToast("寻优任务已排队，可离开此页继续设计。");
@@ -1350,6 +1388,7 @@
     container.append(el('p', 'muted', `本任务方法：${methodLabel} · 随机种子 ${job.request.seed ?? '—'}`));
     const constraints = job.request.constraints || [];
     if (constraints.some(c => c.metric === 'TM_curve')) container.append(el('p', 'muted', '本任务已启用转矩曲线计算；峰值约束取完整 51 个计算采样的最大值，采样不完整的候选不满足约束。'));
+    if (job.request.load_cycle?.length) container.append(el('p','muted',`本任务负载周期：${job.request.load_cycle.map(s=>`${fmt(s.load_fraction*100)}% × ${fmt(s.hours)} 小时`).join('；')}。耗电单位 kWh；效率为总输出电量 / 总输入电量。`));
     const progress = el("progress"); progress.max = job.budget; progress.value = job.evaluated;
     progress.setAttribute("aria-label", `已评估 ${job.evaluated}，预算 ${job.budget}`);
     container.append(progress, el("p", "muted", `已评估 ${job.evaluated} / ${job.budget}；满足约束 ${job.feasible_count ?? job.candidates.filter(c => c.feasible).length} 个；失败与基准计算均计入预算。`), el("p", "", job.message));
@@ -1364,7 +1403,15 @@
       if (baseline && baseline !== job.best_id) actions.append(button("与基准对比", "button", () => { state.selectedCalculations.clear(); selectCalculation({ id: baseline, name: `${job.name} / 基准` }); selectCalculation({ id: job.best_id, name: `${job.name} / 最佳候选` }); navigate("comparisons"); runComparison(); }));
     }
     container.append(actions);
-    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
+    if (job.request.load_cycle?.length && job.best_id) {
+      const baseCycle=job.candidates.find(c=>c.ordinal===1)?.load_cycle;
+      const bestCycle=job.candidates.find(c=>c.calculation_id===job.best_id)?.load_cycle;
+      if(baseCycle?.status==='available'&&bestCycle?.status==='available') {
+        const saved=baseCycle.input_energy_kwh-bestCycle.input_energy_kwh;
+        container.append(el('p','source-box',`同一负载周期下，第一目标最佳候选比基准${saved>=0?'少':'多'}耗电 ${fmt(Math.abs(saved),7)} kWh（${fmt(Math.abs(saved)/baseCycle.input_energy_kwh*100,5)}%）；仅比较本次保存的计算结果。`));
+      }
+    }
+    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, load_cycle: job.request.load_cycle, seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
     if (!job.candidates.length) { container.append(el("p", "muted", "尚无完成的候选。")); return; }
     const pareto = new Set(job.pareto_ids || []);
     if (job.request.secondary_objective) {
@@ -1394,12 +1441,15 @@
       container.append(section);
     }
     const scroll = el("div", "table-scroll"), table = el("table", "data-table"), head = el("thead"), heading = el("tr"), body = el("tbody");
-    ["序号", "搜索变量", "目标值", ...(constraints.length ? ['约束计算值'] : []), "约束与诊断", "操作"].forEach(title => heading.append(el("th", "", title))); head.append(heading);
+    ["序号", "搜索变量", "目标值", ...(job.request.load_cycle?.length ? ['负载周期结果'] : []), ...(constraints.length ? ['约束计算值'] : []), "约束与诊断", "操作"].forEach(title => heading.append(el("th", "", title))); head.append(heading);
     job.candidates.forEach(candidate => {
       const row = el("tr"); row.append(el("td", "", `${candidate.ordinal}${candidate.ordinal === 1 ? " 基准" : ""}${candidate.calculation_id === job.best_id ? " ★" : ""}`));
       const secondary = job.request.secondary_objective;
       const objectiveText = `${fmt(candidate.objective, 7)}${secondary ? '\n第二目标：' + fmt(candidate.objectives?.[secondary], 7) : ''}`;
       row.append(el("td", "", job.request.variables.map(v => `${v.key}=${fmt(candidate.parameters[v.key])}`).join("\n")), el("td", "", objectiveText));
+      if (job.request.load_cycle?.length) row.append(el('td','',candidate.load_cycle?.status==='available'
+        ? `${fmt(candidate.load_cycle.input_energy_kwh,7)} kWh\n周期效率 ${fmt(candidate.load_cycle.efficiency*100,5)}%`
+        : candidate.load_cycle?.reason || '此记录没有保存负载周期结果'));
       if (constraints.length) {
         const readings = constraints.map(c => `${c.metric}=${fmt(candidate.constraint_values?.[c.metric], 7)}${c.metric === 'TM_curve' && Number.isFinite(candidate.torque_peak?.slip) ? ' · s=' + fmt(candidate.torque_peak.slip, 5) : ''}`);
         if (candidate.torque_peak?.reason && constraints.some(c => c.metric === 'TM_curve')) readings.push(candidate.torque_peak.reason);
@@ -1822,6 +1872,9 @@
   $("#optimization-use-current").addEventListener("click", useOptimizationBase);
   $("#add-optimization-variable").addEventListener("click", () => addOptimizationVariable());
   $("#add-optimization-constraint").addEventListener("click", () => addOptimizationConstraint());
+  $('#optimization-objective').addEventListener('change',updateCycleForm);
+  $('#optimization-secondary').addEventListener('change',updateCycleForm);
+  $('#add-cycle-stage').addEventListener('click',()=>addCycleStage());
   $("#optimization-form").addEventListener("submit", startOptimization);
   $("#refresh-optimization-jobs").addEventListener("click", loadOptimizationJobs);
   $("#include-archived").addEventListener("change", loadProjects);
