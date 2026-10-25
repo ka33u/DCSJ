@@ -1340,6 +1340,9 @@
   function showJob(job) {
     const container = $("#optimization-detail"); container.classList.remove("hidden");
     container.replaceChildren(el("h2", "", `${job.name} · ${jobStatus[job.status] || job.status}`));
+    const methodId = job.request.algorithm || 'stratified_v1';
+    const methodLabel = optimizationConfig?.algorithms?.find(item => item.id === methodId)?.label || ({stratified_v1:'分层采样 + 局部搜索',adaptive_poll_v1:'自适应邻域搜索',hybrid_de_v1:'混合差分进化'}[methodId] || '历史搜索方法');
+    container.append(el('p', 'muted', `本任务方法：${methodLabel} · 随机种子 ${job.request.seed ?? '—'}`));
     const progress = el("progress"); progress.max = job.budget; progress.value = job.evaluated;
     progress.setAttribute("aria-label", `已评估 ${job.evaluated}，预算 ${job.budget}`);
     container.append(progress, el("p", "muted", `已评估 ${job.evaluated} / ${job.budget}；满足约束 ${job.feasible_count ?? job.candidates.filter(c => c.feasible).length} 个；失败与基准计算均计入预算。`), el("p", "", job.message));

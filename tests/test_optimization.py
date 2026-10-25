@@ -221,3 +221,83 @@ def test_low_budget_screening_covers_axis_edges_before_adaptive_search(request_b
     edges=[search.candidate() for _ in range(4)]
     assert {(p['L'],p['g']) for p in edges}=={(150,.6),(170,.6),(160,.4),(160,.8)}
     assert all(optimization.in_region(req,p) for p in edges)
+
+
+def test_adaptive_poll_improves_a_constrained_quadratic_and_keeps_baseline(request_body):
+    req=optimization.SearchInput.model_validate({**request_body,'algorithm':'adaptive_poll_v1','variables':[
+        {'key':'L','minimum':150,'maximum':170},{'key':'g','minimum':.4,'maximum':.8}],
+        'constraints':[{'metric':'PF1','minimum':.82}], 'max_evaluations':32})
+    baseline=dict(req.parameters);search=optimization.Search(req);seen=[];feasible=0
+    for _ in range(32):
+        p=search.candidate();assert p is not None
+        v={'ATA1':.96-(p['L']-166)**2*.001-(p['g']-.62)**2,'PF1':.9-.01*(p['L']-160),
+           'CostFx':100,'Sf':.6,'Sn':.03}
+        ok=not optimization.assess(req,v);feasible+=ok
+        search.consider(p,v,ok);seen.append(p)
+    assert search.best_score>.95 and feasible>=20
+    assert req.parameters==baseline and seen[0]==baseline
+    assert len({(p['L'],p['g']) for p in seen})==len(seen)
+
+
+def test_adaptive_poll_recovers_feasibility_without_promoting_infeasible_objectives(request_body):
+    req=optimization.SearchInput.model_validate({**request_body,'algorithm':'adaptive_poll_v1',
+        'variables':[{'key':'L','minimum':150,'maximum':170}],
+        'constraints':[{'metric':'PF1','minimum':.8}], 'max_evaluations':24})
+    search=optimization.Search(req)
+    for _ in range(24):
+        p=search.candidate()
+        if p is None:break
+        v={'ATA1':.98-p['L']*.001,'PF1':.75+.01*(p['L']-160),'CostFx':100,'Sf':.6,'Sn':.03}
+        search.consider(p,v,not optimization.assess(req,v))
+    assert search.best is not None and search.best['L']==165
+
+
+def test_adaptive_poll_alternates_objectives_without_hidden_unit_weights(request_body):
+    req=optimization.SearchInput.model_validate({**request_body,'algorithm':'adaptive_poll_v1',
+        'variables':[{'key':'L','minimum':150,'maximum':170}],
+        'secondary_objective':'material_cost','max_evaluations':24})
+    runs=[]
+    for scale in (1,1000000):
+        search=optimization.Search(req);seen=[]
+        for _ in range(24):
+            p=search.candidate()
+            if p is None:break
+            v={'ATA1':.8+p['L']*.001,'CostFx':p['L']*scale,'PF1':.8,'Sf':.6,'Sn':.03}
+            search.consider(p,v,True);seen.append(p)
+        assert min(p['L'] for p in seen)<=155 and max(p['L'] for p in seen)>=165
+        runs.append(seen)
+    assert runs[0]==runs[1]
+
+
+def test_adaptive_poll_survives_failed_evaluations_and_preserves_mixed_domains(request_body,monkeypatch):
+    monkeypatch.setattr(optimization,'allowed_material',lambda name:name in {'A','B'})
+    req=optimization.SearchInput.model_validate({**request_body,'algorithm':'adaptive_poll_v1','variables':[
+        {'key':'L','minimum':150,'maximum':170},{'key':'JJ','minimum':2,'maximum':6,'step':2},
+        {'key':'Paihao','choices':['A','B']}],'max_evaluations':32})
+    search=optimization.Search(req);seen=[]
+    # The worker does not call consider when the numerical kernel fails.
+    for _ in range(32):
+        p=search.candidate();assert p is not None;seen.append(p)
+        if len(seen)>1:
+            assert optimization.in_region(req,p)
+            assert p['JJ'] in {2,4,6} and p['Paihao'] in {'A','B'}
+        assert p['kW']==req.parameters['kW'] and p['Ufai']==req.parameters['Ufai']
+    assert len({tuple(p[v.key] for v in req.variables) for p in seen})==32
+
+
+def test_adaptive_poll_worker_budget_and_snapshot_integration(worker,request_body):
+    request=optimization.SearchInput.model_validate({**request_body,'algorithm':'adaptive_poll_v1','max_evaluations':4})
+    job=jobs.create(request);worker.run_job(worker.claim());result=jobs.get(job['id'])
+    assert result['status']=='succeeded' and result['evaluated']==4
+    assert calculations.get(result['best_id'])['optimization']['algorithm']=='adaptive_poll_v1'
+
+
+def test_snap_preserves_nondecimal_boundaries_and_fine_manufacturing_grid(request_body):
+    for spec in ({'key':'g','minimum':1/30,'maximum':4/15},
+                 {'key':'L','minimum':1/7,'maximum':1.5/7,'step':.01},
+                 {'key':'g','minimum':1e-13,'maximum':1e-11,'step':1e-13}):
+        v=optimization.Variable(**spec)
+        for raw in (v.minimum-1,v.minimum,v.maximum,v.maximum+1,(v.minimum+v.maximum)/2):
+            value=optimization.snap(v,raw)
+            assert v.minimum<=value<=v.maximum
+            if v.step:assert (value-v.minimum)/v.step==pytest.approx(round((value-v.minimum)/v.step),abs=1e-7)

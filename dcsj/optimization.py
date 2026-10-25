@@ -101,7 +101,7 @@ class SearchInput(BaseModel):
     variables: list[Variable] = Field(min_length=1, max_length=6)
     objective: str = 'efficiency'
     secondary_objective: str | None = None
-    algorithm: Literal['hybrid_de_v1', 'stratified_v1'] = 'stratified_v1'
+    algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1'] = 'stratified_v1'
     constraints: list[Constraint] = Field(default_factory=list, max_length=15)
     max_evaluations: int = Field(default=24, ge=2, le=128)
     seed: int = Field(default=42, ge=0, le=2**32-1)
@@ -129,8 +129,9 @@ def config():
             'constraint_metrics': sorted(CONSTRAINTS), 'materials': sorted(available_choices()),
             'max_evaluations': 128,
             'algorithms': [{'id': 'stratified_v1', 'label': '分层采样 + 局部搜索'},
+                           {'id': 'adaptive_poll_v1', 'label': '自适应邻域搜索'},
                            {'id': 'hybrid_de_v1', 'label': '混合差分进化（新方法）'}],
-            'method': '默认保留分层采样，可选混合差分进化：边界检查、制造网格与约束引导。两种方法均支持双目标折中方案；每个候选均使用真实计算核，预算含基准和失败计算。'}
+            'method': '可选择分层采样、自适应邻域搜索或混合差分进化。邻域搜索围绕当前较优方案试探，无改善时缩小步长；各方法均保留可行的折中方案，每个候选使用真实计算核。'}
 
 
 def metrics(result):
@@ -153,7 +154,7 @@ def assess(request, values):
         value = values.get(OBJECTIVES[key][0])
         if value is None or not math.isfinite(value):
             violations.append(f'{key} 目标没有有效结果')
-    if request.algorithm == 'hybrid_de_v1':
+    if request.algorithm != 'stratified_v1':
         for key in ('ATA1', 'PF1'):
             if not 0 < values.get(key, math.nan) <= 1:
                 violations.append(f'{key} 必须在 (0, 1] 范围')
@@ -172,7 +173,9 @@ def snap(variable, value):
         count = math.floor((variable.maximum - variable.minimum) / variable.step + 1e-10)
         index = min(count, max(0, round((value - variable.minimum) / variable.step)))
         value = variable.minimum + variable.step * index
-    return int(round(value)) if variable.key in DISCRETE else round(value, 12)
+    # Rounding to a fixed decimal count can push either endpoint outside bounds
+    # and destroy fine manufacturing steps. Keep the computed grid value instead.
+    return int(round(value)) if variable.key in DISCRETE else min(variable.maximum, max(variable.minimum, value))
 
 
 def in_region(request, parameters):
@@ -413,4 +416,93 @@ class HybridSearch(StratifiedSearch):
 
 
 def Search(request):
-    return HybridSearch(request) if request.algorithm == 'hybrid_de_v1' else StratifiedSearch(request)
+    return {'hybrid_de_v1': HybridSearch, 'stratified_v1': StratifiedSearch,
+            'adaptive_poll_v1': AdaptivePollSearch}[request.algorithm](request)
+
+
+class AdaptivePollSearch(HybridSearch):
+    """Feasible-first coordinate/pattern polling, not a full MADS implementation.
+
+    Every round uses one fixed center. Failed polls shrink its normalized radius;
+    successful moves can extend the observed direction. Dual objectives alternate
+    their incumbents, without a hidden objective weighting. Unsuccessful coupled
+    directions and occasional restarts avoid restricting proposals to one axis.
+    """
+    def __init__(self, request):
+        super().__init__(request)
+        self.rng = random.Random(request.seed)
+        self.poll_queue = []
+        self.round = 0
+        self.poll_states = {key: {'radius': .25, 'anchor': None} for key in objective_keys(request)}
+
+    def _rank(self, record, key):
+        direction = 1 if OBJECTIVES[key][1] == 'max' else -1
+        score = -direction * record['objectives'][key]
+        return (0, 0, score) if record['feasible'] else (1, record['violation'], score)
+
+    def _project(self, p):
+        p = dict(p)
+        for v in self.request.variables:
+            if v.key == 'Paihao':
+                if p[v.key] not in v.choices: p[v.key] = v.choices[0]
+            else: p[v.key] = snap(v, p[v.key])
+        return p
+
+    def _new_poll(self):
+        keys = objective_keys(self.request)
+        key = keys[self.round % len(keys)]
+        state = self.poll_states[key]
+        incumbent = min(self.records, key=lambda r: self._rank(r, key)) if self.records else None
+        previous = state['anchor']
+        progress = incumbent is not None and previous is not None and self._rank(incumbent, key) < self._rank(previous, key)
+        if previous is not None:
+            state['radius'] = min(.5, state['radius'] * 1.25) if progress else max(.0005, state['radius'] * .5)
+        center = self._project(incumbent['parameters'] if incumbent else self.request.parameters)
+        self.poll_queue = []
+        if progress:
+            extended = dict(center)
+            for v in self.request.variables:
+                if v.key != 'Paihao':
+                    extended[v.key] = center[v.key] + (center[v.key] - previous['parameters'][v.key])
+            self.poll_queue.append(self._project(extended))
+        directions = []
+        for v in self.request.variables:
+            if v.key == 'Paihao':
+                directions.extend({**center, v.key: value} for value in v.choices if value != center[v.key])
+            else:
+                distance = max(v.step or 0, (v.maximum - v.minimum) * state['radius'])
+                directions.extend(self._project({**center, v.key: center[v.key] + sign * distance}) for sign in (-1, 1))
+        self.rng.shuffle(directions)
+        self.poll_queue.extend(directions)
+        if previous is not None and not progress:
+            # Coupled directions can cross a narrow feasible valley that axis polls miss.
+            signs = {v.key: self.rng.choice([-1, 1]) for v in self.request.variables}
+            for sign in (-1, 1):
+                p = dict(center)
+                for v in self.request.variables:
+                    if v.key != 'Paihao':
+                        p[v.key] += sign * signs[v.key] * max(v.step or 0, (v.maximum-v.minimum)*state['radius'])
+                self.poll_queue.append(self._project(p))
+        state['anchor'] = incumbent
+        self.round += 1
+        if self.round % 5 == 0 or not self.records:
+            p = dict(center)
+            for v in self.request.variables:
+                p[v.key] = self.rng.choice(v.choices) if v.key == 'Paihao' else snap(v, self.rng.uniform(v.minimum, v.maximum))
+            self.poll_queue.append(p)
+
+    def candidate(self):
+        if not self.iteration:
+            return self._remember(dict(self.request.parameters))
+        if self.exhaustive:
+            return self._grid_candidate()
+        # Try a projected seed once when the reference lies outside the requested grid.
+        if self.iteration == 1 and not in_region(self.request, self.request.parameters):
+            candidate = self._remember(self._project(self.request.parameters))
+            if candidate is not None: return candidate
+        for _ in range(50):
+            if not self.poll_queue: self._new_poll()
+            while self.poll_queue:
+                candidate = self._remember(self.poll_queue.pop(0))
+                if candidate is not None: return candidate
+        return self._grid_candidate() if self.grid is not None else None
