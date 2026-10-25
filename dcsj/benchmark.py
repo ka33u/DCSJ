@@ -11,7 +11,7 @@ import time
 
 from .engine import calculate_design, CalculationError
 from .parameters import InputError
-from . import load_cycle, manufacturing, robustness
+from . import load_cycle, manufacturing, robustness, torque_refinement
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_values,
                            objective_keys, pareto_front, OBJECTIVES, SOLVER_SHA256)
 
@@ -52,7 +52,7 @@ def compare(suite, compute=calculate_design):
                 except InputError as error:
                     rejected += 1
                     return {'error':str(error)}
-            extra = {'refine_torque': True} if any(c.metric == 'TM_refined' for c in request.constraints) else {}
+            extra = torque_refinement.options(request)
             encoded = json.dumps([p, extra], sort_keys=True, ensure_ascii=False, allow_nan=False)
             if encoded in cache:
                 cached += 1

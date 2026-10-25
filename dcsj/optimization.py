@@ -45,7 +45,7 @@ OBJECTIVES = {'efficiency': ('ATA1', 'max', '效率最高'),
               'total_loss': ('total_loss', 'min', '总损耗最低'),
               'cycle_energy': ('cycle_energy', 'min', '负载周期耗电最低（kWh）'),
               'cycle_efficiency': ('cycle_efficiency', 'max', '负载周期效率最高（比例）')}
-CONSTRAINTS = {'ATA1', 'PF1', 'IST1', 'TST1', 'TM1', 'TM_curve', 'TM_refined', 'Sf', 'Sn', 'J1', 'Bg',
+CONSTRAINTS = {'ATA1', 'PF1', 'IST1', 'TST1', 'TM1', 'TM_curve', 'TM_refined', 'TM_continuous', 'Sf', 'Sn', 'J1', 'Bg',
                'Gcu', 'Gfe', 'Gal', 'CostFx', 'total_loss', 'cycle_energy', 'cycle_efficiency'}
 CYCLE_METRICS = {'cycle_energy', 'cycle_efficiency'}
 
@@ -172,7 +172,7 @@ class SearchInput(BaseModel):
                 raise ValueError('气隙上限会使联动 hr0 为负；须满足 g ≤ g基准 + hr0基准')
             if p['Di1'] - 2 * (p['g'] + p['hr0']) <= p['Di2']:
                 raise ValueError('槽颈底直径必须大于轴孔直径')
-        if any(c.metric in {'TM_curve', 'TM_refined'} for c in self.constraints):
+        if any(c.metric in {'TM_curve', 'TM_refined', 'TM_continuous'} for c in self.constraints):
             # Store the effective option in the queued request and every snapshot.
             self.parameters['_curve'] = 1
         if self.load_cycle:
@@ -184,7 +184,7 @@ def config():
     return {'variables': [{'key': k, 'label': v, 'integer': k in DISCRETE} for k, v in VARIABLES.items()],
             'objectives': [{'id': k, 'metric': v[0], 'direction': v[1], 'label': v[2]} for k, v in OBJECTIVES.items()],
             'constraint_metrics': sorted(CONSTRAINTS),
-            'constraint_labels': {'TM_curve': '转矩曲线采样峰值（倍）', 'TM_refined': '加密转矩峰值（收紧迭代，倍）', 'TM1': '最大转矩（原公式估计，倍）',
+            'constraint_labels': {'TM_continuous': '转矩峰值（连续饱和插值，试验，倍）', 'TM_curve': '转矩曲线采样峰值（倍）', 'TM_refined': '加密转矩峰值（收紧迭代，倍）', 'TM1': '最大转矩（原公式估计，倍）',
                                   'cycle_energy': '负载周期耗电（kWh）', 'cycle_efficiency': '负载周期效率（比例）'},
             'load_cycle': {'minimum_load': .3, 'maximum_load': 1.2, 'max_stages': 32,
                            'sample_loads': list(reversed(load_cycle.SAMPLE_LOADS)), 'note': load_cycle.NOTE},
@@ -203,7 +203,8 @@ def metrics(result, request=None, *, cycle=None):
     if cycle is None and request is not None:
         cycle = load_cycle.evaluate(result, request.load_cycle)
     refined = result.get('curve_metrics', {}).get('refined_torque_peak', {})
-    return {**result['values'], 'total_loss': sum(result['values'][k] for k in ('Pcu', 'Pal', 'Pfe', 'Pfw1', 'Ps1')),
+    continuous = result.get('curve_metrics', {}).get('continuous_torque_peak', {})
+    return {**result['values'], 'TM_continuous': continuous.get('value') if continuous.get('status') == 'available' else None, 'total_loss': sum(result['values'][k] for k in ('Pcu', 'Pal', 'Pfe', 'Pfw1', 'Ps1')),
             'TM_refined': refined.get('value') if refined.get('status') == 'available' else None,
             'TM_curve': peak['value'], 'cycle_energy': (cycle or {}).get('input_energy_kwh'),
             'cycle_efficiency': (cycle or {}).get('efficiency')}

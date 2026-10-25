@@ -2,7 +2,8 @@
 
 Original outputs and display curves are never mutated. Only the iteration
 comparison in each copied VM state uses a new tolerance; all electrical
-calculations still execute the recovered SATU/SKIN/SM instructions.
+calculations still execute the recovered SATU/SKIN/SM instructions by default.
+The explicit continuous mode replaces SATU interpolation in its copied states.
 """
 import copy
 import math
@@ -65,9 +66,14 @@ def failure_diagnostic(slip, iterations, residual, steps, history, category):
             'note': '数值求解失败不能据此判定电机性能不达标；本记录仅描述末段迭代，未更改原插值或放宽收敛条件。'}
 
 
-def compact(result):
-    record = result.get('curve_metrics', {}).get('refined_torque_peak')
+def compact(result, key='refined_torque_peak'):
+    record = result.get('curve_metrics', {}).get(key)
     return {k: v for k, v in record.items() if k != 'samples'} if record else None
+
+
+def options(request):
+    keys = {c.metric for c in request.constraints}
+    return {option: True for key, option in [('TM_refined', 'refine_torque'), ('TM_continuous', 'continuous_torque')] if key in keys}
 
 
 def f32(value):
@@ -75,13 +81,14 @@ def f32(value):
 
 
 class Sampler:
-    def __init__(self, checkpoint):
+    def __init__(self, checkpoint, *, continuous=False):
         if checkpoint is None or checkpoint.pc != CHECKPOINT or checkpoint.memory.uint(0x4aa150) != 1:
             raise NumericKernelError('缺少原转矩扫描的首点状态')
         instruction = checkpoint.program['code'].get(COMPARISON)
         if instruction != (0x401907, 'fcomp', [['m', None, None, 1, TOLERANCE_ADDRESS, 4]]):
             raise NumericKernelError('转矩迭代指令与已验证版本不一致')
         self.checkpoint = checkpoint
+        self.continuous = continuous
 
     def __call__(self, slip):
         slip = f32(slip)
@@ -91,15 +98,23 @@ class Sampler:
         vm.memory.set_float(vm.reg('edi'), slip)
         start, residual, interpolation_window = vm.steps, None, None
         history = deque(maxlen=12)
+        saturation, factor_residual = None, None
+        if self.continuous:
+            from .continuous_saturation import Saturation
+            saturation = Saturation()
         while vm.pc != POINT_COMPLETE:
             if vm.done or vm.steps - start >= MAX_POINT_STEPS or vm.pc in (0x401c71, 0x401c44, 0x4019d1):
                 category = ('instruction_budget' if vm.steps-start >= MAX_POINT_STEPS else
                             'iteration_limit' if vm.pc == 0x4019d1 else 'incomplete')
-                raise SamplingFailure(failure_diagnostic(slip, vm.memory.uint(0x4aa14c), residual,
-                                                        vm.steps-start, history, category))
+                diagnostic = failure_diagnostic(slip, vm.memory.uint(0x4aa14c), residual, vm.steps-start, history, category)
+                if self.continuous:
+                    diagnostic['note'] = '连续饱和插值试验模型未完成数值求解，不能据此判定电机性能不达标；插值段记录属于连续模型。'
+                raise SamplingFailure(diagnostic)
             if vm.pc == 0x41ebde:
                 # Capture SATU's LAQ1 window before subsequent calls reuse its scratch state.
                 interpolation_window = vm.memory.uint(0x4aa544)
+                if saturation:
+                    interpolation_window = saturation.apply(vm.memory)
             vm.steps += 1
             if vm.callback():
                 continue
@@ -108,6 +123,9 @@ class Sampler:
                 raise NumericKernelError('加密转矩采样遇到未知指令')
             if vm.pc == COMPARISON:
                 residual = vm.st()
+                if self.continuous:
+                    factor = f32(math.hypot(vm.memory.f32(0x4aa134), vm.memory.f32(0x4aa13c))/vm.memory.f32(0x4aa138))
+                    factor_residual = abs(factor-vm.memory.f32(0x4aa164))
                 history.append({'iteration': vm.memory.uint(0x4aa14c), 'residual': residual,
                                 'input_current': vm.memory.f32(0x4aa154),
                                 'input_factor': vm.memory.f32(0x4aa164),
@@ -128,7 +146,10 @@ class Sampler:
         if (residual is None or not math.isfinite(residual) or residual >= f32(TOLERANCE)
                 or not all(math.isfinite(v) and v >= 0 for v in (current, torque))):
             raise NumericKernelError('加密转矩采样包含无效或未收敛数值')
+        if self.continuous and (factor_residual is None or not math.isfinite(factor_residual) or factor_residual >= f32(TOLERANCE)):
+            raise NumericKernelError('连续饱和插值的第二迭代状态未收敛')
         return {'slip': slip, 'current': current, 'torque': torque, 'residual': residual,
+                **({'factor_residual': factor_residual} if self.continuous else {}),
                 'iterations': vm.memory.uint(0x4aa14c), 'steps': vm.steps - start}
 
 
@@ -176,18 +197,23 @@ def refine(sample, slips):
                 'samples': sorted(samples.values(), key=lambda r: -r['slip'])}
 
 
-def evaluate(checkpoint, curves, kernel_sha256):
+def evaluate(checkpoint, curves, kernel_sha256, *, continuous=False):
     legacy = sampled_torque_peak(curves)
     info = {'status': 'unavailable', 'value': None, 'slip': None, 'unit': '倍',
             'method': 'independent-sm-tight-grid-v1', 'note': NOTE,
             'iteration_tolerance': TOLERANCE, 'maximum_samples': MAX_SAMPLES,
             'legacy_peak': legacy, 'samples': [], 'kernel_sha256': kernel_sha256}
+    if continuous:
+        from .continuous_saturation import NOTE as continuous_note
+        info.update(method='independent-sm-pchip-saturation-v1', note=continuous_note,
+                    model_scope='torque-sampling-only', experimental=True, extrapolation=False,
+                    factor_iteration_tolerance=TOLERANCE)
     if kernel_sha256 != KERNEL_SHA256:
         return {**info, 'reason': '当前数值核尚未验证加密采样接口'}
     if legacy['status'] != 'available':
         return {**info, 'reason': '原始转矩采样不完整，无法开展峰值校核'}
     try:
-        sampler = Sampler(checkpoint)
+        sampler = Sampler(checkpoint, **({'continuous': True} if continuous else {}))
     except NumericKernelError as error:
         return {**info, 'reason': str(error)}
     curve = next(c for c in curves if c.get('id') == 'slip')

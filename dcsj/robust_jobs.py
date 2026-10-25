@@ -41,7 +41,7 @@ def run(worker, identity, request, compute):
             if reason: break
             try:
                 p = robustness.validate_scenario(scenario['parameters'])
-                extra = {'refine_torque': True} if any(c.metric == 'TM_refined' for c in request.constraints) else {}
+                extra = torque_refinement.options(request)
                 result = compute(p, wait=True, stop_event=worker.stop, **extra)
                 current = tuple(result['provenance'].get(k) for k in ('kernel_sha256','wrapper_sha256','resource_package'))
                 if fingerprint is not None and current != fingerprint:
@@ -79,6 +79,7 @@ def run(worker, identity, request, compute):
                       'load_cycle':baseline_sample.get('load_cycle'), 'robustness':robust,
                       'manufacturing':manufacturing.audit(request,nominal),
                       'refined_torque_peak':torque_refinement.compact(nominal_result or {}),
+                      'continuous_torque_peak':torque_refinement.compact(nominal_result or {}, 'continuous_torque_peak'),
                       'torque_peak':sampled_torque_peak((nominal_result or {}).get('curves',[]))}
         calculation_id = None
         if nominal_result is not None:

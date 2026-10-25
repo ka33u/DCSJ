@@ -118,3 +118,26 @@ def test_refined_mode_is_part_of_cache_identity(suite,fake_engine):
     assert len(calls)==10 and sum(bool(m) for m in modes)==5
     assert all(r['feasible']==5 for r in reports if r['case_id']=='refined')
     assert all(c['values']['TM_refined'] is None for r in reports if r['case_id']=='synthetic' for c in r['candidates'])
+
+
+def test_both_torque_models_have_separate_cache_entries(suite,fake_engine):
+    compute,calls=fake_engine
+    base=copy.deepcopy(suite['cases'][0]);base['request']['parameters']['_curve']=1
+    suite['cases']=[];modes=[]
+    for label,metrics in [('plain',[]),('original',['TM_refined']),('continuous',['TM_continuous']),('both',['TM_refined','TM_continuous'])]:
+        case=copy.deepcopy(base);case['id']=label
+        case['request']['constraints']=[{'metric':metric,'minimum':3} for metric in metrics]
+        suite['cases'].append(case)
+    def evaluate(p,**kwargs):
+        modes.append(kwargs);r=compute(p);r['curve_metrics']={}
+        for flag,key,value in [('refine_torque','refined_torque_peak',3.2),('continuous_torque','continuous_torque_peak',3.4)]:
+            if kwargs.get(flag):r['curve_metrics'][key]={'status':'available','value':value}
+        return r
+    reports=list(benchmark.compare(suite,evaluate))
+    assert len(calls)==20
+    assert len({tuple(sorted(m)) for m in modes})==4
+    assert all(r['feasible']==5 for r in reports)
+    for report in reports:
+        for c in report['candidates']:
+            assert c['values']['TM_continuous']==(3.4 if report['case_id'] in ('continuous','both') else None)
+            assert c['values']['TM_refined']==(3.2 if report['case_id'] in ('original','both') else None)

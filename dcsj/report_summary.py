@@ -115,31 +115,41 @@ def targets(snapshot):
         if points:
             peak = max(points, key=lambda p: p['y'])
             rows.append(('转矩曲线采样峰值', '—', number(peak['y']), 's=' + number(peak['x'], 4), '倍'))
-    refined = snapshot.get('curve_metrics', {}).get('refined_torque_peak')
-    if refined:
-        target = next((c for c in snapshot.get('optimization', {}).get('constraints', []) if c['metric'] == 'TM_refined'), {})
+    for key, metric, label in TORQUE_MODES:
+        refined = snapshot.get('curve_metrics', {}).get(key)
+        if not refined:
+            continue
+        target = next((c for c in snapshot.get('optimization', {}).get('constraints', []) if c['metric'] == metric), {})
         bounds = [symbol + number(target[key]) for key, symbol in [('minimum', '≥'), ('maximum', '≤')] if target.get(key) is not None]
-        rows.append(('加密转矩峰值', ' / '.join(bounds) or '—', number(refined.get('value')),
+        rows.append((label, ' / '.join(bounds) or '—', number(refined.get('value')),
                      's=' + number(refined['slip'], 5) if refined.get('status') == 'available' else '采样无效', '倍'))
     return rows
 
 
-def torque_summary(snapshot):
-    refined = snapshot.get('curve_metrics', {}).get('refined_torque_peak')
+TORQUE_MODES = [('refined_torque_peak', 'TM_refined', '加密转矩峰值'),
+                ('continuous_torque_peak', 'TM_continuous', '连续饱和插值峰值（试验）')]
+
+
+def torque_summary(snapshot, key='refined_torque_peak'):
+    refined = snapshot.get('curve_metrics', {}).get(key)
     if not refined:
         return None
     text = ('峰值 ' + number(refined['value'], 8) + ' 倍 · s=' + number(refined['slip'], 7)
             + ' · 相对原采样峰值差 ' + number(refined.get('delta_from_legacy'), 8) + ' 倍'
             if refined['status'] == 'available' else refined.get('reason', '加密采样未完成'))
     diagnostic = refined.get('diagnostic') or {}
-    return {'text': text, 'note': refined.get('note', ''), 'diagnostic_note': diagnostic.get('note', ''),
+    continuous = key == 'continuous_torque_peak'
+    return {'title': next(label for k, _, label in TORQUE_MODES if k == key) + '校核',
+            'headers': TORQUE_HEADERS + (['第二状态差'] if continuous else []),
+            'text': text, 'note': refined.get('note', ''), 'diagnostic_note': diagnostic.get('note', ''),
             'diagnostic_rows': [[str(r['iteration']), number(r.get('input_current'), 8),
                                  number(r.get('current'), 8), number(r.get('residual'), 7),
                                  number(r.get('saturation_input'), 8), number(r.get('saturation_factor'), 8),
                                  str(r['interpolation_window']) if r.get('interpolation_window') is not None else '—']
                                 for r in diagnostic.get('history', [])],
             'rows': [[number(r['slip'], 7), number(r['torque'], 8), number(r['current'], 8),
-                      str(r['iterations']), number(r['residual'], 5)] for r in refined.get('samples', [])]}
+                      str(r['iterations']), number(r['residual'], 5)] +
+                     ([number(r.get('factor_residual'), 5)] if continuous else []) for r in refined.get('samples', [])]}
 
 
 TORQUE_HEADERS = ['转差率 s', '转矩倍数', '电流倍数', '迭代次数', '末次电流倍数差']

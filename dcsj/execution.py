@@ -9,7 +9,7 @@ class BusyError(RuntimeError):
     pass
 
 
-def compute(parameters, wait=False, stop_event=None, *, refine_torque=False):
+def compute(parameters, wait=False, stop_event=None, *, refine_torque=False, continuous_torque=False):
     while not _slots.acquire(blocking=False):
         if not wait:
             raise BusyError("计算资源已占满，请稍后重试")
@@ -20,6 +20,7 @@ def compute(parameters, wait=False, stop_event=None, *, refine_torque=False):
     try:
         if stop_event is not None and stop_event.is_set():
             raise BusyError("计算任务已停止")
-        return calculate_design(parameters, **({'refine_torque': True} if refine_torque else {}))
+        return calculate_design(parameters, **({'refine_torque': True} if refine_torque else {}),
+                                **({'continuous_torque': True} if continuous_torque else {}))
     finally:
         _slots.release()

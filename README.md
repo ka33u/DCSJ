@@ -381,3 +381,14 @@ API 示例：`variables` 中使用 `{"key":"Djj","values":[0.71,0.8,0.9]}` 或 `
 结果页、HTML 与 PDF 可查看已保存的迭代明细。公差情景中，必需的加密峰值无法求得时按数值校核失败记录，汇总目标为空；有完整数值但未达到约束的情景仍显示其有效目标值。数值求解失败本身不能证明电机性能不达标。既有快照读取原记录，无需数据库迁移或资源包更新。
 
 研究参考：[饱和异步机磁等效电路的非线性求解方法比较（2024，公开摘要）](https://journals.sagepub.com/doi/abs/10.3233/JAE-230237)与 [PETSc 的阻尼固定点迭代文档](https://petsc.org/release/manualpages/SNES/SNESNRICHARDSON/)。原核饱和表局部三点二次插值在更换取点范围时可能不连续；本轮诊断保留这种原始行为。连续插值及混合求解属于进一步模型验证工作，尚未替代生产计算。
+
+
+## 0.18.0：连续饱和插值转矩约束（试验）
+
+自动寻优新增可选约束 `TM_continuous · 转矩峰值（连续饱和插值，试验，倍）`，适用于研究原饱和系数查表换段引起的转矩迭代振荡。API 在 `POST /api/v1/optimization/jobs` 的 `constraints` 中使用 `{"metric":"TM_continuous","minimum":3.3}`。它可与 `TM_refined` 同时选择；两种模型独立求解、分别满足约束，缓存也分开保存。未选择时不执行试验模型。
+
+该选项仅改变独立转矩采样中 SATU 的饱和系数插值，使用运行时原表节点与低饱和解析段端点构建保形三次插值（PCHIP），不对表外数值外推。表内插值连续且保持单调，和低饱和解析段的连接保证函数值连续，不承诺该连接点的导数连续。每点仍运行原 SM/SKIN 运算，电流倍数差及第二迭代状态差均须小于 `1e-5`；任一点未收敛、超出表域或超出采样预算，整项峰值不可用，不回退到其他峰值。公差寻优要求每个情景都完成数值校核。
+
+**这是改变插值规则的试验模型，并非原软件复算精度或物理预测精度的提升。** 常规效率、功率因数、损耗、`TM1` 与原曲线保留原模型，连续模型仅用于这项转矩约束；仍需独立工程校核。有限采样也不保证连续全局峰值。快照的 `curve_metrics.continuous_torque_peak` 保存方法标识、模型作用范围、全部采样点及两种状态差；工作台与 HTML/PDF 报告分别展示原加密峰值和试验峰值，重开历史记录不重新计算。
+
+方法参考：[SciPy PCHIP 官方说明](https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.PchipInterpolator.html)中的保形斜率构造；对固定点迭代阻尼的研究参考 [PETSc Richardson 非线性求解说明](https://petsc.org/release/manualpages/SNES/SNESNRICHARDSON/)。运行程序不需要 SciPy；独立对照、原型号试算与数值诊断均留在私有验证目录。

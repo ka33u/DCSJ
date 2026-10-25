@@ -217,6 +217,9 @@ def _render(snapshot):
     def summary_table(items):
         result = table([], summary.grid(items), [WIDTH * .18, WIDTH * (1/3 - .18)] * 3, compact=True)
         result.setStyle(TableStyle([('BACKGROUND', (col, 0), (col, -1), colors.HexColor('#f4f7f6')) for col in (0, 2, 4)]))
+        if snapshot.get('curve_metrics', {}).get('continuous_torque_peak'):
+            # Keep the extra model row and operating metrics together on the summary page.
+            result.setStyle(TableStyle([('TOPPADDING', (0,0), (-1,-1), 1), ('BOTTOMPADDING', (0,0), (-1,-1), 1)]))
         return result
 
     p, values = snapshot['inputs'], snapshot['values']
@@ -248,21 +251,23 @@ def _render(snapshot):
         story.append(paragraph(summary.wire_note(snapshot), 'small'))
     targets = table(['指标', '设计目标', '计算结果', '差值 / 峰值位置', '单位'], summary.targets(snapshot),
                     [WIDTH*.30, WIDTH*.18, WIDTH*.18, WIDTH*.24, WIDTH*.10], compact=True)
-    if snapshot.get('curve_metrics', {}).get('refined_torque_peak'):
+    if any(snapshot.get('curve_metrics', {}).get(key) for key, _, _ in summary.TORQUE_MODES):
         targets.setStyle(TableStyle([('TOPPADDING', (0,0), (-1,-1), 1), ('BOTTOMPADDING', (0,0), (-1,-1), 1)]))
     story += [paragraph('设计目标与计算结果', 'sh2'), targets,
               paragraph('差值＝计算结果−设计目标；效率与槽满率的差值单位为百分点。s 表示峰值处转差率。', 'small'),
               paragraph('运行与电磁指标', 'sh2'), summary_table(summary.performance(values))]
     curves = [curve for curve in snapshot.get('curves', []) if curve.get('display') is not False]
-    refined = summary.torque_summary(snapshot)
-    if refined:
-        story += [PageBreak(), paragraph('加密转矩峰值校核', 'h2'), paragraph(refined['text']),
+    for key, _, _ in summary.TORQUE_MODES:
+        refined = summary.torque_summary(snapshot, key)
+        if not refined:
+            continue
+        story += [PageBreak(), paragraph(refined['title'], 'h2'), paragraph(refined['text']),
                   paragraph(refined['note'], 'small')]
         if refined['diagnostic_note']:
             story += [paragraph('未收敛采样的末段迭代', 'sh2'), paragraph(refined['diagnostic_note'], 'small'),
                       table(summary.TORQUE_DIAGNOSTIC_HEADERS, refined['diagnostic_rows'],
                             [WIDTH*f for f in (.06,.17,.17,.15,.17,.16,.12)], compact=True)]
-        story += [table(summary.TORQUE_HEADERS, refined['rows'], [WIDTH/5]*5, compact=True)]
+        story += [table(refined['headers'], refined['rows'], [WIDTH/len(refined['headers'])]*len(refined['headers']), compact=True)]
     robust = summary.robustness_summary(snapshot)
     if robust:
         story += [PageBreak(), paragraph('公差情景评估', 'h2'), paragraph(summary.TOLERANCE_NOTE),

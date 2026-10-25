@@ -1082,3 +1082,23 @@ test('unconverged peak snapshot exposes saved iteration diagnostics without reca
   assert.match(details.textContent,/输入电流倍数/);assert.match(details.textContent,/0.499/);assert.match(details.textContent,/101/);
   assert.ok(!ui.calls.some(c=>c.path==='/calculate'));
 });
+
+
+test('continuous torque opt-in shows model scope and keeps both saved results distinct',async t=>{
+  const peak={status:'available',value:3.3298,slip:.324,note:'试验模型：插值规则已改变，常规效率仍按原模型计算。',
+    samples:[{slip:.324,torque:3.3298,current:5,iterations:8,residual:1e-6,factor_residual:2e-7}]};
+  const value=snapshot('a');value.curve_metrics={refined_torque_peak:{...peak,value:3.3216},continuous_torque_peak:peak};
+  const ui=await app(t,path=>{
+    if(path==='/calculations')return records();
+    if(path==='/calculations/a')return value;
+    if(path==='/optimization/config')return {method:'人工测试',variables:[{key:'L',label:'长度'}],objectives:[{id:'efficiency',label:'效率'}],materials:[],constraint_metrics:['TM_refined','TM_continuous']};
+  });
+  ui.nav('optimization');await settle();ui.doc.querySelector('#add-optimization-constraint').click();
+  const metric=ui.doc.querySelector('.search-constraint select');metric.value='TM_continuous';metric.dispatchEvent(new ui.w.Event('change'));
+  assert.match(ui.doc.querySelector('#optimization-curve-note').textContent,/PCHIP/);
+  assert.match(ui.doc.querySelector('#optimization-curve-note').textContent,/原软件插值不同/);
+  ui.nav('comparisons');await settle();ui.find('#calculation-table-body button','打开快照').click();await settle();
+  const sections=ui.doc.querySelectorAll('.torque-refinement-result');assert.equal(sections.length,2);
+  assert.match(sections[0].textContent,/3.3216/);assert.match(sections[1].textContent,/3.3298/);
+  assert.match(sections[1].textContent,/第二状态差/);assert.match(sections[1].textContent,/2.000e-7/);
+});

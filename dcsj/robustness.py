@@ -46,9 +46,12 @@ def measured(request, scenario, result):
     cycle = load_cycle.evaluate(result, request.load_cycle)
     values = metrics(result, cycle=cycle)
     error = None
-    if any(c.metric == 'TM_refined' for c in request.constraints) and values['TM_refined'] is None:
-        refined = result.get('curve_metrics', {}).get('refined_torque_peak') or {}
-        error = '加密转矩数值校核失败：' + refined.get('reason', '未取得有效采样峰值')
+    for metric, key, label in [('TM_refined', 'refined_torque_peak', '加密转矩'),
+                               ('TM_continuous', 'continuous_torque_peak', '连续饱和插值转矩')]:
+        if any(c.metric == metric for c in request.constraints) and values[metric] is None:
+            refined = result.get('curve_metrics', {}).get(key) or {}
+            message = label + '数值校核失败：' + refined.get('reason', '未取得有效采样峰值')
+            error = (error + '；' + message) if error else message
     return {**scenario, 'values':values, 'load_cycle':cycle, 'violations':assess(request,values),
             'error':error, 'calculation_id':None}
 
@@ -79,7 +82,9 @@ def summarize(request, nominal, samples, *, complete=True):
         values = [s.get('values', {}).get(metric) for s in samples]
         finite = [v for v in values if isinstance(v,(int,float)) and math.isfinite(v)]
         ranges[metric] = {'minimum':min(finite) if finite else None, 'maximum':max(finite) if finite else None,
-                          'complete':valid and len(finite)==expected}
+                          # A different metric may fail while this metric has every sample.
+                          # Group validity and ranking remain governed by all required results.
+                          'complete':complete and len(finite)==expected}
     values = dict(samples[0].get('values', {})) if samples else {}
     values.update({OBJECTIVES[k][0]:v for k,v in objectives.items()})
     score = max((violation_score(request,s.get('values',{})) for s in samples), default=1e6) if valid else 1e6
