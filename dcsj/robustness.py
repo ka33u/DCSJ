@@ -21,10 +21,12 @@ def sample_count(request):
 
 
 def interior_offsets(request):
-    """Centered LHS: one midpoint per stratum in each dimension.
+    """LHS with reproducible dimension permutations and optional nested levels.
 
     Hash-ordered permutations give each dimension its own reproducible stream,
     independent of the search RNG, candidate order and tolerance field order.
+    Nested levels fill empty strata, retaining every earlier coordinate. Earlier
+    coordinates may be on the new stratum's left boundary; they are not all centers.
     Even sample counts exclude the nominal coordinate and all corner coordinates.
     These are coverage points, not draws from a manufacturing distribution.
     """
@@ -32,10 +34,21 @@ def interior_offsets(request):
     if not count:
         return []
     columns = {}
+    nested = request.tolerance_sampling == 'nested_lhs_v1'
     for tolerance in sorted(request.tolerances, key=lambda t: t.key):
-        prefix = f'dcsj-tolerance-lhs-v1:{request.seed}:{count}:{tolerance.key}:'
-        bins = sorted(range(count), key=lambda i: hashlib.sha256((prefix+str(i)).encode()).digest())
-        columns[tolerance.key] = [((i+.5)*2/count-1)*tolerance.delta for i in bins]
+        initial = 4 if nested else count
+        prefix = f'dcsj-tolerance-lhs-v1:{request.seed}:{initial}:{tolerance.key}:'
+        bins = sorted(range(initial), key=lambda i: hashlib.sha256((prefix+str(i)).encode()).digest())
+        unit = [(i+.5)/initial for i in bins]
+        size = initial
+        while size < count:
+            size *= 2
+            occupied = {int(u*size) for u in unit}
+            empty = set(range(size)) - occupied
+            prefix = f'dcsj-tolerance-nested-lhs-v1:{request.seed}:{size}:{tolerance.key}:'
+            bins = sorted(empty, key=lambda i: hashlib.sha256((prefix+str(i)).encode()).digest())
+            unit.extend((i+.5)/size for i in bins)
+        columns[tolerance.key] = [(u*2-1)*tolerance.delta for u in unit]
     return [{key: values[i] for key, values in columns.items()} for i in range(count)]
 
 
@@ -128,4 +141,13 @@ def summarize(request, nominal, samples, *, complete=True):
                            '有限采样不保证整个区间合格，不推定公差分布或合格概率；气隙偏差不模拟偏心。',
                       sampling_plan={'interior_method':'centered-lhs-sha256-v1', 'seed':request.seed,
                                      'interior_samples':request.tolerance_interior_samples})
+        if request.tolerance_sampling == 'nested_lhs_v1':
+            record.update(method='center-corners-nested-lhs-v1',
+                          note=f'名义尺寸与全部角点之外，增加 {request.tolerance_interior_samples} 个区间内部分层点（种子 {request.seed}）。'
+                               '在相同名义尺寸、公差设置和种子下，4、8、16、32 点逐级加密时保留前一级的全部点，再补齐各尺寸空缺的分层。'
+                               '所有候选共用同一组相对偏差，以全部采样中最不利的目标值寻优，全部采样均须满足约束。'
+                               '有限采样不保证整个区间合格，不推定公差分布或合格概率；气隙偏差不模拟偏心。',
+                          sampling_plan={'interior_method':'nested-lhs-sha256-v1','seed':request.seed,
+                                         'interior_samples':request.tolerance_interior_samples,
+                                         'retained_levels':[n for n in INTERIOR_COUNTS if 0<n<request.tolerance_interior_samples]})
     return record, values, score

@@ -220,7 +220,8 @@ def test_saved_tolerance_report_preserves_nominal_and_sample_results(robust_work
 def test_interior_strata_are_complete_reproducible_and_independent_of_field_order(robust_body,count,dimensions):
     tolerances=[{'key':'g','delta':.05},{'key':'L','delta':1},{'key':'Djj','delta':.01}][:dimensions]
     req=optimization.SearchInput.model_validate({**robust_body,'max_evaluations':128,
-        'tolerances':tolerances,'tolerance_interior_samples':count,'tolerance_gap_mode':'fixed_neck_bottom'})
+        'tolerances':tolerances,'tolerance_interior_samples':count,'tolerance_gap_mode':'fixed_neck_bottom',
+        'tolerance_sampling':'centered_lhs_v1'})
     samples=robustness.scenarios(req,req.parameters)
     legacy=robustness.scenarios(req.model_copy(update={'tolerance_interior_samples':0}),req.parameters)
     assert samples[:len(legacy)]==legacy and len(samples)==robustness.sample_count(req)==len(legacy)+count
@@ -270,7 +271,7 @@ def test_interior_violation_changes_selection_and_survives_retry_and_reports(rob
     saved=calculations.get(interior['best_id'])
     assert saved['inputs']['L']==170 and saved['values']['ATA1']==.94
     record=saved['optimization']['robustness']
-    assert record['method']=='center-corners-lhs-v1' and record['sampling_plan']['interior_samples']==4
+    assert record['method']=='center-corners-nested-lhs-v1' and record['sampling_plan']['interior_samples']==4
     retried=jobs.retry(interior['id'])
     assert retried['request']['tolerance_interior_samples']==4 and retried['request']['seed']==42
     monkeypatch.setattr(robustness,'scenarios',lambda *a,**kw:pytest.fail('Saved reports must not sample again'))
@@ -305,3 +306,67 @@ def test_benchmark_and_jobs_use_the_same_interior_points_and_accounting(robust_w
     assert runs[0]['engine_calls']==14 and runs[1]['cached_evaluations']==14
     assert [s['parameters'] for c in runs[0]['candidates'] for s in c['robustness']['samples']]==[s['parameters'] for s in job['samples']]
     assert runs[0]['best_ordinal']==next(c['ordinal'] for c in job['candidates'] if c['calculation_id']==job['best_id'])
+
+
+@pytest.mark.parametrize('dimensions',[1,2,3])
+@pytest.mark.parametrize('seed',[0,42,2**32-1])
+def test_nested_levels_retain_all_points_and_cover_every_marginal_stratum(robust_body,dimensions,seed):
+    # Unit scale tests the mathematical strata exactly, without reversing decimal
+    # scaling at a stratum boundary (e.g. -.0375 / .05 can round below -.75).
+    ts=[{'key':key,'delta':1.} for key in ('g','L','Djj')][:dimensions]
+    previous=[]
+    for count in (4,8,16,32):
+        req=optimization.SearchInput.model_validate({**robust_body,'max_evaluations':128,
+            'tolerances':ts,'tolerance_interior_samples':count,'seed':seed})
+        assert req.tolerance_sampling=='nested_lhs_v1'
+        offsets=robustness.interior_offsets(req)
+        assert offsets[:len(previous)]==previous
+        assert len(offsets)==count and len({tuple(o.items()) for o in offsets})==count
+        for t in req.tolerances:
+            u=[(o[t.key]/t.delta+1)/2 for o in offsets]
+            assert sorted(int(x*count) for x in u)==list(range(count))
+            assert all(0<x<1 and x!=.5 for x in u)
+        reordered=req.model_copy(update={'tolerances':list(reversed(req.tolerances))})
+        assert robustness.interior_offsets(reordered)==offsets
+        if count==4:
+            assert offsets==robustness.interior_offsets(req.model_copy(update={'tolerance_sampling':'centered_lhs_v1'}))
+        previous=offsets
+
+
+def test_refinement_never_discards_an_already_detected_interior_failure(robust_worker,robust_body,monkeypatch):
+    worker,_=robust_worker;original=jobs.compute
+    def narrow_failure(p,**kwargs):
+        r=original(p,**kwargs)
+        r['values']['ATA1']=.8 if .6115<p['g']<.6135 else .95
+        return r
+    monkeypatch.setattr(jobs,'compute',narrow_failure)
+    body={**robust_body,'constraints':[{'metric':'ATA1','minimum':.9}]}
+    four=execute(worker,{**body,'tolerance_interior_samples':4,'max_evaluations':14})
+    eight=execute(worker,{**body,'tolerance_interior_samples':8,'max_evaluations':22})
+    legacy=execute(worker,{**body,'tolerance_interior_samples':8,'max_evaluations':22,
+                           'tolerance_sampling':'centered_lhs_v1'})
+    assert four['best_id'] is None and eight['best_id'] is None
+    assert legacy['feasible_count']==2  # The old independent 8-point grid misses this narrow region.
+    assert eight['evaluated']==22
+    for before,after in zip(four['candidates'],eight['candidates']):
+        a,b=before['robustness'],after['robustness']
+        assert b['sampling_plan']['retained_levels']==[4]
+        assert a['objectives']==b['objectives']=={'efficiency':.8}
+        assert [s['parameters'] for s in a['samples']]==[s['parameters'] for s in b['samples'][:7]]
+
+
+def test_legacy_queued_request_and_retry_keep_independent_lhs(robust_worker,robust_body):
+    worker,_=robust_worker
+    req=optimization.SearchInput.model_validate({**robust_body,'tolerance_interior_samples':8,'max_evaluations':22,
+                                                'tolerance_sampling':'centered_lhs_v1'})
+    queued=jobs.create(req)
+    with storage.connect() as db:
+        old=req.model_dump();old.pop('tolerance_sampling')
+        db.execute('UPDATE optimization_jobs SET request=? WHERE id=?',(json.dumps(old),queued['id']))
+    worker.run_job(worker.claim())
+    done=jobs.get(queued['id'])
+    assert done['candidates'][0]['robustness']['method']=='center-corners-lhs-v1'
+    expected=robustness.scenarios(req,req.parameters)
+    assert [s['parameters'] for s in done['candidates'][0]['robustness']['samples']]==[s['parameters'] for s in expected]
+    assert jobs.retry(done['id'])['request']['tolerance_sampling']=='centered_lhs_v1'
+    with pytest.raises(ValidationError):optimization.SearchInput.model_validate({**robust_body,'tolerance_sampling':'unknown'})

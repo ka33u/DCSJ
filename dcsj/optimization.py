@@ -133,6 +133,7 @@ class SearchInput(BaseModel):
     tolerances: list[robustness.Tolerance] | None = Field(default=None, min_length=1, max_length=3)
     tolerance_gap_mode: Literal['independent', 'fixed_neck_bottom'] = 'independent'
     tolerance_interior_samples: StrictInt = Field(default=0, ge=0, le=32)
+    tolerance_sampling: Literal['centered_lhs_v1', 'nested_lhs_v1'] = 'nested_lhs_v1'
     algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1'] = 'stratified_v1'
     constraints: list[Constraint] = Field(default_factory=list, max_length=15)
     max_evaluations: int = Field(default=24, ge=2, le=128)
@@ -196,7 +197,9 @@ def config():
             'materials': sorted(available_choices()),
             'manufacturing': {'max_values': 64, 'rotor_gap_modes': ['independent', 'fixed_neck_bottom']},
             'tolerances': {'keys':['L','g','Djj','Dmm'], 'max_variables':3, 'note':robustness.NOTE,
-                           'interior_sample_counts':list(robustness.INTERIOR_COUNTS)},
+                           'interior_sample_counts':list(robustness.INTERIOR_COUNTS),
+                           'sampling_methods':['nested_lhs_v1','centered_lhs_v1'],
+                           'default_sampling_method':'nested_lhs_v1'},
             'max_evaluations': 128,
             'algorithms': [{'id': 'stratified_v1', 'label': '分层采样 + 局部搜索'},
                            {'id': 'adaptive_poll_v1', 'label': '自适应邻域搜索'},

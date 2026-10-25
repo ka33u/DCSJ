@@ -1035,7 +1035,10 @@ test('tolerance search keeps drafts, validates budget and distinguishes worst sa
   assert.match(d.querySelector('#tolerance-budget-note').textContent,/计算 7 次/);
   assert.match(d.querySelector('#tolerance-budget-note').textContent,/至少需 14 次/);
   d.querySelector('#optimization-budget').value='13';await submit();assert.equal(submitted,null);
+  job.request.tolerance_interior_samples=4;
+  job.request.tolerance_sampling='nested_lhs_v1';
   d.querySelector('#optimization-budget').value='14';await submit();assert.equal(submitted.tolerance_interior_samples,4);
+  assert.match(d.querySelector('#optimization-detail').textContent,/逐级保留已有点/);
   const detail=d.querySelector('#optimization-detail');assert.match(detail.textContent,/最不利采样目标值/);assert.match(detail.textContent,/ATA1=0.88–0.92/);assert.match(detail.textContent,/次情景计算/);
   enabled.checked=false;change(enabled);assert.equal(form.disabled,true);await submit();assert.equal(submitted.tolerances,undefined);assert.equal(submitted.tolerance_gap_mode,undefined);assert.equal(submitted.tolerance_interior_samples,undefined);
   enabled.checked=true;change(enabled);assert.equal(delta.value,'.02');assert.equal(interior.value,'4');

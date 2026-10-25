@@ -409,3 +409,13 @@ API 的寻优请求增加 `tolerance_interior_samples`（整数，允许 `0/4/8/
 内部点采用居中的拉丁超立方分层：每个尺寸区间均分，每层取一个中点；以 `SHA-256(方法标识:seed:点数:尺寸键:层号)` 排序产生各维排列，所有候选使用同一组相对偏差，不消耗搜索器随机序列。允许的偶数点数避免与名义坐标重合。快照方法为 `center-corners-lhs-v1`，`sampling_plan` 保存内部算法标识 `centered-lhs-sha256-v1`、种子和数量；气隙内部偏差同样遵循所选 hr0 联动方式。
 
 这增加了区间覆盖，仍是有限采样，不是全区间合格证明或制造合格率估计。研究依据：[NIST 对多水平试验与曲率的说明](https://www.itl.nist.gov/div898/handbook/pri/section3/pri336.htm)、[SciPy 对拉丁超立方各维分层的定义](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.qmc.LatinHypercube.html)。程序不依赖 SciPy，也不声称复现其随机数序列。制造公差对损耗和起动性能的研究参考[异步电机公差优化论文摘要](https://link.springer.com/article/10.1007/s00158-022-03276-z)；本功能未引入该论文的有限元代理模型或概率分布假设。
+
+## 0.20.0：逐级加密保留已检查的公差点
+
+新任务的内部采样改为嵌套分层。同一名义尺寸、公差设置和种子下，4 点是 8 点的前缀，8 点是 16 点的前缀，16 点是 32 点的前缀；提高数量不会丢弃此前已计算的位置。这样，已发现的内部约束违反或未收敛情景不会仅因换一组更密的点而消失。每次任务仍独立执行全部配置的情景并按实际次数计入预算，不复用跨任务结果，也不自动认证为全区间合格。
+
+API 新增 `tolerance_sampling`，新请求默认为 `nested_lhs_v1`；`centered_lhs_v1` 保留 0.19 的独立居中分层方法。历史队列和重跑请求没有该字段时按旧方法解析，既有快照保持原记录。配置接口返回 `sampling_methods` 和 `default_sampling_method`。新快照方法为 `center-corners-nested-lhs-v1`，`sampling_plan` 记录 `nested-lhs-sha256-v1`、种子、数量和被保留的层级。
+
+嵌套构造从原来的 4 个居中点开始，逐次把每维层数翻倍，在未占用的层中补充中点；保留点可能落在新层的左边界，因此加密后并非所有点都位于层中心。新增层的排列按尺寸键和种子独立生成，不消耗寻优随机序列。每一层级在标准化坐标中，每个尺寸的每个分层恰有一点；实际尺寸仍受浮点计算精度限制。
+
+研究参考：[嵌套拉丁超立方设计用于序贯评估的论文摘要](https://link.springer.com/article/10.1007/s00158-009-0432-y)和 [SciPy 对分层定义的说明](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.qmc.LatinHypercube.html)。本实现是保留前级点的确定性构造，未实现该论文的 maximin 距离优化，不能把嵌套采样视为独立验证集或全区间最坏值证明。

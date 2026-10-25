@@ -102,7 +102,8 @@ def cancel(identity, *, database=None):
 
 def saved_request(document):
     """Reopen old jobs without reviving the removed comparison-only inputs."""
-    return SearchInput.model_validate({'algorithm': 'stratified_v1', **document, 'parameters': {
+    return SearchInput.model_validate({'algorithm': 'stratified_v1', 'tolerance_sampling':'centered_lhs_v1',
+                                      **document, 'parameters': {
         key: value for key, value in document['parameters'].items() if key not in RETIRED_INPUT_KEYS}})
 
 
