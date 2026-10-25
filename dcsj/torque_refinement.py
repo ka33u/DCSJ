@@ -109,6 +109,8 @@ class Sampler:
                 diagnostic = failure_diagnostic(slip, vm.memory.uint(0x4aa14c), residual, vm.steps-start, history, category)
                 if self.continuous:
                     diagnostic['note'] = '连续饱和插值试验模型未完成数值求解，不能据此判定电机性能不达标；插值段记录属于连续模型。'
+                    diagnostic['factor_residual'] = factor_residual
+                    diagnostic['message'] += '；末次第二状态差 ' + (f'{factor_residual:.7g}' if factor_residual is not None else '未取得')
                 raise SamplingFailure(diagnostic)
             if vm.pc == 0x41ebde:
                 # Capture SATU's LAQ1 window before subsequent calls reuse its scratch state.
@@ -124,8 +126,11 @@ class Sampler:
             if vm.pc == COMPARISON:
                 residual = vm.st()
                 if self.continuous:
-                    factor = f32(math.hypot(vm.memory.f32(0x4aa134), vm.memory.f32(0x4aa13c))/vm.memory.f32(0x4aa138))
+                    # Match the original next-state update, including its binary32 store.
+                    factor = f32(math.sqrt(vm.memory.f32(0x4aa134)**2 + vm.memory.f32(0x4aa13c)**2)/vm.memory.f32(0x4aa138))
                     factor_residual = abs(factor-vm.memory.f32(0x4aa164))
+                    if not all(math.isfinite(v) and v >= 0 for v in (residual, factor_residual)):
+                        raise NumericKernelError('连续饱和插值的迭代状态差无效')
                 history.append({'iteration': vm.memory.uint(0x4aa14c), 'residual': residual,
                                 'input_current': vm.memory.f32(0x4aa154),
                                 'input_factor': vm.memory.f32(0x4aa164),
@@ -133,6 +138,12 @@ class Sampler:
                                 'saturation_input': vm.memory.f32(0x4ab4bc),
                                 'saturation_factor': vm.memory.f32(0x4af548),
                                 'interpolation_window': interpolation_window})
+                if self.continuous:
+                    history[-1]['factor_residual'] = factor_residual
+                    # fcomp pops this temporary comparison operand. The electrical
+                    # state and update instructions remain untouched; both states
+                    # must converge before the loop is allowed to finish.
+                    vm.set_st(0, max(residual, factor_residual))
                 original = vm.memory.read(TOLERANCE_ADDRESS, 4)
                 vm.memory.set_float(TOLERANCE_ADDRESS, TOLERANCE)
                 try:
@@ -205,8 +216,9 @@ def evaluate(checkpoint, curves, kernel_sha256, *, continuous=False):
             'legacy_peak': legacy, 'samples': [], 'kernel_sha256': kernel_sha256}
     if continuous:
         from .continuous_saturation import NOTE as continuous_note
-        info.update(method='independent-sm-pchip-saturation-v1', note=continuous_note,
+        info.update(method='independent-sm-pchip-saturation-v2', note=continuous_note,
                     model_scope='torque-sampling-only', experimental=True, extrapolation=False,
+                    convergence_rule='max-absolute-current-factor-update-v1',
                     factor_iteration_tolerance=TOLERANCE)
     if kernel_sha256 != KERNEL_SHA256:
         return {**info, 'reason': '当前数值核尚未验证加密采样接口'}

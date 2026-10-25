@@ -392,3 +392,10 @@ API 示例：`variables` 中使用 `{"key":"Djj","values":[0.71,0.8,0.9]}` 或 `
 **这是改变插值规则的试验模型，并非原软件复算精度或物理预测精度的提升。** 常规效率、功率因数、损耗、`TM1` 与原曲线保留原模型，连续模型仅用于这项转矩约束；仍需独立工程校核。有限采样也不保证连续全局峰值。快照的 `curve_metrics.continuous_torque_peak` 保存方法标识、模型作用范围、全部采样点及两种状态差；工作台与 HTML/PDF 报告分别展示原加密峰值和试验峰值，重开历史记录不重新计算。
 
 方法参考：[SciPy PCHIP 官方说明](https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.PchipInterpolator.html)中的保形斜率构造；对固定点迭代阻尼的研究参考 [PETSc Richardson 非线性求解说明](https://petsc.org/release/manualpages/SNES/SNESNRICHARDSON/)。运行程序不需要 SciPy；独立对照、原型号试算与数值诊断均留在私有验证目录。
+
+
+## 0.18.1：连续插值模式的双状态收敛
+
+修正试验转矩模型在低转差率处可能过早结束迭代的问题：此前原 SM 循环仅由电流差控制，退出后再检查第二状态；当电流先收敛、第二状态尚未收敛时，该采样会被拒绝。现在用两个状态更新量绝对值的最大值控制停止，保持 `1e-5` 阈值及原有迭代次数、指令预算限制，不通过放宽阈值接受结果。数值方法标识更新为 `independent-sm-pchip-saturation-v2`，快照保存 `convergence_rule`；若仍未完成求解，诊断同时记录末次电流差与第二状态差。
+
+原 `TM_refined` 的停止规则与常规计算不变，历史快照保持原方法记录。该修改只改善试验模型的数值求解，不提供物理精度保证。停止准则的研究参考 [PETSc 对迭代状态、步长及残差范数的说明](https://petsc.org/release/manualpages/SNES/SNESConvergedDefault/)；这里采用固定点映射两个更新量的最大范数，没有引入 PETSc 运行依赖。

@@ -117,3 +117,46 @@ def test_dual_model_reports_keep_disclosure_and_second_state_residual(snapshot):
     assert '运行与电磁指标' in pages[0].extract_text()
     text='\n'.join(page.extract_text() for page in pages)
     assert '第二状态差' in text and '连续饱和插值' in text and '加密转矩峰值校核' in text
+
+
+def coupled_checkpoint(update_factor=True):
+    """Small actual VM loop: current converges first, the other state one step later."""
+    from dcsj.numeric_vm import _VM
+    mem=lambda address:['m',None,None,1,address,4]
+    imm=lambda value:['i',value,4]
+    program={'image_base':0x400000,'image_size':0x100000,'stack_base':0x600000,'stack_size':0x10000,
+             'initial_ebp':0x608000,'entry':tr.CHECKPOINT,'initial_segments':[],'function_names':{},'code':{
+        tr.CHECKPOINT:(tr.COMPARISON,'fld',[mem(0x4a0000)]),
+        tr.COMPARISON:(0x401907,'fcomp',[mem(tr.TOLERANCE_ADDRESS)]),
+        0x401907:(0x40190c,'fnstsw',[['r','ax',2]]),
+        0x40190c:(0x401911,'and',[['r','ah',1],imm(65)]),
+        0x401911:(0x401913,'jnp',[imm(tr.POINT_COMPLETE)]),
+        0x401913:(0x401920,'mov',[mem(0x4aa164),imm(0x3f800000 if update_factor else 0x3f000000)]),
+        0x401920:(0x401926,'add',[mem(0x4aa14c),imm(1)]),
+        0x401926:(tr.CHECKPOINT,'jmp',[imm(tr.CHECKPOINT)]),
+    }}
+    vm=_VM(program,{0x4a0000:1e-6,0x4a0004:3.,0x4aa134:1.,0x4aa13c:0.,0x4aa138:1.,
+                   0x4aa164:.5,0x4aa148:7.,0x4aa154:7.,tr.TOLERANCE_ADDRESS:.01})
+    vm.memory.set_uint(0x4aa150,1);vm.set_reg('edi',0x4a0008);vm.set_reg('ebx',0x4a0004)
+    return vm
+
+
+def test_continuous_loop_waits_for_both_states_without_changing_original_rule():
+    seed=coupled_checkpoint();original=tr.Sampler(seed)(.1);continuous=tr.Sampler(seed,continuous=True)(.1)
+    assert original['iterations']==0
+    assert continuous['iterations']==1 and continuous['factor_residual']==0
+    assert continuous['current']==original['current']==7
+    assert continuous['torque']==original['torque']==3
+    assert continuous['residual']<tr.TOLERANCE
+    assert seed.memory.f32(0x4aa164)==.5 and seed.memory.uint(0x4aa14c)==0
+    assert seed.memory.f32(tr.TOLERANCE_ADDRESS)==tr.f32(.01)
+
+
+def test_second_state_failure_keeps_budget_and_diagnostic_even_if_current_is_converged(monkeypatch):
+    monkeypatch.setattr(tr,'MAX_POINT_STEPS',45)
+    with pytest.raises(tr.SamplingFailure) as caught:tr.Sampler(coupled_checkpoint(False),continuous=True)(.1)
+    d=caught.value.diagnostic
+    assert d['category']=='instruction_budget' and d['steps']==45
+    assert d['residual']<tr.TOLERANCE and d['factor_residual']==.5
+    assert '末次第二状态差 0.5' in d['message']
+    assert d['history'][-1]['factor_residual']==.5
