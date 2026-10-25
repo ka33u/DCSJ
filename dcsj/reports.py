@@ -122,14 +122,19 @@ def render(snapshot):
                 '<p class="legend">差值＝计算结果−设计目标；效率与槽满率的差值单位为百分点。s 表示峰值处转差率。</p>',
                 '<h2>运行与电磁指标</h2>', table([], summary.grid(summary.performance(v)), 'pairs'), '</section>']
     curves = [curve for curve in snapshot.get('curves', []) if curve.get('display') is not False]
+    manufacturing = summary.manufacturing_summary(snapshot)
+    if manufacturing:
+        content += ['<h2 class="break">寻优规格与尺寸联动</h2><p>' + text(manufacturing['text']) + '</p>',
+                    '<p>' + text(manufacturing['note']) + '</p>',
+                    table(summary.MANUFACTURING_HEADERS, manufacturing['rows']) if manufacturing['rows'] else '']
     cycle = summary.cycle_summary(snapshot)
     if cycle:
-        content += ['<h2 class="break">负载周期能耗</h2><p>' + text(cycle['text']) + '</p>',
+        content += [('<h2>' if manufacturing else '<h2 class="break">') + '负载周期能耗</h2><p>' + text(cycle['text']) + '</p>',
                     '<p>' + text(cycle['note']) + '</p>']
         if cycle['rows']:
             content.append(table(summary.CYCLE_HEADERS, cycle['rows']))
     if curves:
-        content.append(('<h2>' if cycle else '<h2 class="break">') + '性能曲线</h2><p>' + text(summary.CURVE_NOTE) + '</p>')
+        content.append(('<h2>' if cycle and not manufacturing else '<h2 class="break">') + '性能曲线</h2><p>' + text(summary.CURVE_NOTE) + '</p>')
         for curve in curves:
             content.append('<figure><figcaption>' + text(curve['title']) + '</figcaption>' + curve_svg(curve) + '</figure>')
     content += ['<h2 class="break">完整输入</h2>', table(['字段', '参数', '输入', '单位'], [

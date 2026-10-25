@@ -5,14 +5,15 @@ import itertools
 import hashlib
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, model_validator
 from .parameters import INTEGER_KEYS, validate
 from .engine import available_materials
 from .curves import sampled_torque_peak
-from . import load_cycle
+from . import load_cycle, manufacturing
 from .load_cycle import LoadStage
 
-SOLVER_SHA256 = hashlib.sha256(Path(__file__).read_bytes() + Path(load_cycle.__file__).read_bytes()).hexdigest()
+SOLVER_SHA256 = hashlib.sha256(b''.join(Path(p).read_bytes() for p in
+    (__file__, load_cycle.__file__, manufacturing.__file__))).hexdigest()
 
 
 def available_choices():
@@ -55,6 +56,15 @@ class Variable(BaseModel):
     maximum: float | None = Field(default=None, ge=0, le=1000000)
     step: float | None = Field(default=None, gt=0, le=1000000)
     choices: list[str] | None = Field(default=None, min_length=1, max_length=20)
+    values: list[StrictFloat] | None = Field(default=None, min_length=1, max_length=64)
+
+    @property
+    def lower(self):
+        return self.values[0] if self.values else self.minimum
+
+    @property
+    def upper(self):
+        return self.values[-1] if self.values else self.maximum
 
     @model_validator(mode='after')
     def bounds(self):
@@ -65,8 +75,18 @@ class Variable(BaseModel):
                 raise ValueError('请选择本机已安装的材料牌号')
             if len(set(self.choices)) != len(self.choices):
                 raise ValueError('材料候选不能重复')
-            if any(v is not None for v in (self.minimum, self.maximum, self.step)):
+            if any(v is not None for v in (self.minimum, self.maximum, self.step, self.values)):
                 raise ValueError('材料变量使用 choices，不使用数值范围')
+        elif self.values is not None:
+            if any(v is not None for v in (self.minimum, self.maximum, self.step, self.choices)):
+                raise ValueError('指定规格 values 不能同时使用范围、步长或材料 choices')
+            if any(x < 0 or x > 1000000 or (x == 0 and self.key not in {'MM', 'Dmm'}) for x in self.values):
+                raise ValueError('规格数值超出允许范围，只有 MM 和 Dmm 可以为零')
+            if self.key in DISCRETE and any(not x.is_integer() for x in self.values):
+                raise ValueError('绕组数量与匝数规格必须为整数')
+            if len({manufacturing.single(x) for x in self.values}) != len(self.values):
+                raise ValueError('指定规格不能重复或在计算精度内重合')
+            self.values = sorted(self.values)
         else:
             if self.choices is not None or None in (self.minimum, self.maximum):
                 raise ValueError('数值变量必须提供 minimum 与 maximum')
@@ -108,6 +128,7 @@ class SearchInput(BaseModel):
     objective: str = 'efficiency'
     secondary_objective: str | None = None
     load_cycle: list[LoadStage] | None = Field(default=None, min_length=1, max_length=32)
+    rotor_gap_mode: Literal['independent', 'fixed_neck_bottom'] = 'independent'
     algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1'] = 'stratified_v1'
     constraints: list[Constraint] = Field(default_factory=list, max_length=15)
     max_evaluations: int = Field(default=24, ge=2, le=128)
@@ -132,6 +153,15 @@ class SearchInput(BaseModel):
         self.parameters = validate(self.parameters, strict=True)
         if self.parameters['_wire_target'] != 0:
             raise ValueError('寻优前请将目标槽满率设为 0，以固定线规，避免内核覆盖搜索变量')
+        if self.rotor_gap_mode == 'fixed_neck_bottom':
+            gap = next((v for v in self.variables if v.key == 'g'), None)
+            p = self.parameters
+            if gap is None:
+                raise ValueError('槽颈底位置联动需要将气隙 g 加入搜索变量')
+            if p['hr0'] < 0 or gap.upper > p['g'] + p['hr0']:
+                raise ValueError('气隙上限会使联动 hr0 为负；须满足 g ≤ g基准 + hr0基准')
+            if p['Di1'] - 2 * (p['g'] + p['hr0']) <= p['Di2']:
+                raise ValueError('槽颈底直径必须大于轴孔直径')
         if any(c.metric == 'TM_curve' for c in self.constraints):
             # Store the effective option in the queued request and every snapshot.
             self.parameters['_curve'] = 1
@@ -149,6 +179,7 @@ def config():
             'load_cycle': {'minimum_load': .3, 'maximum_load': 1.2, 'max_stages': 32,
                            'sample_loads': list(reversed(load_cycle.SAMPLE_LOADS)), 'note': load_cycle.NOTE},
             'materials': sorted(available_choices()),
+            'manufacturing': {'max_values': 64, 'rotor_gap_modes': ['independent', 'fixed_neck_bottom']},
             'max_evaluations': 128,
             'algorithms': [{'id': 'stratified_v1', 'label': '分层采样 + 局部搜索'},
                            {'id': 'adaptive_poll_v1', 'label': '自适应邻域搜索'},
@@ -195,6 +226,9 @@ def assess(request, values):
 def snap(variable, value):
     if variable.key == 'Paihao':
         return value
+    if variable.values:
+        value = min(variable.values, key=lambda x: (abs(x - value), x))
+        return int(value) if variable.key in DISCRETE else value
     value = min(variable.maximum, max(variable.minimum, value))
     if variable.step:
         count = math.floor((variable.maximum - variable.minimum) / variable.step + 1e-10)
@@ -206,11 +240,29 @@ def snap(variable, value):
 
 
 def in_region(request, parameters):
-    return all(parameters[v.key] in v.choices if v.key == 'Paihao' else
+    return manufacturing.linkage_valid(request, parameters) and all(
+               parameters[v.key] in v.choices if v.key == 'Paihao' else
+               manufacturing.nominal(v, parameters[v.key]) is not None if v.values else
                v.minimum <= parameters[v.key] <= v.maximum and (
                    not v.step or abs((parameters[v.key] - v.minimum) / v.step -
                                      round((parameters[v.key] - v.minimum) / v.step)) < 1e-7)
                for v in request.variables)
+
+
+def finite_grid(variables):
+    axes, count = [], 1
+    for v in variables:
+        if v.key == 'Paihao': axis = v.choices
+        elif v.values: axis = [snap(v, x) for x in v.values]
+        elif v.step:
+            size = math.floor((v.maximum - v.minimum) / v.step + 1e-10) + 1
+            if size * count > 4096: return None
+            axis = [snap(v, v.minimum + i*v.step) for i in range(size)]
+        else: return None
+        count *= len(axis)
+        if count > 4096: return None
+        axes.append(axis)
+    return list(itertools.product(*axes))
 
 
 class StratifiedSearch:
@@ -226,15 +278,43 @@ class StratifiedSearch:
             order = list(range(self.sample_count)); self.rng.shuffle(order)
             self.strata[variable.key] = order
         self.iteration = 0
+        # Only new explicit-size requests change the legacy stratified sequence.
+        self.allowed_grid = finite_grid(request.variables) if any(v.values for v in request.variables) else None
+        if self.allowed_grid is not None: self.rng.shuffle(self.allowed_grid)
+
+    def _remember(self, p):
+        p = dict(p)
+        if self.iteration:
+            for v in self.request.variables:
+                if v.values: p[v.key] = snap(v, p[v.key])
+        p = manufacturing.linked_parameters(self.request, p)
+        identity = tuple((v.key, manufacturing.nominal(v, p[v.key]) if
+                          v.values and manufacturing.nominal(v, p[v.key]) is not None else p[v.key])
+                         for v in self.request.variables)
+        if identity in self.visited: return None
+        self.visited.add(identity); self.iteration += 1
+        return p
+
+    def _allowed_candidate(self):
+        while self.allowed_grid:
+            values = self.allowed_grid.pop()
+            p = {**self.request.parameters, **dict(zip((v.key for v in self.request.variables), values))}
+            accepted = self._remember(p)
+            if accepted is not None: return accepted
+        return None
 
     def candidate(self):
         request = self.request
+        if self.iteration and self.allowed_grid is not None and len(self.allowed_grid) <= request.max_evaluations - self.iteration:
+            return self._allowed_candidate()
         for attempt in range(200):
             p = dict(request.parameters)
             if self.iteration:
                 for variable in request.variables:
                     if variable.key == 'Paihao':
                         p[variable.key] = self.rng.choice(variable.choices)
+                    elif variable.values:
+                        p[variable.key] = snap(variable, self.rng.choice(variable.values))
                     elif self.iteration <= self.sample_count:
                         index = (self.iteration - 1 + attempt) % self.sample_count
                         fraction = (self.strata[variable.key][index] + self.rng.random()) / self.sample_count
@@ -247,11 +327,9 @@ class StratifiedSearch:
                         if attempt > 10 or self.rng.random() < .2:
                             value = self.rng.uniform(variable.minimum, variable.maximum)
                         p[variable.key] = snap(variable, value)
-            identity = tuple((v.key, p[v.key]) for v in request.variables)
-            if identity not in self.visited:
-                self.visited.add(identity); self.iteration += 1
-                return p
-        return None
+            accepted = self._remember(p)
+            if accepted is not None: return accepted
+        return self._allowed_candidate()
 
     def consider(self, parameters, values, feasible):
         metric, direction, _ = OBJECTIVES[self.request.objective]
@@ -259,7 +337,7 @@ class StratifiedSearch:
         if value is None or not math.isfinite(value):
             return None, False
         score = value if direction == 'max' else -value
-        improved = feasible and (self.best_score is None or score > self.best_score)
+        improved = feasible and in_region(self.request, parameters) and (self.best_score is None or score > self.best_score)
         if improved:
             self.best, self.best_score = parameters, score
         return value, improved
@@ -322,17 +400,8 @@ class HybridSearch(StratifiedSearch):
         for v in request.variables:
             order = list(range(self.sample_count)); self.rng.shuffle(order)
             self.strata[v.key] = order
-        self.grid = None
-        count = 1
-        for v in request.variables:
-            if v.key != 'Paihao' and not v.step:
-                count = 4097; break
-            count *= len(v.choices) if v.key == 'Paihao' else math.floor((v.maximum - v.minimum) / v.step + 1e-10) + 1
-            if count > 4096: break
-        if count <= 4096:
-            axes = [v.choices if v.key == 'Paihao' else [snap(v, v.minimum + i * v.step)
-                    for i in range(math.floor((v.maximum - v.minimum) / v.step + 1e-10) + 1)] for v in request.variables]
-            self.grid = list(itertools.product(*axes)); self.rng.shuffle(self.grid)
+        self.grid = finite_grid(request.variables)
+        if self.grid is not None: self.rng.shuffle(self.grid)
         self.grid_cursor = 0
         self.exhaustive = self.grid is not None and len(self.grid) <= request.max_evaluations - 1
         # Under small budgets, population-only proposals can miss every boundary.
@@ -342,18 +411,11 @@ class HybridSearch(StratifiedSearch):
             center[v.key] = (center[v.key] if center[v.key] in v.choices else v.choices[0]) if v.key == 'Paihao' else snap(v, center[v.key])
         self.screening = []
         for v in request.variables:
-            edges = [x for x in v.choices if x != center[v.key]][:2] if v.key == 'Paihao' else [snap(v, v.minimum), snap(v, v.maximum)]
+            edges = [x for x in v.choices if x != center[v.key]][:2] if v.key == 'Paihao' else [snap(v, v.lower), snap(v, v.upper)]
             for value in edges:
                 self.screening.append({**center, v.key: value})
         self.rng.shuffle(self.screening)
         self.screen_cursor = 0
-
-    def _remember(self, p):
-        identity = tuple((v.key, p[v.key]) for v in self.request.variables)
-        if identity in self.visited:
-            return None
-        self.visited.add(identity); self.iteration += 1
-        return p
 
     def _grid_candidate(self):
         while self.grid_cursor < len(self.grid):
@@ -406,6 +468,8 @@ class HybridSearch(StratifiedSearch):
                 for v in request.variables:
                     if v.key == 'Paihao':
                         p[v.key] = self.rng.choice(v.choices)
+                    elif v.values:
+                        p[v.key] = snap(v, self.rng.choice(v.values))
                     else:
                         index = (self.iteration - 1 + attempt) % self.sample_count
                         fraction = (self.strata[v.key][index] + self.rng.random()) / self.sample_count
@@ -415,7 +479,7 @@ class HybridSearch(StratifiedSearch):
                 v = request.variables[(self.iteration // 3 + attempt) % len(request.variables)]
                 if v.key == 'Paihao': p[v.key] = self.rng.choice(v.choices)
                 else:
-                    radius = max(v.step or 0, (v.maximum - v.minimum) * max(.02, .2 * (1 - self.iteration/request.max_evaluations)))
+                    radius = max(v.step or 0, (v.upper - v.lower) * max(.02, .2 * (1 - self.iteration/request.max_evaluations)))
                     p[v.key] = snap(v, p[v.key] + self.rng.choice([-1, 1]) * radius)
             else:
                 target, first, second = self.rng.sample(population, 3)
@@ -498,6 +562,9 @@ class AdaptivePollSearch(HybridSearch):
         for v in self.request.variables:
             if v.key == 'Paihao':
                 directions.extend({**center, v.key: value} for value in v.choices if value != center[v.key])
+            elif v.values:
+                index = v.values.index(center[v.key])
+                directions.extend({**center, v.key: snap(v, v.values[i])} for i in (index-1, index+1) if 0 <= i < len(v.values))
             else:
                 distance = max(v.step or 0, (v.maximum - v.minimum) * state['radius'])
                 directions.extend(self._project({**center, v.key: center[v.key] + sign * distance}) for sign in (-1, 1))
@@ -510,14 +577,14 @@ class AdaptivePollSearch(HybridSearch):
                 p = dict(center)
                 for v in self.request.variables:
                     if v.key != 'Paihao':
-                        p[v.key] += sign * signs[v.key] * max(v.step or 0, (v.maximum-v.minimum)*state['radius'])
+                        p[v.key] += sign * signs[v.key] * max(v.step or 0, (v.upper-v.lower)*state['radius'])
                 self.poll_queue.append(self._project(p))
         state['anchor'] = incumbent
         self.round += 1
         if self.round % 5 == 0 or not self.records:
             p = dict(center)
             for v in self.request.variables:
-                p[v.key] = self.rng.choice(v.choices) if v.key == 'Paihao' else snap(v, self.rng.uniform(v.minimum, v.maximum))
+                p[v.key] = self.rng.choice(v.choices) if v.key == 'Paihao' else snap(v, self.rng.choice(v.values) if v.values else self.rng.uniform(v.minimum, v.maximum))
             self.poll_queue.append(p)
 
     def candidate(self):

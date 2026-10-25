@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 from dcsj import jobs, optimization, calculations
 from dcsj.storage import connect
+from dcsj import manufacturing
 
 
 @pytest.fixture
@@ -47,6 +48,122 @@ def test_budget_bounds_feasibility_and_snapshot_link(worker, request_body):
     assert best['inputs']['L'] == 165
     assert any(not c['feasible'] for c in candidates)
     assert best['values']['ATA1'] == .95
+
+
+@pytest.mark.parametrize('algorithm', ['stratified_v1','hybrid_de_v1','adaptive_poll_v1'])
+def test_explicit_sizes_exhaust_real_nominal_grid_preserving_legacy_baseline(request_body, algorithm):
+    p = {**request_body['parameters'], 'Djj':manufacturing.single(.8), 'hr0':.5}
+    req = optimization.SearchInput.model_validate({**request_body,'parameters':p,'algorithm':algorithm,
+        'variables':[{'key':'Djj','values':[1.06,.8,.71]}, {'key':'g','values':[.5,.6,.8]}],
+        'rotor_gap_mode':'fixed_neck_bottom','max_evaluations':16})
+    assert req.model_dump()==optimization.SearchInput.model_validate(req.model_dump()).model_dump()
+    runs=[]
+    for _ in range(2):
+        search=optimization.Search(req);seen=[]
+        while (candidate:=search.candidate()) is not None:
+            seen.append(candidate)
+            assert optimization.in_region(req,candidate)
+            assert manufacturing.audit(req,candidate)['passed']
+            assert candidate['Di1']-2*(candidate['g']+candidate['hr0'])==pytest.approx(177.8)
+            assert {k:v for k,v in candidate.items() if k not in {'Djj','g','hr0'}}=={
+                k:v for k,v in req.parameters.items() if k not in {'Djj','g','hr0'}}
+            search.consider(candidate,{'ATA1':.9,'PF1':.8,'Sf':.6,'Sn':.03},True)
+        assert seen[0]==req.parameters
+        assert len(seen)==9
+        assert all(c['Djj'] in {.71,.8,1.06} for c in seen[1:])
+        assert len({(manufacturing.nominal(req.variables[0],c['Djj']),c['g']) for c in seen})==9
+        runs.append(seen)
+    assert runs[0]==runs[1]
+
+
+@pytest.mark.parametrize('algorithm', ['stratified_v1','hybrid_de_v1','adaptive_poll_v1'])
+def test_specifications_with_continuous_dimension_and_outside_reference(request_body,algorithm):
+    req=optimization.SearchInput.model_validate({**request_body,'algorithm':algorithm,'max_evaluations':32,
+        'variables':[{'key':'L','minimum':140,'maximum':190}, {'key':'Djj','values':[.71,.8,1.06]}]})
+    search=optimization.Search(req);reference=search.candidate()
+    assert not optimization.in_region(req,reference)
+    assert not search.consider(reference,{'ATA1':.999},True)[1]
+    for _ in range(31):
+        p=search.candidate();assert p is not None
+        assert optimization.in_region(req,p) and p['Djj'] in {.71,.8,1.06}
+        search.consider(p,{'ATA1':.9-abs(p['L']-165)*.001,'PF1':.8,'Sf':.6,'Sn':.03},True)
+    assert search.best is not None
+
+
+@pytest.mark.parametrize('variable', [
+    {'key':'Djj','values':[]}, {'key':'Djj','values':[.8,.8]}, {'key':'Djj','values':[True]},
+    {'key':'Djj','values':['.8']}, {'key':'Djj','values':[float('nan')]},
+    {'key':'Djj','values':[float('inf')]}, {'key':'Djj','values':[.8,.800000001]},
+    {'key':'Djj','values':[0]}, {'key':'MM','values':[-1]}, {'key':'ZZ','values':[15.5]},
+    {'key':'L','values':[160], 'step':1}, {'key':'L','values':[160], 'minimum':150,'maximum':170},
+    {'key':'L','values':list(range(1,66))}, {'key':'L','values':[1000001]},
+    {'key':'kW','values':[1,2]}, {'key':'L','values':[160], 'choices':['A']},
+])
+def test_invalid_specifications_rejected_before_calculation(request_body,variable):
+    with pytest.raises(ValidationError):
+        optimization.SearchInput.model_validate({**request_body,'variables':[variable]})
+
+
+def test_gap_linkage_requires_valid_range_and_does_not_modify_input(request_body):
+    body={**request_body,'parameters':{**request_body['parameters'],'hr0':.2},
+          'rotor_gap_mode':'fixed_neck_bottom'}
+    for variables in ([{'key':'L','values':[160]}], [{'key':'g','values':[.6,.81]}]):
+        with pytest.raises(ValidationError):optimization.SearchInput.model_validate({**body,'variables':variables})
+    req=optimization.SearchInput.model_validate({**body,'variables':[{'key':'g','values':[.4,.6,.8]}]})
+    p=manufacturing.linked_parameters(req,{**req.parameters,'g':.8})
+    assert p['hr0']==pytest.approx(0,abs=1e-15) and body['parameters']['hr0']==.2
+    assert not optimization.in_region(req,{**p,'hr0':.1})
+    req=optimization.SearchInput.model_validate({**body,'rotor_gap_mode':'independent','variables':[{'key':'g','values':[.6,.9]}]})
+    assert manufacturing.linked_parameters(req,{**req.parameters,'g':.9})['hr0']==.2
+
+
+def test_manufacturing_snapshot_is_preserved_in_jobs_and_reports(worker,request_body,monkeypatch):
+    from dcsj import reports, report_summary
+    req=optimization.SearchInput.model_validate({**request_body,
+        'parameters':{**request_body['parameters'],'hr0':.5},
+        'variables':[{'key':'L','values':[150,165,170]},{'key':'g','values':[.5,.7]}],
+        'rotor_gap_mode':'fixed_neck_bottom'})
+    job=jobs.create(req);worker.run_job(worker.claim());saved=jobs.get(job['id'])
+    assert saved['evaluated']==7 and not saved['candidates'][0]['feasible']
+    best=calculations.get(saved['best_id'])
+    stored=copy.deepcopy(best['optimization']['manufacturing'])
+    monkeypatch.setattr(manufacturing,'audit',lambda *args: (_ for _ in ()).throw(AssertionError('must not recompute')))
+    assert jobs.get(job['id'])['candidates'][0]['manufacturing']['passed'] is False
+    assert calculations.get(saved['best_id'])['optimization']['manufacturing']==stored
+    assert report_summary.manufacturing_summary(best)['rows'][0][3]=='符合'
+    assert '寻优规格与尺寸联动' in reports.render(best)
+
+
+@pytest.mark.parametrize('algorithm', ['stratified_v1','hybrid_de_v1','adaptive_poll_v1'])
+def test_numeric_specs_integer_choices_and_material_categories_mix(request_body,monkeypatch,algorithm):
+    monkeypatch.setattr(optimization,'allowed_material',lambda x:x in {'A','B'})
+    req=optimization.SearchInput.model_validate({**request_body,'algorithm':algorithm,'max_evaluations':16,
+        'variables':[{'key':'Djj','values':[.8,1.0]},{'key':'JJ','values':[2,4]},
+                     {'key':'Paihao','choices':['A','B']}]})
+    search=optimization.Search(req);assert search.candidate()==req.parameters
+    seen=[]
+    while (p:=search.candidate()) is not None:
+        assert isinstance(p['JJ'],int) and optimization.in_region(req,p)
+        seen.append((p['Djj'],p['JJ'],p['Paihao']))
+    assert len(seen)==len(set(seen))==8
+
+
+def test_adaptive_poll_uses_adjacent_nonuniform_specs_and_precise_gap_endpoint(request_body):
+    req=optimization.SearchInput.model_validate({**request_body,'algorithm':'adaptive_poll_v1',
+        'parameters':{**request_body['parameters'],'g':manufacturing.single(.6),'hr0':.2},
+        'variables':[{'key':'L','minimum':150,'maximum':180},{'key':'Djj','values':[.5,.51,.7,.8,.9,1,1.5,2]},
+                     {'key':'g','values':[.4,.6,.8]}], 'rotor_gap_mode':'fixed_neck_bottom'})
+    search=optimization.Search(req);p=search.candidate();search.consider(p,{'ATA1':.9,'PF1':.8,'Sf':.6,'Sn':.03},True)
+    search._new_poll()
+    assert {.9,1.5}<={p['Djj'] for p in search.poll_queue}
+    for _ in range(7):
+        p=search.candidate();assert optimization.in_region(req,p)
+        assert p['g'] in {.4,.6,.8}
+    # The exact allowed upper bound must never turn into negative round-off.
+    req=optimization.SearchInput.model_validate({**request_body,'parameters':{**request_body['parameters'],'hr0':.2},
+        'variables':[{'key':'g','values':[.6,.8]}], 'rotor_gap_mode':'fixed_neck_bottom'})
+    endpoint=manufacturing.linked_parameters(req,{**req.parameters,'g':.8})
+    assert endpoint['hr0']==0 and optimization.in_region(req,endpoint)
 
 
 def test_no_feasible_result_is_not_replaced_by_unqualified_best(worker, request_body):

@@ -27,6 +27,23 @@ def local_time(value):
 CURVE_NOTE = '平滑曲线用于观察趋势；默认校核使用 IST1、TST1、TM1。寻优可另选完整转矩采样的峰值约束，不使用平滑插值值。'
 
 CYCLE_HEADERS = ['负载 %', '小时', '输入 kW', '输出 kW', '耗电 kWh', '取值']
+MANUFACTURING_HEADERS = ['变量', '允许规格', '本次输入', '规格匹配']
+
+
+def manufacturing_summary(snapshot):
+    record = snapshot.get('optimization', {}).get('manufacturing')
+    if not record:
+        return None
+    rows = [[r['key'], ' / '.join(number(x, 9) for x in r['allowed']), number(r['actual'], 9),
+             '符合' if r['passed'] else '不符合'] for r in record['numeric_sets']]
+    gap = record.get('rotor_gap')
+    text = '' if not gap else (
+        f"保持槽颈底直径 {number(gap['reference_neck_bottom_mm'])} mm；"
+        f"本次 D2={number(gap['rotor_outer_mm'])} mm，g={number(gap['gap_mm'])} mm，"
+        f"hr0={number(gap['hr0_mm'])} mm，槽颈底={number(gap['neck_bottom_mm'])} mm。"
+        + gap['formula'] + ('；联动符合。' if gap['passed'] else '；联动不符合。'))
+    return {'rows': rows, 'text': text,
+            'note': '规格清单由任务指定；匹配原库单精度存储值时保留原始输入。'}
 
 
 def cycle_summary(snapshot):

@@ -328,3 +328,15 @@ API 示例：在原寻优请求的 `constraints` 中加入 `{"metric":"TM_curve"
 API 的寻优请求新增可选 `load_cycle`，例如 `[{"load_fraction":0.5,"hours":4},{"load_fraction":0.75,"hours":2},{"load_fraction":1,"hours":2}]`，最多 32 段，每段小时数大于 0、至多 1,000,000。选择 `cycle_energy` / `cycle_efficiency` 目标或约束时必须提供该字段；提供周期会自动将任务副本的 `_load_curve` 设为 1，不改变工作台草稿。旧请求和旧快照保持原有行为。
 
 候选快照的 `optimization.load_cycle` 保存周期配置、原始功率采样、各段插值权重、输入/输出功率、电量、效率、算法标识和源码校验值。任务详情、打开候选及 HTML/PDF 报告均读取保存的结果，历史记录不会重算。基准对比显示同一周期的耗电差。基准测试工具只缓存数值核结果，不复用其他负载周期的累计能耗。
+
+## 0.15.0：指定规格与气隙联动
+
+搜索变量新增“指定规格”，适合从已确认可用的线径、导体数、并绕根数、并联支路或铁心长度中选值。每个数值变量最多 64 个不同规格，可与范围/步长变量、材料候选混合使用；三种搜索方法均遵守清单。小型全离散区域能在预算内覆盖时完整遍历。基准始终按原参数计算，不在清单中的基准只供比较，不能成为最佳方案。原型号库中标称值的精确单精度表示（如 0.8 对应 0.800000011920929）视为同一规格并去重，不用宽松误差吸收其他尺寸。
+
+API 示例：`variables` 中使用 `{"key":"Djj","values":[0.71,0.8,0.9]}` 或 `{"key":"a","values":[1,2,4]}`。`values` 不能与 `minimum`、`maximum`、`step`、`choices` 同时提供；材料继续使用 `choices`。这些数字仅演示接口格式，不代表任意电机都能采用这些支路或线规。线径为裸线直径，不能填入含漆膜外径。绕组连接允许的支路和实际供应规格由用户确认，当前模块不生成完整绕组接线图。
+
+气隙参与搜索时，可选“保持槽颈底位置，联动 hr0”。请求字段为 `rotor_gap_mode: "fixed_neck_bottom"`；保持定子内径和槽身参数，用 `D2 = Di1 − 2g`、`hr0 = hr0基准 + g基准 − g` 保持 `D2 − 2hr0` 不变。服务器预先拒绝使 hr0 为负或槽颈底落入轴孔的配置。默认 `independent` 保留原 hr0 输入值，历史请求无需修改。
+
+候选快照 `optimization.manufacturing` 记录允许规格、实际输入、标称匹配，以及联动前后的气隙、转子外径、hr0 和槽颈底直径。任务、候选结果及 HTML/PDF 报告读取这些固定记录，旧快照不补算。此功能验证指定条件；温升、噪声和制造公差仍未作为鲁棒约束。
+
+研究依据：[Altair FluxMotor 绕组说明](https://help.altair.com/FluxMotor/topics/3605-Automaticmode.htm) 将可用并联支路与绕组连接关联；[Elektrisola 技术表](https://www.elektrisola.com/Attachments/TechnicalDataBySize/ELEKTRISOLA_EnCuWire_IECJIS_Datasheet_eng.pdf) 区分裸线标称直径、公差和不同漆膜等级的外径。规格清单和几何联动为本系统实现，不声称通过这些资料认证。

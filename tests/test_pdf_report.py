@@ -20,6 +20,19 @@ def pdf_text(data):
     return reader, '\n'.join(page.extract_text() for page in reader.pages)
 
 
+def test_manufacturing_report_reads_saved_specs_and_linkage(snapshot):
+    saved=saved_snapshot(snapshot)
+    assert '寻优规格与尺寸联动' not in reports.render(saved)
+    saved['optimization']={'manufacturing':{'numeric_sets':[{'key':'Djj','allowed':[.71,.8,1.06],
+        'actual':.8,'passed':True}], 'rotor_gap':{'reference_neck_bottom_mm':177.8,'rotor_outer_mm':178.6,
+        'gap_mm':.7,'hr0_mm':.4,'neck_bottom_mm':177.8,'formula':'hr0 = hr0基准 + g基准 − g','passed':True}}}
+    # Recorded values remain authoritative even when different from generic fixture inputs.
+    _,text=pdf_text(pdf_report.render(saved))
+    assert '寻优规格与尺寸联动' in text and '0.71 / 0.8 / 1.06' in text
+    assert 'hr0=0.4 mm' in text and '177.8 mm' in text and '符合' in text
+    assert '寻优规格与尺寸联动' in reports.render(saved)
+
+
 def test_pdf_download_snapshot_fidelity_chinese_and_embedded_font(client, snapshot):
     assert pdf_fonts.font_path().is_file(), 'Run python scripts/install_pdf_font.py before PDF tests'
     snapshot['inputs']['SizeX'] = '中文设计 <script>原样文字</script>'

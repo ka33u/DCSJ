@@ -11,7 +11,7 @@ import time
 
 from .engine import calculate_design, CalculationError
 from .parameters import InputError
-from . import load_cycle
+from . import load_cycle, manufacturing
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_values,
                            objective_keys, pareto_front, OBJECTIVES, SOLVER_SHA256)
 
@@ -71,7 +71,8 @@ def compare(suite, compute=calculate_design):
                 if not in_region(request, p): violations.append('Reference outside search region')
                 entry.update(feasible=not violations, violations=violations,
                              objectives=objective_values(request, values), values=values,
-                             load_cycle=cycle, input_sha256=result['provenance'].get('input_sha256'))
+                             load_cycle=cycle, manufacturing=manufacturing.audit(request, p),
+                             input_sha256=result['provenance'].get('input_sha256'))
                 search.consider(p, values, not violations)
             candidates.append(entry)
         feasible = [c for c in candidates if c['feasible']]

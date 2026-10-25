@@ -419,6 +419,13 @@
     if (warningBox) container.append(warningBox);
     const wire = renderWireSelection(result);
     if (wire) container.append(wire);
+    const manufacturing = result.optimization?.manufacturing;
+    if (manufacturing) {
+      const section = el('section','result-section'); section.append(el('h3','result-section-title','寻优规格与尺寸联动'));
+      if (manufacturing.numeric_sets?.length) section.append(featureTable(['变量','允许规格','本次输入','规格匹配'], manufacturing.numeric_sets.map(r=>[r.key,r.allowed.map(v=>fmt(v,9)).join(' / '),fmt(r.actual,9),r.passed?'符合':'不符合'])));
+      if (manufacturing.rotor_gap) section.append(el('p','muted',gapRecordText(manufacturing.rotor_gap)));
+      container.append(section);
+    }
     const cycle = result.optimization?.load_cycle;
     if (cycle) {
       const section = el('section','feature-content cycle-result');
@@ -1278,9 +1285,7 @@
   function suggestVariableBounds(row) {
     const key = $("select[name=key]", row).value;
     const isMaterial = key === "Paihao";
-    $$('input[name=minimum],input[name=maximum],input[name=step]', row).forEach(input => { input.disabled = isMaterial; input.required = !isMaterial && input.name !== "step"; });
-    $("input[name=choices]", row).disabled = !isMaterial;
-    $("input[name=choices]", row).required = isMaterial;
+    updateVariableMode(row); updateGapForm();
     if (isMaterial) { $("input[name=choices]", row).value = optimizationConfig.materials.join(", "); return; }
     const base = Number(optimizationBase?.[key]);
     const integer = optimizationConfig.variables.find(v => v.key === key)?.integer;
@@ -1290,13 +1295,33 @@
     } else { $("input[name=minimum]", row).value = ""; $("input[name=maximum]", row).value = ""; }
     $("input[name=step]", row).value = integer ? 1 : "";
   }
+  function updateVariableMode(row) {
+    const material=$('select[name=key]',row).value==='Paihao', mode=$('select[name=mode]',row);
+    mode.disabled=material;mode.parentElement.hidden=material;
+    const list=!material&&mode.value==='values';
+    row.classList.toggle('list-mode',list);row.classList.toggle('material-mode',material);
+    for(const name of ['minimum','maximum','step','values','choices']) {
+      const input=$(`input[name=${name}]`,row);
+      const enabled=name==='choices'?material:name==='values'?list:!material&&!list;
+      input.disabled=!enabled;input.required=enabled&&name!=='step';input.parentElement.hidden=!enabled;
+    }
+  }
+  function updateGapForm() {
+    const enabled=$$('#optimization-variables select[name=key]').some(s=>s.value==='g');
+    $('#optimization-gap-mode').disabled=!enabled;$('#optimization-gap-field').hidden=!enabled;
+  }
+  function gapRecordText(gap) {
+    return `保持槽颈底直径 ${fmt(gap.reference_neck_bottom_mm,8)} mm；本次 g=${fmt(gap.gap_mm,8)} mm，D2=${fmt(gap.rotor_outer_mm,8)} mm，hr0=${fmt(gap.hr0_mm,8)} mm；${gap.passed?'联动符合':'联动不符合'}。`;
+  }
   function addOptimizationVariable(key = "g") {
     if (!optimizationConfig) return;
     if ($$(".search-variable").length >= 6) return showToast("最多配置 6 个搜索变量。", "warning");
     const row = el("div", "quick-form search-variable"), label = el("label", "", "变量"), select = el("select", "text-input"); select.name = "key";
     optimizationConfig.variables.forEach(item => { const option = el("option", "", `${item.key} · ${item.label}`); option.value = item.key; select.append(option); });
-    select.value = key; label.append(select); row.append(label, inputField("下限", "number", "minimum"), inputField("上限", "number", "maximum"), inputField("制造步长（可选）", "number", "step"), inputField("材料候选，逗号分隔", "text", "choices"), button("移除", "text-button", () => row.remove()));
-    select.addEventListener("change", () => suggestVariableBounds(row));
+    const modeLabel=el('label','','取值方式'),mode=el('select','text-input');mode.name='mode';mode.append(new Option('范围与步长','range'),new Option('指定规格','values'));modeLabel.append(mode);
+    mode.addEventListener('change',()=>updateVariableMode(row));
+    select.value = key; label.append(select); row.append(label,modeLabel, inputField("下限", "number", "minimum"), inputField("上限", "number", "maximum"), inputField("制造步长（可选）", "number", "step"),inputField('允许规格，逗号或空格分隔','text','values'), inputField("材料候选，逗号分隔", "text", "choices"), button("移除", "text-button", () => {row.remove();updateGapForm();}));
+    select.addEventListener("change", () => { $("input[name=values]",row).value=""; suggestVariableBounds(row); });
     $("#optimization-variables").append(row); suggestVariableBounds(row);
   }
   function addOptimizationConstraint() {
@@ -1345,12 +1370,19 @@
       if (!optimizationBase) throw new Error("请先点击「使用工作台当前设计」。");
       const variables = $$(".search-variable").map(row => {
         const key = $("select[name=key]", row).value;
-        return key === "Paihao" ? { key, choices: $("input[name=choices]", row).value.split(/[,，]/).map(s => s.trim()).filter(Boolean) } : { key, ...readBounds(row) };
+        if(key==='Paihao')return {key,choices:$('input[name=choices]',row).value.split(/[,，]/).map(s=>s.trim()).filter(Boolean)};
+        if($('select[name=mode]',row).value==='values') {
+          const tokens=$('input[name=values]',row).value.trim().split(/[,，\s]+/).filter(Boolean), values=tokens.map(Number);
+          if(!values.length||values.length>64||values.some(v=>!Number.isFinite(v))||new Set(values).size!==values.length) throw new Error(`${key}：请填写 1–64 个不重复的有限数值规格。`);
+          return {key,values};
+        }
+        return {key,...readBounds(row)};
       });
       const constraints = $$(".search-constraint").map(row => ({ metric: $("select[name=metric]", row).value, ...readBounds(row) }));
       const request = { name: $("#optimization-name").value, parameters: optimizationBase, variables, constraints, objective: $("#optimization-objective").value, max_evaluations: Number($("#optimization-budget").value), seed: Number($("#optimization-seed").value) };
       request.secondary_objective = $("#optimization-secondary").value || null;
       request.algorithm = $("#optimization-algorithm").value;
+      request.rotor_gap_mode = $('#optimization-gap-mode').disabled?'independent':$('#optimization-gap-mode').value;
       if (request.secondary_objective === request.objective) throw new Error("第二目标请选择不同的指标。");
       if ([request.objective,request.secondary_objective].every(key=>['cycle_energy','cycle_efficiency'].includes(key))) throw new Error('周期耗电与周期效率在同一负载周期下等价，第二目标请选择其他指标。');
       if (needsCycle()) {
@@ -1389,6 +1421,9 @@
     const constraints = job.request.constraints || [];
     if (constraints.some(c => c.metric === 'TM_curve')) container.append(el('p', 'muted', '本任务已启用转矩曲线计算；峰值约束取完整 51 个计算采样的最大值，采样不完整的候选不满足约束。'));
     if (job.request.load_cycle?.length) container.append(el('p','muted',`本任务负载周期：${job.request.load_cycle.map(s=>`${fmt(s.load_fraction*100)}% × ${fmt(s.hours)} 小时`).join('；')}。耗电单位 kWh；效率为总输出电量 / 总输入电量。`));
+    const explicit=job.request.variables.filter(v=>v.values?.length);
+    if(explicit.length)container.append(el('p','muted',`指定规格：${explicit.map(v=>`${v.key} ∈ {${v.values.map(x=>fmt(x,9)).join(', ')}}`).join('；')}。基准不在清单中时仅供对照。`));
+    if(job.request.rotor_gap_mode==='fixed_neck_bottom')container.append(el('p','muted','本任务保持转子槽颈底位置：hr0 = hr0基准 + g基准 − g；转子外径 D2 = Di1 − 2g。'));
     const progress = el("progress"); progress.max = job.budget; progress.value = job.evaluated;
     progress.setAttribute("aria-label", `已评估 ${job.evaluated}，预算 ${job.budget}`);
     container.append(progress, el("p", "muted", `已评估 ${job.evaluated} / ${job.budget}；满足约束 ${job.feasible_count ?? job.candidates.filter(c => c.feasible).length} 个；失败与基准计算均计入预算。`), el("p", "", job.message));
@@ -1411,7 +1446,7 @@
         container.append(el('p','source-box',`同一负载周期下，第一目标最佳候选比基准${saved>=0?'少':'多'}耗电 ${fmt(Math.abs(saved),7)} kWh（${fmt(Math.abs(saved)/baseCycle.input_energy_kwh*100,5)}%）；仅比较本次保存的计算结果。`));
       }
     }
-    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, load_cycle: job.request.load_cycle, seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
+    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, load_cycle: job.request.load_cycle, rotor_gap_mode:job.request.rotor_gap_mode, seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
     if (!job.candidates.length) { container.append(el("p", "muted", "尚无完成的候选。")); return; }
     const pareto = new Set(job.pareto_ids || []);
     if (job.request.secondary_objective) {
@@ -1447,6 +1482,7 @@
       const secondary = job.request.secondary_objective;
       const objectiveText = `${fmt(candidate.objective, 7)}${secondary ? '\n第二目标：' + fmt(candidate.objectives?.[secondary], 7) : ''}`;
       row.append(el("td", "", job.request.variables.map(v => `${v.key}=${fmt(candidate.parameters[v.key])}`).join("\n")), el("td", "", objectiveText));
+      if(candidate.manufacturing?.rotor_gap)row.children[1].append(el('p','small',gapRecordText(candidate.manufacturing.rotor_gap)));
       if (job.request.load_cycle?.length) row.append(el('td','',candidate.load_cycle?.status==='available'
         ? `${fmt(candidate.load_cycle.input_energy_kwh,7)} kWh\n周期效率 ${fmt(candidate.load_cycle.efficiency*100,5)}%`
         : candidate.load_cycle?.reason || '此记录没有保存负载周期结果'));

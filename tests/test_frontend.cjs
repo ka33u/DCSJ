@@ -968,3 +968,38 @@ test('load cycle form submits hours and load fractions and hides unused fields w
   ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
   assert.equal(submitted,null);assert.match(ui.doc.querySelector('#optimization-error').textContent,/30%–120%/);
 });
+
+test('explicit sizes preserve drafts and serialize lists with optional rotor linkage',async t=>{
+  let submitted;
+  const job={id:'sizes',name:'规格验证',status:'succeeded',budget:8,evaluated:1,candidates:[],request:{variables:[],parameters,objective:'efficiency'}};
+  const ui=await app(t,(path,req)=>{
+    if(path==='/example')return {parameters:{...parameters,L:160,g:.6,hr0:.5},name:'基准'};
+    if(path==='/optimization/config')return {method:'人工测试',variables:[{key:'L',label:'长度'},{key:'g',label:'气隙'},{key:'Paihao',label:'材料'}],objectives:[{id:'efficiency',label:'效率'}],materials:['A'],constraint_metrics:[]};
+    if(path==='/optimization/jobs'&&req.method==='POST'){submitted=req.body;job.request=req.body;return job;}
+    if(path==='/optimization/jobs')return {items:[]};
+    if(path==='/optimization/jobs/sizes')return job;
+  },[{key:'L',label:'长度',group:'basic',type:'number',role:'input'}]);
+  ui.doc.querySelector('#load-example').click();await settle();ui.nav('optimization');await settle();
+  ui.doc.querySelector('#optimization-use-current').click();
+  const row=ui.doc.querySelector('.search-variable'),mode=row.querySelector('[name=mode]'),values=row.querySelector('[name=values]');
+  mode.value='values';mode.dispatchEvent(new ui.w.Event('change'));values.value='150，160 172';
+  assert.equal(row.querySelector('[name=minimum]').disabled,true);assert.equal(values.required,true);
+  mode.value='range';mode.dispatchEvent(new ui.w.Event('change'));assert.equal(values.disabled,true);assert.equal(values.required,false);
+  mode.value='values';mode.dispatchEvent(new ui.w.Event('change'));assert.equal(values.value,'150，160 172');
+  ui.doc.querySelector('#add-optimization-variable').click();
+  const gap=ui.doc.querySelectorAll('.search-variable')[1];gap.querySelector('[name=mode]').value='values';gap.querySelector('[name=mode]').dispatchEvent(new ui.w.Event('change'));gap.querySelector('[name=values]').value='.4,.6,.8';
+  ui.doc.querySelector('#optimization-gap-mode').value='fixed_neck_bottom';
+  ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
+  assert.deepEqual(submitted.variables,[{key:'L',values:[150,160,172]},{key:'g',values:[.4,.6,.8]}]);
+  assert.equal(submitted.rotor_gap_mode,'fixed_neck_bottom');assert.equal(submitted.parameters.hr0,.5);
+  assert.match(ui.doc.querySelector('#optimization-detail').textContent,/指定规格/);
+  assert.match(ui.doc.querySelector('#optimization-detail').textContent,/保持转子槽颈底位置/);
+  values.value='150,150';submitted=null;
+  ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
+  assert.equal(submitted,null);assert.match(ui.doc.querySelector('#optimization-error').textContent,/不重复/);
+  gap.querySelector('button').click();assert.equal(ui.doc.querySelector('#optimization-gap-mode').disabled,true);
+  values.value='150';ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
+  assert.equal(submitted.rotor_gap_mode,'independent');
+  const key=row.querySelector('[name=key]');key.value='Paihao';key.dispatchEvent(new ui.w.Event('change'));
+  assert.equal(values.disabled,true);assert.equal(row.querySelector('[name=choices]').required,true);
+});
