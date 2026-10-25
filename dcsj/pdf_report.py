@@ -257,7 +257,12 @@ def _render(snapshot):
     refined = summary.torque_summary(snapshot)
     if refined:
         story += [PageBreak(), paragraph('加密转矩峰值校核', 'h2'), paragraph(refined['text']),
-                  paragraph(refined['note'], 'small'), table(summary.TORQUE_HEADERS, refined['rows'], [WIDTH/5]*5, compact=True)]
+                  paragraph(refined['note'], 'small')]
+        if refined['diagnostic_note']:
+            story += [paragraph('未收敛采样的末段迭代', 'sh2'), paragraph(refined['diagnostic_note'], 'small'),
+                      table(summary.TORQUE_DIAGNOSTIC_HEADERS, refined['diagnostic_rows'],
+                            [WIDTH*f for f in (.06,.17,.17,.15,.17,.16,.12)], compact=True)]
+        story += [table(summary.TORQUE_HEADERS, refined['rows'], [WIDTH/5]*5, compact=True)]
     robust = summary.robustness_summary(snapshot)
     if robust:
         story += [PageBreak(), paragraph('公差情景评估', 'h2'), paragraph(summary.TOLERANCE_NOTE),

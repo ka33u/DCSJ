@@ -1069,3 +1069,16 @@ test('refined torque constraint remains separate and exposes recorded convergenc
   ui.find('#optimization-detail button','打开最佳候选').click();await settle();
   const result=ui.doc.querySelector('.torque-refinement-result');assert.match(result.textContent,/3.32158/);assert.match(result.textContent,/1.000e-6/);assert.match(result.textContent,/迭代次数/);
 });
+
+test('unconverged peak snapshot exposes saved iteration diagnostics without recalculation',async t=>{
+  const value=snapshot('a');
+  value.curve_metrics={refined_torque_peak:{status:'unavailable',value:null,samples:[],reason:'周期 2 重复，同时存在饱和系数插值换段',
+    diagnostic:{note:'数值求解失败不能据此判定电机性能不达标。',history:[
+      {iteration:101,input_current:7.4,current:7.45,residual:.05,saturation_input:.499,saturation_factor:.42,interpolation_window:1}]}}};
+  const ui=await app(t,path=>path==='/calculations'?records():path==='/calculations/a'?value:undefined);
+  ui.nav('comparisons');await settle();ui.find('#calculation-table-body button','打开快照').click();await settle();
+  const result=ui.doc.querySelector('.torque-refinement-result'),details=result.querySelector('.torque-iteration-history');
+  assert.match(result.textContent,/周期 2/);assert.match(result.textContent,/不能据此判定电机性能不达标/);
+  assert.match(details.textContent,/输入电流倍数/);assert.match(details.textContent,/0.499/);assert.match(details.textContent,/101/);
+  assert.ok(!ui.calls.some(c=>c.path==='/calculate'));
+});

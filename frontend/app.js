@@ -426,6 +426,15 @@
       section.append(el('p','',refined.status === 'available'
         ? `峰值 ${fmt(refined.value,8)} 倍 · s=${fmt(refined.slip,7)} · 相对原采样峰值差 ${fmt(refined.delta_from_legacy,8)} 倍`
         : refined.reason || '加密采样未完成'));
+      if (refined.diagnostic) {
+        const diagnostic=refined.diagnostic, history=el('details','torque-iteration-history');
+        section.append(el('p','muted',diagnostic.note || ''));
+        history.append(el('summary','',`查看未收敛采样的末 ${diagnostic.history?.length || 0} 次迭代`));
+        history.append(featureTable(['迭代','输入电流倍数','输出电流倍数','电流倍数差','饱和插值输入','饱和系数','插值段'],
+          (diagnostic.history || []).map(r=>[fmt(r.iteration,0),fmt(r.input_current,8),fmt(r.current,8),
+            fmt(r.residual,7),fmt(r.saturation_input,8),fmt(r.saturation_factor,8),fmt(r.interpolation_window,0)])));
+        section.append(history);
+      }
       const detail=el('details');detail.append(el('summary','',`查看 ${refined.samples?.length || 0} 个直接计算点与收敛记录`));
       detail.append(featureTable(['转差率 s','转矩倍数','电流倍数','迭代次数','末次电流倍数差'],(refined.samples || []).map(r=>[
         fmt(r.slip,7),fmt(r.torque,8),fmt(r.current,8),fmt(r.iterations,0),fmt(r.residual,7)])));

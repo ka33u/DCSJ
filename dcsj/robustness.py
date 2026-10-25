@@ -45,8 +45,12 @@ def measured(request, scenario, result):
     from .optimization import metrics, assess
     cycle = load_cycle.evaluate(result, request.load_cycle)
     values = metrics(result, cycle=cycle)
+    error = None
+    if any(c.metric == 'TM_refined' for c in request.constraints) and values['TM_refined'] is None:
+        refined = result.get('curve_metrics', {}).get('refined_torque_peak') or {}
+        error = '加密转矩数值校核失败：' + refined.get('reason', '未取得有效采样峰值')
     return {**scenario, 'values':values, 'load_cycle':cycle, 'violations':assess(request,values),
-            'error':None, 'calculation_id':None}
+            'error':error, 'calculation_id':None}
 
 
 def summarize(request, nominal, samples, *, complete=True):

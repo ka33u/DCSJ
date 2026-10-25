@@ -126,7 +126,11 @@ def render(snapshot):
     refined = summary.torque_summary(snapshot)
     if refined:
         content += ['<h2 class="break">加密转矩峰值校核</h2><p>' + text(refined['text']) + '</p>',
-                    '<p>' + text(refined['note']) + '</p>', table(summary.TORQUE_HEADERS, refined['rows'])]
+                    '<p>' + text(refined['note']) + '</p>']
+        if refined['diagnostic_note']:
+            content += ['<h3>未收敛采样的末段迭代</h3><p>' + text(refined['diagnostic_note']) + '</p>',
+                        table(summary.TORQUE_DIAGNOSTIC_HEADERS, refined['diagnostic_rows'])]
+        content += [table(summary.TORQUE_HEADERS, refined['rows'])]
     robust = summary.robustness_summary(snapshot)
     if robust:
         content += ['<h2 class="break">公差情景评估</h2><p>' + text(summary.TOLERANCE_NOTE) + '</p>',

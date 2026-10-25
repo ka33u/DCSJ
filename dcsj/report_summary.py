@@ -131,12 +131,19 @@ def torque_summary(snapshot):
     text = ('峰值 ' + number(refined['value'], 8) + ' 倍 · s=' + number(refined['slip'], 7)
             + ' · 相对原采样峰值差 ' + number(refined.get('delta_from_legacy'), 8) + ' 倍'
             if refined['status'] == 'available' else refined.get('reason', '加密采样未完成'))
-    return {'text': text, 'note': refined.get('note', ''),
+    diagnostic = refined.get('diagnostic') or {}
+    return {'text': text, 'note': refined.get('note', ''), 'diagnostic_note': diagnostic.get('note', ''),
+            'diagnostic_rows': [[str(r['iteration']), number(r.get('input_current'), 8),
+                                 number(r.get('current'), 8), number(r.get('residual'), 7),
+                                 number(r.get('saturation_input'), 8), number(r.get('saturation_factor'), 8),
+                                 str(r['interpolation_window']) if r.get('interpolation_window') is not None else '—']
+                                for r in diagnostic.get('history', [])],
             'rows': [[number(r['slip'], 7), number(r['torque'], 8), number(r['current'], 8),
                       str(r['iterations']), number(r['residual'], 5)] for r in refined.get('samples', [])]}
 
 
 TORQUE_HEADERS = ['转差率 s', '转矩倍数', '电流倍数', '迭代次数', '末次电流倍数差']
+TORQUE_DIAGNOSTIC_HEADERS = ['迭代', '输入电流倍数', '输出电流倍数', '电流倍数差', '饱和插值输入', '饱和系数', '插值段']
 
 
 def cells(data, specs):

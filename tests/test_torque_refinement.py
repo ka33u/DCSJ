@@ -123,3 +123,79 @@ def test_html_and_pdf_keep_refined_samples_and_original_formula_separate(snapsho
         assert '加密转矩峰值校核' in content and '3.32158' in content and '2.7' in content
         assert '末次电流倍数差' in content and '0.3238' in content
     assert snapshot==original
+
+
+def iteration_history(period=2, repetitions=3):
+    return [{'iteration': i+1, 'input_current': 7.+i%period/10,
+             'input_factor': .97+i%period/1000, 'current': 7.+(i+1)%period/10,
+             'saturation_input': .499+i%period/1000, 'saturation_factor': .4+i%period/100,
+             'interpolation_window': 1+i%period, 'residual': .1}
+            for i in range(period*repetitions)]
+
+
+@pytest.mark.parametrize('period',[2,3,4])
+def test_cycle_diagnostics_require_three_exact_repetitions(period):
+    rows=iteration_history(period);original=deepcopy(rows)
+    d=tr.failure_diagnostic(.96,101,.1,205000,rows,'iteration_limit')
+    assert d['category']=='iteration_cycle' and d['cycle_period']==period
+    assert d['saturation_window_switch'] and '插值换段' in d['message']
+    assert rows==original
+    rows[-1]['input_factor']+=1e-7
+    d=tr.failure_diagnostic(.96,101,.1,205000,rows,'iteration_limit')
+    assert d['category']=='iteration_limit' and d['cycle_period'] is None
+    d=tr.failure_diagnostic(.96,101,.1,250000,original,'instruction_budget')
+    assert d['category']=='instruction_budget' and d['cycle_period'] is None
+
+
+def test_failed_sampler_diagnostics_survive_and_count_failed_work(monkeypatch):
+    from dcsj.storage import dumps
+    d=tr.failure_diagnostic(.96,101,.1,205000,iteration_history(),'iteration_limit')
+    def compute(x):
+        if x>.5:raise tr.SamplingFailure(d)
+        return sample(lambda x:x)(x)
+    monkeypatch.setattr(tr,'Sampler',lambda seed:compute)
+    r=tr.evaluate(object(),sweep(),tr.KERNEL_SHA256)
+    assert r['status']=='unavailable' and r['value'] is None
+    assert r['diagnostic']==d and r['steps']==205000+10*len(r['samples'])
+    assert '周期 2' in r['reason'] and r['diagnostic']['history']
+    bad=iteration_history();bad[-1]['input_factor']=float('nan')
+    sanitized=tr.failure_diagnostic(.96,101,float('inf'),205000,bad,'iteration_limit')
+    assert sanitized['cycle_period'] is None and sanitized['residual'] is None
+    assert sanitized['history'][-1]['input_factor'] is None
+    dumps(sanitized)
+
+
+def test_numerical_failure_is_distinct_from_a_finite_constraint_failure(parameters,snapshot):
+    from dcsj import robustness
+    request=optimization.SearchInput.model_validate({'parameters':parameters,'variables':[{'key':'L','values':[160.,170.]}],
+        'constraints':[{'metric':'TM_refined','minimum':3.}],'tolerances':[{'key':'L','delta':1}], 'max_evaluations':6})
+    snapshot['values'].update(ATA1=.9,Sf=.6,Sn=.03,Pcu=1,Pal=1,Pfe=1,Pfw1=1,Ps1=1)
+    snapshot['curve_metrics']={'refined_torque_peak':{'status':'unavailable','value':None,'reason':'周期 2 插值换段'}}
+    scenarios=robustness.scenarios(request,request.parameters)
+    samples=[robustness.measured(request,s,snapshot) for s in scenarios]
+    assert all('数值校核失败' in s['error'] for s in samples)
+    r,_,_=robustness.summarize(request,request.parameters,samples)
+    assert r['status']=='failed' and r['objectives']['efficiency'] is None and not r['feasible']
+    snapshot['curve_metrics']['refined_torque_peak']={'status':'available','value':2.9}
+    samples=[robustness.measured(request,s,snapshot) for s in scenarios]
+    r,_,_=robustness.summarize(request,request.parameters,samples)
+    assert r['status']=='complete' and r['objectives']['efficiency']==.9 and not r['feasible']
+    assert all(s['error'] is None for s in samples)
+
+
+def test_failed_iteration_history_is_saved_and_rendered_without_recalculation(snapshot,tmp_path,monkeypatch):
+    from dcsj import reports,pdf_report
+    from pypdf import PdfReader
+    from io import BytesIO
+    d=tr.failure_diagnostic(.96,101,.1,205000,iteration_history(),'iteration_limit')
+    snapshot['curve_metrics']={'refined_torque_peak':{'status':'unavailable','value':None,'reason':d['message'],
+        'diagnostic':d,'samples':[],'note':tr.NOTE}}
+    monkeypatch.setenv('DCSJ_PROJECTS_DB',str(tmp_path/'history.sqlite'))
+    saved=calculations.save(snapshot,'合成未收敛记录')
+    monkeypatch.setattr(tr,'evaluate',lambda *a,**k:pytest.fail('Historical diagnostic must not recompute'))
+    reopened=calculations.get(saved['calculation_id']);assert reopened['curve_metrics']==snapshot['curve_metrics']
+    html=reports.render(reopened)
+    pdf='\n'.join(p.extract_text() for p in PdfReader(BytesIO(pdf_report.render(reopened))).pages)
+    for content in (html,pdf):
+        assert '周期 2' in content and '饱和系数' in content and '插值段' in content
+        assert '数值求解失败不能据此判定电机性能不达标' in content
