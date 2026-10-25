@@ -136,7 +136,7 @@ class SearchInput(BaseModel):
     tolerance_gap_mode: Literal['independent', 'fixed_neck_bottom'] = 'independent'
     tolerance_interior_samples: StrictInt = Field(default=0, ge=0, le=32)
     tolerance_sampling: Literal['centered_lhs_v1', 'nested_lhs_v1'] = 'nested_lhs_v1'
-    algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1'] = 'stratified_v1'
+    algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1', 'coupled_poll_v1'] = 'stratified_v1'
     constraints: list[Constraint] = Field(default_factory=list, max_length=15)
     max_evaluations: int = Field(default=24, ge=2, le=128)
     seed: int = Field(default=42, ge=0, le=2**32-1)
@@ -207,8 +207,9 @@ def config():
             'max_evaluations': 128,
             'algorithms': [{'id': 'stratified_v1', 'label': '分层采样 + 局部搜索'},
                            {'id': 'adaptive_poll_v1', 'label': '自适应邻域搜索'},
+                           {'id': 'coupled_poll_v1', 'label': '联合变量搜索（邻点筛选）'},
                            {'id': 'hybrid_de_v1', 'label': '混合差分进化（新方法）'}],
-            'method': '可选择分层采样、自适应邻域搜索或混合差分进化。邻域搜索围绕当前较优方案试探，无改善时缩小步长；各方法均保留可行的折中方案，每个候选使用真实计算核。'}
+            'method': '可选择分层采样、自适应邻域、联合变量搜索或混合差分进化。联合变量法在停滞后利用已算邻点筛选成对变化，再用真实计算确认；设置公差时沿用自适应邻域。各方法均保留可行折中方案，每个候选使用真实计算核。'}
 
 
 def metrics(result, request=None, *, cycle=None):
@@ -537,7 +538,7 @@ class HybridSearch(StratifiedSearch):
 
 def Search(request):
     return {'hybrid_de_v1': HybridSearch, 'stratified_v1': StratifiedSearch,
-            'adaptive_poll_v1': AdaptivePollSearch}[request.algorithm](request)
+            'adaptive_poll_v1': AdaptivePollSearch, 'coupled_poll_v1': CoupledPollSearch}[request.algorithm](request)
 
 
 class AdaptivePollSearch(HybridSearch):
@@ -629,3 +630,72 @@ class AdaptivePollSearch(HybridSearch):
                 candidate = self._remember(self.poll_queue.pop(0))
                 if candidate is not None: return candidate
         return self._grid_candidate() if self.grid is not None else None
+
+
+class CoupledPollSearch(AdaptivePollSearch):
+    """Screen at most two paired moves after a failed nominal poll.
+
+    Additive neighbor estimates order proposals only. No predicted metric is
+    stored as an observation or admitted as a feasible result. Tolerance search
+    uses the parent policy because its metrics aggregate different scenarios.
+    """
+    def __init__(self, request):
+        super().__init__(request)
+        self.measurements = []
+        self.enrichments = []
+
+    def _identity(self, p):
+        return tuple((v.key,manufacturing.nominal(v,p[v.key]) if v.values and
+                      manufacturing.nominal(v,p[v.key]) is not None else p[v.key]) for v in self.request.variables)
+
+    def consider(self, parameters, values, feasible, *, violation=None):
+        result = super().consider(parameters,values,feasible,violation=violation)
+        if in_region(self.request,parameters):
+            self.measurements.append({'parameters':dict(parameters),'values':dict(values)})
+        return result
+
+    def _new_poll(self):
+        key = objective_keys(self.request)[self.round % len(objective_keys(self.request))]
+        state = self.poll_states[key]
+        incumbent = min(self.records,key=lambda r:self._rank(r,key)) if self.records else None
+        previous = state['anchor']
+        failed = incumbent is not None and previous is not None and self._rank(incumbent,key) >= self._rank(previous,key)
+        radius = state['radius']
+        super()._new_poll()
+        # Interval samples summarize many actual geometries; additive nominal
+        # interpolation must not be assumed to model their worst-case values.
+        if not failed or self.request.tolerances: return
+        center = self._project(incumbent['parameters'])
+        identity = self._identity(center)
+        base = next((m for m in reversed(self.measurements) if self._identity(m['parameters'])==identity),None)
+        if base is None: return
+        axes = {}
+        for m in self.measurements:
+            changed = [v for v in self.request.variables if m['parameters'][v.key]!=center[v.key]]
+            if len(changed)!=1 or changed[0].key=='Paihao': continue
+            v=changed[0];delta=m['parameters'][v.key]-center[v.key]
+            if manufacturing.single(m['parameters'][v.key])==manufacturing.single(center[v.key]):continue
+            distance=abs(delta)/(v.upper-v.lower) if v.upper>v.lower else 0
+            if distance>min(1,2*radius)+1e-12:continue
+            direction=(v.key,1 if delta>0 else -1)
+            score=abs(distance-radius)
+            if direction not in axes or score<axes[direction][0]:axes[direction]=(score,v,m)
+        proposals={}
+        for (_,a,left),(_,b,right) in itertools.combinations(axes.values(),2):
+            if a.key==b.key:continue
+            p=self._project({**center,a.key:left['parameters'][a.key],b.key:right['parameters'][b.key]})
+            pkey=self._identity(p)
+            if pkey in self.visited:continue
+            common=set(base['values'])&set(left['values'])&set(right['values'])
+            predicted={k:left['values'][k]+right['values'][k]-base['values'][k] for k in common
+                       if all(isinstance(m['values'][k],(int,float)) and math.isfinite(m['values'][k]) for m in (base,left,right))}
+            objectives=objective_values(self.request,predicted)
+            if any(v is None or not math.isfinite(v) for v in objectives.values()):continue
+            record={'objectives':objectives,'feasible':not assess(self.request,predicted),
+                    'violation':violation_score(self.request,predicted)}
+            rank=self._rank(record,key)
+            if rank<self._rank(incumbent,key):proposals[pkey]=(rank,p,[a.key,b.key])
+        ranked=sorted(proposals.values(),key=lambda item:item[0])[:2]
+        self.poll_queue=[p for _,p,_ in ranked]+self.poll_queue
+        if ranked:self.enrichments.append({'round':self.round,'objective':key,'pairs':[pair for _,_,pair in ranked],
+                                           'proposals':len(ranked),'prediction_only_for_ordering':True})

@@ -1493,7 +1493,7 @@
     const container = $("#optimization-detail"); container.classList.remove("hidden");
     container.replaceChildren(el("h2", "", `${job.name} · ${jobStatus[job.status] || job.status}`));
     const methodId = job.request.algorithm || 'stratified_v1';
-    const methodLabel = optimizationConfig?.algorithms?.find(item => item.id === methodId)?.label || ({stratified_v1:'分层采样 + 局部搜索',adaptive_poll_v1:'自适应邻域搜索',hybrid_de_v1:'混合差分进化'}[methodId] || '历史搜索方法');
+    const methodLabel = optimizationConfig?.algorithms?.find(item => item.id === methodId)?.label || ({stratified_v1:'分层采样 + 局部搜索',adaptive_poll_v1:'自适应邻域搜索',coupled_poll_v1:'联合变量搜索（邻点筛选）',hybrid_de_v1:'混合差分进化'}[methodId] || '历史搜索方法');
     const verification=job.request.verification,feedback=job.request.feedback;
     container.append(el('p', 'muted', verification?`补充采样复核 · 固定候选 #${verification.source_candidate_ordinal} · 新点种子 ${verification.seed}`:`本任务方法：${methodLabel} · 随机种子 ${job.request.seed ?? '—'}`));
     if(verification){
@@ -1504,6 +1504,7 @@
     }
     const constraints = job.request.constraints || [];
     const robust=!!job.request.tolerances?.length;
+    if(methodId==='coupled_poll_v1'&&!verification)container.append(el('p','muted',robust?'本任务设置了公差，使用自适应邻域；不对跨情景的最不利值作邻点预测筛选。':'在邻域停滞时，利用已算邻点筛选成对变量调整；预测只用于安排试探顺序，候选结果均由真实计算确认。'));
     if(robust&&!verification&&!feedback&&job.request.tolerance_interior_samples)container.append(el('p','source-box',`区间内部采样：每组增加 ${job.request.tolerance_interior_samples} 个分层点${job.request.tolerance_sampling==='nested_lhs_v1'?'（逐级保留已有点）':'（独立分层，旧版方法）'} · 种子 ${job.request.seed}；与名义尺寸、全部角点一起参与约束和最不利目标评估。`));
     if(robust)container.append(el('p','source-box',`公差情景：${job.request.tolerances.map(t=>`${t.key} ± ${fmt(t.delta,8)} mm`).join('；')}。目标值与约束范围取全部采样，常规快照与曲线保留名义结果。气隙偏差时${job.request.tolerance_gap_mode==='fixed_neck_bottom'?'槽颈底位置固定，联动 hr0':'保持名义 hr0'}。`));
     if (constraints.some(c => c.metric === 'TM_curve')) container.append(el('p', 'muted', '本任务已启用转矩曲线计算；峰值约束取完整 51 个计算采样的最大值，采样不完整的候选不满足约束。'));

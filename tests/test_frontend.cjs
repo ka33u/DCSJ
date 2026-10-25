@@ -886,20 +886,20 @@ test('multiobjective search submits independent goals and renders only feasible 
   assert.equal(ui.doc.querySelector('#current-design').textContent,'折中候选A');
 });
 
-test('adaptive neighborhood method selected in the UI reaches the queued request',async t=>{
-  let submitted;const job={id:'adaptive',name:'近邻验证',status:'succeeded',budget:24,evaluated:0,candidates:[],request:{objective:'efficiency',algorithm:'adaptive_poll_v1',variables:[],parameters}};
+for (const method of ['adaptive_poll_v1','coupled_poll_v1']) test(`${method} selected in the UI reaches the queued request`,async t=>{
+  let submitted;const job={id:'adaptive',name:'近邻验证',status:'succeeded',budget:24,evaluated:0,candidates:[],request:{objective:'efficiency',algorithm:method,variables:[],parameters}};
   const ui=await app(t,(path,request)=>{
     if(path==='/example')return {parameters:{...parameters,L:100},name:'基准'};
-    if(path==='/optimization/config')return {method:'自适应邻域搜索',variables:[{key:'L',label:'长度'}],objectives:[{id:'efficiency',label:'效率'}],algorithms:[{id:'stratified_v1',label:'分层采样'},{id:'adaptive_poll_v1',label:'自适应邻域搜索'}],materials:[],constraint_metrics:[]};
+    if(path==='/optimization/config')return {method:'自适应邻域搜索',variables:[{key:'L',label:'长度'}],objectives:[{id:'efficiency',label:'效率'}],algorithms:[{id:'stratified_v1',label:'分层采样'},{id:method,label:'邻域或联合变量搜索'}],materials:[],constraint_metrics:[]};
     if(path==='/optimization/jobs'&&request.method==='POST'){submitted=request.body;return job;}
     if(path==='/optimization/jobs')return {items:[]};
     if(path==='/optimization/jobs/adaptive')return job;
   },[{key:'L',label:'长度',group:'basic',type:'number',role:'input'}]);
   ui.doc.querySelector('#load-example').click();await settle();ui.nav('optimization');await settle();
   assert.equal(ui.doc.querySelector('#optimization-algorithm').value,'stratified_v1');
-  ui.doc.querySelector('#optimization-use-current').click();ui.doc.querySelector('#optimization-algorithm').value='adaptive_poll_v1';
+  ui.doc.querySelector('#optimization-use-current').click();ui.doc.querySelector('#optimization-algorithm').value=method;
   ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
-  assert.equal(submitted.algorithm,'adaptive_poll_v1');assert.equal(submitted.parameters.L,100);
+  assert.equal(submitted.algorithm,method);assert.equal(submitted.parameters.L,100);
   assert.equal(submitted.max_evaluations,24);assert.equal(submitted.secondary_objective,null);
 });
 
