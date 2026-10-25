@@ -115,7 +115,28 @@ def targets(snapshot):
         if points:
             peak = max(points, key=lambda p: p['y'])
             rows.append(('转矩曲线采样峰值', '—', number(peak['y']), 's=' + number(peak['x'], 4), '倍'))
+    refined = snapshot.get('curve_metrics', {}).get('refined_torque_peak')
+    if refined:
+        target = next((c for c in snapshot.get('optimization', {}).get('constraints', []) if c['metric'] == 'TM_refined'), {})
+        bounds = [symbol + number(target[key]) for key, symbol in [('minimum', '≥'), ('maximum', '≤')] if target.get(key) is not None]
+        rows.append(('加密转矩峰值', ' / '.join(bounds) or '—', number(refined.get('value')),
+                     's=' + number(refined['slip'], 5) if refined.get('status') == 'available' else '采样无效', '倍'))
     return rows
+
+
+def torque_summary(snapshot):
+    refined = snapshot.get('curve_metrics', {}).get('refined_torque_peak')
+    if not refined:
+        return None
+    text = ('峰值 ' + number(refined['value'], 8) + ' 倍 · s=' + number(refined['slip'], 7)
+            + ' · 相对原采样峰值差 ' + number(refined.get('delta_from_legacy'), 8) + ' 倍'
+            if refined['status'] == 'available' else refined.get('reason', '加密采样未完成'))
+    return {'text': text, 'note': refined.get('note', ''),
+            'rows': [[number(r['slip'], 7), number(r['torque'], 8), number(r['current'], 8),
+                      str(r['iterations']), number(r['residual'], 5)] for r in refined.get('samples', [])]}
+
+
+TORQUE_HEADERS = ['转差率 s', '转矩倍数', '电流倍数', '迭代次数', '末次电流倍数差']
 
 
 def cells(data, specs):

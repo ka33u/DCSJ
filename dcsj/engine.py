@@ -23,7 +23,7 @@ ENGINE_NAME = "DCSJ Python 数值核心"
 _kernel_path = ROOT / "dcsj/generated/numeric_kernel.json.gz"
 KERNEL_SHA256 = hashlib.sha256(_kernel_path.read_bytes()).hexdigest() if _kernel_path.is_file() else None
 WRAPPER_SHA256 = hashlib.sha256(b"".join((ROOT / "dcsj" / name).read_bytes()
-    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py", "library.py", "curves.py", "semantics.py", "wire_selection.py"))).hexdigest()
+    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py", "library.py", "curves.py", "semantics.py", "wire_selection.py", "torque_refinement.py"))).hexdigest()
 LIMITATIONS = [
     "由原 Fortran 程序的计算指令恢复；使用双精度中间运算和原单精度存储。",
     "已恢复三相异步电动机计算；历史型号保存值可能使用不同版本的材料表。",
@@ -178,7 +178,7 @@ def extract_curves(result, parameters, warnings):
     return curves
 
 
-def calculate_design(values):
+def calculate_design(values, *, refine_torque=False):
     context = resource_context()
     if engine_status(context)["missing_assets"]:
         raise CalculationUnavailableError("计算资源尚未安装，请在资源管理中导入授权的私有资源包。")
@@ -186,7 +186,9 @@ def calculate_design(values):
     memory, material = prepare_memory(p, context)
     started = time.perf_counter()
     try:
-        result = run(memory, max_steps=15_000_000, program_path=str(context['kernel_path']))
+        from . import torque_refinement
+        capture = {'capture_at': torque_refinement.CHECKPOINT} if refine_torque else {}
+        result = run(memory, max_steps=15_000_000, program_path=str(context['kernel_path']), **capture)
     except NumericKernelError as error:
         raise CalculationError(
             "当前参数未能完成计算，请检查槽形、绕组及材料参数。数值核心诊断：" + str(error)
@@ -215,6 +217,10 @@ def calculate_design(values):
         )
     curves = extract_curves(result, p, warnings)
     metadata = semantics.result_metadata(p, output, material, curves)
+    if refine_torque:
+        metadata['curve_metrics']['refined_torque_peak'] = torque_refinement.evaluate(
+            result.pop('checkpoint', None), curves, context['kernel_sha256'])
+        metadata['contract']['optional_optimizer_metrics']['TM_refined'] = 'curve_metrics.refined_torque_peak.value'
     for key, resolved in metadata['loss_semantics'].items():
         if resolved['mode'] == 'legacy':
             warnings.append(f"{key}={p[key]:g} 按 {resolved['resolved_unit']} 解析，额定点损耗 {resolved['rated_w']:.7g} W。")

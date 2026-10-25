@@ -52,13 +52,14 @@ def compare(suite, compute=calculate_design):
                 except InputError as error:
                     rejected += 1
                     return {'error':str(error)}
-            encoded = json.dumps(p, sort_keys=True, ensure_ascii=False, allow_nan=False)
+            extra = {'refine_torque': True} if any(c.metric == 'TM_refined' for c in request.constraints) else {}
+            encoded = json.dumps([p, extra], sort_keys=True, ensure_ascii=False, allow_nan=False)
             if encoded in cache:
                 cached += 1
             else:
                 new_calls += 1
                 try:
-                    result = compute(p)
+                    result = compute(p, **extra)
                     fingerprint = tuple(result['provenance'].get(key) for key in
                                         ('kernel_sha256', 'wrapper_sha256', 'resource_package'))
                     if identity is not None and identity != fingerprint:

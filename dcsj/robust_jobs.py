@@ -1,5 +1,5 @@
 """Checkpoint every tolerance sample; publish a candidate only after assessment."""
-from . import robustness, manufacturing, calculations
+from . import robustness, manufacturing, calculations, torque_refinement
 from .optimization import Search, SOLVER_SHA256
 from .parameters import InputError
 from .engine import CalculationError
@@ -41,7 +41,8 @@ def run(worker, identity, request, compute):
             if reason: break
             try:
                 p = robustness.validate_scenario(scenario['parameters'])
-                result = compute(p, wait=True, stop_event=worker.stop)
+                extra = {'refine_torque': True} if any(c.metric == 'TM_refined' for c in request.constraints) else {}
+                result = compute(p, wait=True, stop_event=worker.stop, **extra)
                 current = tuple(result['provenance'].get(k) for k in ('kernel_sha256','wrapper_sha256','resource_package'))
                 if fingerprint is not None and current != fingerprint:
                     drift = True
@@ -77,6 +78,7 @@ def run(worker, identity, request, compute):
                       'constraint_values':{c.metric:baseline_sample.get('values',{}).get(c.metric) for c in request.constraints},
                       'load_cycle':baseline_sample.get('load_cycle'), 'robustness':robust,
                       'manufacturing':manufacturing.audit(request,nominal),
+                      'refined_torque_peak':torque_refinement.compact(nominal_result or {}),
                       'torque_peak':sampled_torque_peak((nominal_result or {}).get('curves',[]))}
         calculation_id = None
         if nominal_result is not None:

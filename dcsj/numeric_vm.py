@@ -6,6 +6,7 @@ dependency. Each run owns its memory, registers, and eight physical x87 slots.
 """
 from __future__ import annotations
 import base64
+import copy
 from collections import Counter
 from functools import lru_cache
 import gzip
@@ -407,7 +408,8 @@ class _VM:
             raise NumericKernelError(f"Unsupported decoded operation {op} at {old_pc:#x}")
 
 
-def run(memory_overrides: dict[int, float | bytes], *, max_steps: int = 2000000, program_path=None):
+def run(memory_overrides: dict[int, float | bytes], *, max_steps: int = 2000000, program_path=None,
+        capture_at=None):
     """Run one isolated computation, rejecting unmodeled calls and budget overruns."""
     if not isinstance(max_steps, int) or not 1 <= max_steps <= 50000000:
         raise NumericKernelError("max_steps must be an integer from 1 to 50000000")
@@ -415,8 +417,13 @@ def run(memory_overrides: dict[int, float | bytes], *, max_steps: int = 2000000,
     vm = _VM(program, memory_overrides)
     code = program["code"]
     names = program["function_names"]
+    checkpoint = None
+    if capture_at is not None and capture_at not in code:
+        raise NumericKernelError("Checkpoint must be a decoded instruction address")
     try:
         while not vm.done and vm.steps < max_steps:
+            if vm.pc == capture_at and checkpoint is None:
+                checkpoint = copy.deepcopy(vm, {id(program): program})
             vm.steps += 1
             if vm.pc in names:
                 vm.calls[names[vm.pc]] += 1
@@ -432,8 +439,11 @@ def run(memory_overrides: dict[int, float | bytes], *, max_steps: int = 2000000,
         raise NumericKernelError(f"Numerical failure at {vm.pc:#x}: {exc}") from exc
     if not vm.done:
         raise NumericKernelLimitError(f"Numeric instruction budget ({max_steps}) exceeded at {vm.pc:#x}")
-    return {
+    result = {
         "outputs": vm.outputs, "memory": vm.memory, "steps": vm.steps,
         "calls": dict(vm.calls), "completed": True,
         "precision": "binary64 intermediates with binary32 source stores",
     }
+    if capture_at is not None:
+        result['checkpoint'] = checkpoint
+    return result

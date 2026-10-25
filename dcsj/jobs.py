@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 
-from . import calculations, load_cycle, manufacturing
+from . import calculations, load_cycle, manufacturing, torque_refinement
 from .engine import CalculationError, CalculationUnavailableError, engine_status
 from .execution import BusyError, compute
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_keys,
@@ -47,6 +47,7 @@ def get(identity, *, database=None, candidates=True):
                 item['violation_score'] = evaluation.get('violation_score')
                 item['constraint_values'] = evaluation.get('constraint_values', {})
                 item['torque_peak'] = evaluation.get('torque_peak')
+                item['refined_torque_peak'] = evaluation.get('refined_torque_peak')
                 item['load_cycle'] = evaluation.get('load_cycle')
                 item['manufacturing'] = evaluation.get('manufacturing')
                 item['robustness'] = evaluation.get('robustness')
@@ -175,7 +176,8 @@ class Worker:
                             '搜索已结束：未生成新的不重复候选。' + ('已有满足约束的候选。' if best_id else '没有找到满足全部约束的候选。')); return
             error, objective, calculation_id, violations = None, None, None, []
             try:
-                result = compute(parameters, wait=True, stop_event=self.stop)
+                extra = {'refine_torque': True} if any(c.metric == 'TM_refined' for c in request.constraints) else {}
+                result = compute(parameters, wait=True, stop_event=self.stop, **extra)
                 fingerprint = tuple(result['provenance'].get(key) for key in
                                     ('kernel_sha256', 'wrapper_sha256', 'resource_package'))
                 if resource_identity is not None and fingerprint != resource_identity:
@@ -195,6 +197,7 @@ class Worker:
                                          'constraint_values': {c.metric: values.get(c.metric) for c in request.constraints},
                                          'constraints': [c.model_dump() for c in request.constraints],
                                          'torque_peak': sampled_torque_peak(result.get('curves', [])),
+                                         'refined_torque_peak': torque_refinement.compact(result),
                                          'load_cycle': cycle,
                                          'manufacturing': manufacturing.audit(request, parameters)}
                 saved = calculations.save(result, f'{request.name} / {ordinal}', database=self.database)

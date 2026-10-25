@@ -123,6 +123,10 @@ def render(snapshot):
                 '<p class="legend">差值＝计算结果−设计目标；效率与槽满率的差值单位为百分点。s 表示峰值处转差率。</p>',
                 '<h2>运行与电磁指标</h2>', table([], summary.grid(summary.performance(v)), 'pairs'), '</section>']
     curves = [curve for curve in snapshot.get('curves', []) if curve.get('display') is not False]
+    refined = summary.torque_summary(snapshot)
+    if refined:
+        content += ['<h2 class="break">加密转矩峰值校核</h2><p>' + text(refined['text']) + '</p>',
+                    '<p>' + text(refined['note']) + '</p>', table(summary.TORQUE_HEADERS, refined['rows'])]
     robust = summary.robustness_summary(snapshot)
     if robust:
         content += ['<h2 class="break">公差情景评估</h2><p>' + text(summary.TOLERANCE_NOTE) + '</p>',

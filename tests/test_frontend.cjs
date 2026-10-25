@@ -1041,3 +1041,31 @@ test('tolerance search keeps drafts, validates budget and distinguishes worst sa
   assert.equal(d.querySelector('#current-design').textContent,'原始公差采样');
   assert.equal(JSON.parse(d.querySelector('#raw-parameters').textContent).g,.28);
 });
+
+test('refined torque constraint remains separate and exposes recorded convergence samples',async t=>{
+  let submitted;
+  const peak={status:'available',value:3.32158,slip:.3238,delta_from_legacy:-.0011,sample_count:72,
+    note:'直接调用原核；有限采样不保证连续全局峰值。',samples:[{slip:.3238,torque:3.32158,current:4.976,iterations:7,residual:.000001}]};
+  const job={id:'refined',name:'加密验收',status:'succeeded',budget:2,evaluated:2,feasible_count:1,best_id:'refined-best',
+    request:{parameters:{...parameters,_curve:1},variables:[{key:'L'}],constraints:[{metric:'TM_refined',minimum:3.3}],objective:'efficiency'},
+    candidates:[{ordinal:1,calculation_id:'refined-best',parameters:{L:100},objective:.9,feasible:true,constraint_values:{TM_refined:3.32158},refined_torque_peak:peak},
+      {ordinal:2,parameters:{L:101},feasible:false,violations:['TM_refined 无有效结果'],constraint_values:{TM_refined:null},refined_torque_peak:{reason:'加密采样未收敛'}}]};
+  const ui=await app(t,(path,request)=>{
+    if(path==='/example')return {parameters:{...parameters,L:100,_curve:0},name:'基准'};
+    if(path==='/optimization/config')return {method:'人工测试',variables:[{key:'L',label:'长度'}],objectives:[{id:'efficiency',label:'效率'}],materials:[],constraint_metrics:['TM1','TM_curve','TM_refined'],constraint_labels:{TM_refined:'加密转矩峰值（收紧迭代，倍）'}};
+    if(path==='/optimization/jobs'&&request.method==='POST'){submitted=request.body;return job;}
+    if(path==='/optimization/jobs')return {items:[]};
+    if(path==='/optimization/jobs/refined')return job;
+    if(path==='/calculations/refined-best')return {inputs:parameters,values:{TM1:2.78},metrics:[],curves:[],curve_metrics:{refined_torque_peak:peak},calculation_id:'refined-best'};
+  },[{key:'L',label:'长度',group:'basic',type:'number',role:'input'}]);
+  ui.doc.querySelector('#load-example').click();await settle();ui.nav('optimization');await settle();
+  ui.doc.querySelector('#optimization-use-current').click();ui.doc.querySelector('#add-optimization-constraint').click();
+  const row=ui.doc.querySelector('.search-constraint'),metric=row.querySelector('select');
+  metric.value='TM_refined';metric.dispatchEvent(new ui.w.Event('change'));row.querySelector('[name=minimum]').value='3.3';
+  assert.match(ui.doc.querySelector('#optimization-curve-note').textContent,/257/);
+  ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
+  assert.deepEqual(submitted.constraints,job.request.constraints);
+  const detail=ui.doc.querySelector('#optimization-detail');assert.match(detail.textContent,/加密峰值 s=0.3238/);assert.match(detail.textContent,/加密采样未收敛/);
+  ui.find('#optimization-detail button','打开最佳候选').click();await settle();
+  const result=ui.doc.querySelector('.torque-refinement-result');assert.match(result.textContent,/3.32158/);assert.match(result.textContent,/1.000e-6/);assert.match(result.textContent,/迭代次数/);
+});

@@ -101,3 +101,20 @@ def test_invalid_tolerance_dimensions_are_counted_without_engine_call(suite,fake
     for r in reports:
         assert r['evaluated']==6 and r['validation_failures']==2 and r['best_ordinal'] is None
         assert all(c['robustness']['status']=='failed' for c in r['candidates'])
+
+
+def test_refined_mode_is_part_of_cache_identity(suite,fake_engine):
+    compute,calls=fake_engine
+    baseline=copy.deepcopy(suite['cases'][0]);baseline['request']['parameters']['_curve']=1
+    refined=copy.deepcopy(baseline);refined['id']='refined'
+    refined['request']['constraints']=[{'metric':'TM_refined','minimum':3}]
+    suite['cases']=[baseline,refined];modes=[]
+    def with_refinement(parameters,**kwargs):
+        modes.append(kwargs);r=compute(parameters)
+        if kwargs.get('refine_torque'):
+            r['curve_metrics']={'refined_torque_peak':{'status':'available','value':3.2}}
+        return r
+    reports=list(benchmark.compare(suite,with_refinement))
+    assert len(calls)==10 and sum(bool(m) for m in modes)==5
+    assert all(r['feasible']==5 for r in reports if r['case_id']=='refined')
+    assert all(c['values']['TM_refined'] is None for r in reports if r['case_id']=='synthetic' for c in r['candidates'])

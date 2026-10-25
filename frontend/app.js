@@ -419,6 +419,18 @@
     if (warningBox) container.append(warningBox);
     const wire = renderWireSelection(result);
     if (wire) container.append(wire);
+    const refined = result.curve_metrics?.refined_torque_peak;
+    if (refined) {
+      const section = el('section','feature-content torque-refinement-result');
+      section.append(el('h3','','加密转矩峰值校核'),el('p','muted',refined.note || ''));
+      section.append(el('p','',refined.status === 'available'
+        ? `峰值 ${fmt(refined.value,8)} 倍 · s=${fmt(refined.slip,7)} · 相对原采样峰值差 ${fmt(refined.delta_from_legacy,8)} 倍`
+        : refined.reason || '加密采样未完成'));
+      const detail=el('details');detail.append(el('summary','',`查看 ${refined.samples?.length || 0} 个直接计算点与收敛记录`));
+      detail.append(featureTable(['转差率 s','转矩倍数','电流倍数','迭代次数','末次电流倍数差'],(refined.samples || []).map(r=>[
+        fmt(r.slip,7),fmt(r.torque,8),fmt(r.current,8),fmt(r.iterations,0),fmt(r.residual,7)])));
+      section.append(detail);container.append(section);
+    }
     const manufacturing = result.optimization?.manufacturing;
     const robust = result.optimization?.robustness;
     if (robust) container.append(robustnessView(robust));
@@ -1339,7 +1351,11 @@
     updateCurveConstraintNote();
   }
   function updateCurveConstraintNote() {
-    $('#optimization-curve-note').hidden = !$$('.search-constraint select[name=metric]').some(input => input.value === 'TM_curve');
+    const selected=$$('.search-constraint select[name=metric]').map(input=>input.value), note=$('#optimization-curve-note');
+    note.hidden = !selected.some(value=>['TM_curve','TM_refined'].includes(value));
+    note.textContent = selected.includes('TM_refined')
+      ? '已选择加密转矩峰值：在 s=0.01–1 内直接调用原核，收紧迭代并加密采样峰值，最多增加 257 个直接计算点，计算时间会增加。未收敛或采样不完整的候选不满足约束。有限采样不保证连续全局峰值，不替代原公式 TM1 或原 51 点峰值。'
+      : '已选择转矩曲线采样峰值约束：将自动计算每个候选的 51 个转差率采样点，可能增加计算时间。采样范围 s=0.01–1，峰值不使用平滑插值，也不替代原公式 TM1。';
     updateCycleForm();
   }
   function needsCycle() {
@@ -1469,6 +1485,7 @@
     const robust=!!job.request.tolerances?.length;
     if(robust)container.append(el('p','source-box',`公差情景：${job.request.tolerances.map(t=>`${t.key} ± ${fmt(t.delta,8)} mm`).join('；')}。目标值与约束范围取全部采样，常规快照与曲线保留名义结果。气隙偏差时${job.request.tolerance_gap_mode==='fixed_neck_bottom'?'槽颈底位置固定，联动 hr0':'保持名义 hr0'}。`));
     if (constraints.some(c => c.metric === 'TM_curve')) container.append(el('p', 'muted', '本任务已启用转矩曲线计算；峰值约束取完整 51 个计算采样的最大值，采样不完整的候选不满足约束。'));
+    if (constraints.some(c => c.metric === 'TM_refined')) container.append(el('p','muted','本任务使用加密转矩峰值约束：各点独立迭代，末次电流倍数差小于 0.00001；在 s=0.01–1 的采样局部峰值附近加密。未收敛的候选不满足约束，原计算输出保持独立。'));
     if (job.request.load_cycle?.length) container.append(el('p','muted',`本任务负载周期：${job.request.load_cycle.map(s=>`${fmt(s.load_fraction*100)}% × ${fmt(s.hours)} 小时`).join('；')}。耗电单位 kWh；效率为总输出电量 / 总输入电量。`));
     const explicit=job.request.variables.filter(v=>v.values?.length);
     if(explicit.length)container.append(el('p','muted',`指定规格：${explicit.map(v=>`${v.key} ∈ {${v.values.map(x=>fmt(x,9)).join(', ')}}`).join('；')}。基准不在清单中时仅供对照。`));
@@ -1538,6 +1555,11 @@
       if (constraints.length) {
         const readings = constraints.map(c => {const r=candidate.robustness?.metric_ranges?.[c.metric];return robust?`${c.metric}=${fmt(r?.minimum,7)}–${fmt(r?.maximum,7)}${r?.complete?'':'（未完整）'}`:`${c.metric}=${fmt(candidate.constraint_values?.[c.metric], 7)}${c.metric === 'TM_curve' && Number.isFinite(candidate.torque_peak?.slip) ? ' · s=' + fmt(candidate.torque_peak.slip, 5) : ''}`;});
         if (!robust && candidate.torque_peak?.reason && constraints.some(c => c.metric === 'TM_curve')) readings.push(candidate.torque_peak.reason);
+        if (!robust && constraints.some(c=>c.metric==='TM_refined')) {
+          const peak=candidate.refined_torque_peak;
+          if (Number.isFinite(peak?.slip)) readings.push(`加密峰值 s=${fmt(peak.slip,6)} · ${peak.sample_count} 点`);
+          if (peak?.reason) readings.push(peak.reason);
+        }
         row.append(el('td', '', readings.join('\n')));
       }
       row.append(el("td", "", candidate.error || (candidate.feasible ? (pareto.has(candidate.calculation_id) ? "满足约束 · 折中候选" : "满足约束") : candidate.violations.join("；"))));
