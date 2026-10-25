@@ -1003,3 +1003,41 @@ test('explicit sizes preserve drafts and serialize lists with optional rotor lin
   const key=row.querySelector('[name=key]');key.value='Paihao';key.dispatchEvent(new ui.w.Event('change'));
   assert.equal(values.disabled,true);assert.equal(row.querySelector('[name=choices]').required,true);
 });
+
+test('tolerance search keeps drafts, validates budget and distinguishes worst samples from nominal curves',async t=>{
+  let submitted;
+  const robust={status:'complete',feasible:true,note:'有限采样，不保证角点之间没有更差值。',evaluated_samples:3,expected_samples:3,
+    tolerances:[{key:'g',delta:.02}],objectives:{efficiency:.88},worst_samples:{efficiency:1},objective_specs:{efficiency:{metric:'ATA1',label:'效率最高'}},
+    metric_ranges:{ATA1:{minimum:.88,maximum:.92,complete:true}},samples:[{index:1,label:'g-0.02',parameters:{g:.28,hr0:.52},values:{ATA1:.88},violations:[],calculation_id:'sample'}]};
+  const job={id:'tolerance',name:'公差测试',status:'succeeded',budget:8,evaluated:6,best_id:'nominal',
+    request:{parameters:{...parameters,L:100,g:.3,hr0:.5},variables:[{key:'L'}],constraints:[{metric:'ATA1',minimum:.85}],objective:'efficiency',tolerances:robust.tolerances},
+    candidates:[{ordinal:1,calculation_id:'nominal',parameters:{L:100},objective:.88,feasible:true,robustness:robust,constraint_values:{ATA1:.9}}],samples:robust.samples.map(s=>({...s,ordinal:1}))};
+  const ui=await app(t,(path,req)=>{
+    if(path==='/example')return {parameters:job.request.parameters,name:'基准'};
+    if(path==='/optimization/config')return {method:'人工测试',variables:[{key:'L',label:'长度'}],objectives:[{id:'efficiency',label:'效率'}],materials:[],constraint_metrics:['ATA1']};
+    if(path==='/optimization/jobs'&&req.method==='POST'){submitted=req.body;return job;}
+    if(path==='/optimization/jobs')return {items:[]};
+    if(path==='/optimization/jobs/tolerance')return job;
+    if(path==='/calculations/nominal')return {...snapshot('nominal'),inputs:job.request.parameters,optimization:{robustness:robust}};
+    if(path==='/calculations/sample')return {...snapshot('sample','原始公差采样'),inputs:{...job.request.parameters,g:.28}};
+  },[{key:'L',label:'长度',group:'basic',type:'number',role:'input'}]);
+  const d=ui.doc,change=n=>n.dispatchEvent(new ui.w.Event('change')),submit=async()=>{submitted=null;d.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{cancelable:true}));await settle();};
+  d.querySelector('#load-example').click();await settle();ui.nav('optimization');await settle();d.querySelector('#optimization-use-current').click();
+  const enabled=d.querySelector('#optimization-tolerance-enabled'),form=d.querySelector('#optimization-tolerances'),delta=form.querySelector('[name=delta]');
+  assert.equal(form.disabled,true);assert.equal(form.hidden,true);assert.equal(delta.value,'','No factory tolerance presumed');
+  enabled.checked=true;change(enabled);assert.equal(form.hidden,false);assert.equal(form.disabled,false);
+  await submit();assert.equal(submitted,null);assert.match(d.querySelector('#optimization-error').textContent,/偏差须大于/);
+  delta.value='.02';d.querySelector('#optimization-budget').value='5';await submit();assert.equal(submitted,null);assert.match(d.querySelector('#optimization-error').textContent,/预算不足/);
+  d.querySelector('#optimization-budget').value='8';d.querySelector('#tolerance-gap-mode').value='fixed_neck_bottom';await submit();
+  assert.deepEqual(submitted.tolerances,[{key:'g',delta:.02}]);assert.equal(submitted.tolerance_gap_mode,'fixed_neck_bottom');
+  const detail=d.querySelector('#optimization-detail');assert.match(detail.textContent,/最不利采样目标值/);assert.match(detail.textContent,/ATA1=0.88–0.92/);assert.match(detail.textContent,/次情景计算/);
+  enabled.checked=false;change(enabled);assert.equal(form.disabled,true);await submit();assert.equal(submitted.tolerances,undefined);assert.equal(submitted.tolerance_gap_mode,undefined);
+  enabled.checked=true;change(enabled);assert.equal(delta.value,'.02');
+  d.querySelector('#add-tolerance').click();const second=form.querySelectorAll('[name=key]')[1];second.value='g';change(second);await submit();assert.equal(submitted,null);
+  ui.find('#optimization-detail button','打开最佳候选').click();await settle();
+  assert.match(d.querySelector('.tolerance-result').textContent,/名义尺寸结果/);
+  assert.match(d.querySelector('.tolerance-result').textContent,/0.88/);
+  ui.find('.tolerance-result button','打开采样').click();await settle();
+  assert.equal(d.querySelector('#current-design').textContent,'原始公差采样');
+  assert.equal(JSON.parse(d.querySelector('#raw-parameters').textContent).g,.28);
+});

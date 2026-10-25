@@ -54,3 +54,18 @@ def test_live_wal_backup_restore_and_overwrite_protection(tmp_path, monkeypatch)
         restore(destination, tmp_path / 'invalid.sqlite', 'wrong')
     assert not (tmp_path / 'invalid.sqlite').exists()
     assert not list(tmp_path.glob('*.tmp'))
+
+
+def test_v10_upgrade_retains_old_tables_and_adds_empty_tolerance_tables(tmp_path):
+    path=tmp_path/'v10.sqlite'
+    with connect(path) as db:
+        db.execute("INSERT INTO optimization_jobs(id,name,request,status,created_at,updated_at,budget) VALUES ('old','old','{}','failed','x','x',2)")
+        db.execute('DROP TABLE optimization_samples');db.execute('DROP TABLE optimization_assessments')
+        db.execute('PRAGMA user_version=10')
+        names=[r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        before={name:[tuple(r) for r in db.execute('SELECT * FROM '+name)] for name in names}
+    with connect(path) as db:
+        assert db.execute('PRAGMA user_version').fetchone()[0]==11
+        assert {name:[tuple(r) for r in db.execute('SELECT * FROM '+name)] for name in names}==before
+        for name in ['optimization_samples','optimization_assessments']:
+            assert db.execute('SELECT count(*) FROM '+name).fetchone()[0]==0

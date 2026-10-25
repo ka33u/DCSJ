@@ -77,3 +77,27 @@ def test_empty_protocols_are_not_reported_as_success(suite,fake_engine,key):
     compute,calls=fake_engine;suite[key]=[]
     with pytest.raises(ValueError,match='nonempty'):list(benchmark.compare(suite,compute))
     assert not calls
+
+
+def test_tolerance_benchmark_counts_samples_and_caches_whole_engine_results(suite,fake_engine):
+    compute,calls=fake_engine
+    suite['cases'][0]['request'].update(variables=[{'key':'L','values':[160,165]}],
+        tolerances=[{'key':'g','delta':.05}])
+    reports=list(benchmark.compare(suite,compute))
+    assert sum(r['engine_calls'] for r in reports)==len(calls)==6
+    assert sum(r['cached_evaluations'] for r in reports)==6
+    for r in reports:
+        assert r['evaluated']==6 and r['validation_failures']==0 and len(r['candidates'])==2
+        assert r['best_objective']==pytest.approx(.9)
+        assert all(c['robustness']['evaluated_samples']==3 for c in r['candidates'])
+
+
+def test_invalid_tolerance_dimensions_are_counted_without_engine_call(suite,fake_engine):
+    compute,calls=fake_engine
+    suite['cases'][0]['request'].update(variables=[{'key':'L','values':[160,165]}],
+        tolerances=[{'key':'g','delta':.05}],tolerance_gap_mode='fixed_neck_bottom')
+    reports=list(benchmark.compare(suite,compute))
+    assert sum(r['engine_calls'] for r in reports)==len(calls)==4
+    for r in reports:
+        assert r['evaluated']==6 and r['validation_failures']==2 and r['best_ordinal'] is None
+        assert all(c['robustness']['status']=='failed' for c in r['candidates'])

@@ -420,6 +420,8 @@
     const wire = renderWireSelection(result);
     if (wire) container.append(wire);
     const manufacturing = result.optimization?.manufacturing;
+    const robust = result.optimization?.robustness;
+    if (robust) container.append(robustnessView(robust));
     if (manufacturing) {
       const section = el('section','result-section'); section.append(el('h3','result-section-title','寻优规格与尺寸联动'));
       if (manufacturing.numeric_sets?.length) section.append(featureTable(['变量','允许规格','本次输入','规格匹配'], manufacturing.numeric_sets.map(r=>[r.key,r.allowed.map(v=>fmt(v,9)).join(' / '),fmt(r.actual,9),r.passed?'符合':'不符合'])));
@@ -429,7 +431,7 @@
     const cycle = result.optimization?.load_cycle;
     if (cycle) {
       const section = el('section','feature-content cycle-result');
-      section.append(el('h3','','负载周期能耗'),el('p','muted',cycle.note || ''));
+      section.append(el('h3','',robust ? '名义尺寸 · 负载周期能耗' : '负载周期能耗'),el('p','muted',cycle.note || ''));
       if (cycle.status === 'available') {
         section.append(el('p','',`运行 ${fmt(cycle.total_hours)} 小时 · 输入 ${fmt(cycle.input_energy_kwh,7)} kWh · 输出 ${fmt(cycle.output_energy_kwh,7)} kWh · 周期效率 ${fmt(cycle.efficiency*100,5)}%`));
         section.append(featureTable(['负载 %','小时','输入 kW','输出 kW','耗电 kWh','取值'],cycle.stages.map(s=>[
@@ -1058,7 +1060,7 @@
     const scroll = el("div", "table-scroll"), table = el("table", "data-table");
     const head = el("thead"), tr = el("tr"), body = el("tbody");
     headers.forEach(h => tr.append(el("th", "", h))); head.append(tr);
-    rows.forEach(cells => { const row = el("tr"); cells.forEach(c => row.append(el("td", "", c))); body.append(row); });
+    rows.forEach(cells => { const row = el("tr"); cells.forEach(c => {const cell=el('td');if(c instanceof Node)cell.append(c);else cell.textContent=c??'';row.append(cell);}); body.append(row); });
     table.append(head, body); scroll.append(table); return scroll;
   }
   let comparisonRequest = 0, savedComparisonsRequest = 0;
@@ -1268,6 +1270,8 @@
       addOptimizationVariable("L");
       if (!$('#optimization-cycle-stages').children.length) [[50,4],[75,2],[100,2]].forEach(([load,hours]) => addCycleStage(load,hours));
       updateCycleForm();
+      if (!$('#optimization-tolerance-rows').children.length) addTolerance();
+      updateToleranceForm();
     } catch (error) { showToast(errorText(error), "error"); }
   }
   function useOptimizationBase() {
@@ -1362,6 +1366,43 @@
     ["minimum", "maximum", "step"].forEach(name => { const input = $(`input[name=${name}]`, row); if (input && !input.disabled && input.value !== "") result[name] = Number(input.value); });
     return result;
   }
+  function updateToleranceForm() {
+    const enabled=$('#optimization-tolerance-enabled').checked, rows=$$('#optimization-tolerance-rows .tolerance-row');
+    $('#optimization-tolerances').hidden=!enabled;$('#optimization-tolerances').disabled=!enabled;
+    const gap=rows.some(row=>$('[name=key]',row).value==='g');
+    $('#tolerance-gap-field').hidden=!gap;$('#tolerance-gap-mode').disabled=!enabled||!gap;
+    const count=1+2**rows.length,budget=Number($('#optimization-budget').value);
+    $('#tolerance-budget-note').textContent=`每个名义方案计算 ${count} 次（含中心点）；当前预算最多评估 ${Math.floor(budget/count)} 组。失败情景也计入预算，至少需 ${count*2} 次以评估基准和一个候选。`;
+    $('#add-tolerance').disabled=rows.length>=3;
+  }
+  function addTolerance() {
+    const host=$('#optimization-tolerance-rows');if(host.children.length>=3)return;
+    const row=el('div','quick-form tolerance-row'),label=el('label','','公差尺寸'),select=el('select','text-input');select.name='key';
+    const used=$$('[name=key]',host).map(s=>s.value),items={g:'气隙',L:'铁心长度',Djj:'第一组线径',Dmm:'第二组线径'};
+    Object.entries(items).forEach(([key,name])=>select.append(new Option(`${key} · ${name}`,key)));
+    select.value=Object.keys(items).find(key=>!used.includes(key));label.append(select);
+    row.append(label,inputField('允许偏差 ± mm','number','delta'),button('移除公差','text-button',()=>{if(host.children.length>1){row.remove();updateToleranceForm();}}));
+    const delta=$('[name=delta]',row);delta.required=true;delta.min='0';delta.max=1000000;
+    select.addEventListener('change',updateToleranceForm);host.append(row);updateToleranceForm();
+  }
+  function robustnessView(record) {
+    const section=el('section','feature-content tolerance-result');
+    section.append(el('h3','','公差情景评估'),el('p','source-box','下方常规指标、曲线与负载周期均为名义尺寸结果；本节目标值取最不利采样。'),el('p','muted',record.note||''));
+    section.append(el('p','',`已评估 ${record.evaluated_samples}/${record.expected_samples} 个情景 · ${record.status==='incomplete'?'未完成':record.status==='failed'?'存在计算失败':record.feasible?'全部采样满足约束':'存在约束不满足'}`));
+    section.append(featureTable(['目标','最不利采样值','情景编号'],Object.entries(record.objectives||{}).map(([key,value])=>[record.objective_specs?.[key]?.label||key,fmt(value,8),record.worst_samples?.[key]??'—'])));
+    section.append(featureTable(['指标','采样最小值','采样最大值','完整'],Object.entries(record.metric_ranges||{}).map(([key,r])=>[key,fmt(r.minimum,8),fmt(r.maximum,8),r.complete?'是':'否'])));
+    section.append(sampleTable(record.samples||[],record.tolerances||[],record.objective_specs||{}));
+    return section;
+  }
+  function sampleTable(samples,tolerances,specs={}) {
+    const rows=samples.map(s=>{
+      const link=s.calculation_id?button('打开采样','text-button',()=>openSnapshot(s.calculation_id)):'—';
+      const fields=[...new Set([...tolerances.map(t=>t.key),'hr0'])];
+      return [`${s.ordinal?'候选 '+s.ordinal+' / ':''}${s.index} · ${s.label}`,fields.map(k=>`${k}=${fmt(s.parameters?.[k],8)}`).join('；'),
+        Object.values(specs).map(o=>`${o.metric}=${fmt(s.values?.[o.metric],8)}`).join('；')||'—',s.error||s.violations?.join('；')||'满足约束',link];
+    });
+    return featureTable(['情景','输入尺寸 mm','采样目标指标','校核结果','原始快照'],rows);
+  }
   async function startOptimization(event) {
     event.preventDefault();
     const trigger = $("#start-optimization"), errors = $("#optimization-error");
@@ -1383,6 +1424,12 @@
       request.secondary_objective = $("#optimization-secondary").value || null;
       request.algorithm = $("#optimization-algorithm").value;
       request.rotor_gap_mode = $('#optimization-gap-mode').disabled?'independent':$('#optimization-gap-mode').value;
+      if ($('#optimization-tolerance-enabled').checked) {
+        request.tolerances=$$('#optimization-tolerance-rows .tolerance-row').map(row=>({key:$('[name=key]',row).value,delta:Number($('[name=delta]',row).value)}));
+        if(!request.tolerances.length||new Set(request.tolerances.map(t=>t.key)).size!==request.tolerances.length||request.tolerances.some(t=>!Number.isFinite(t.delta)||t.delta<=0||t.delta>1000000))throw new Error('请选择不重复的公差尺寸，偏差须大于 0 且不超过 1000000 mm。');
+        if(request.max_evaluations<2*(1+2**request.tolerances.length))throw new Error('计算预算不足以评估基准和一个完整公差候选，请增加预算。');
+        request.tolerance_gap_mode=$('#tolerance-gap-mode').disabled?'independent':$('#tolerance-gap-mode').value;
+      }
       if (request.secondary_objective === request.objective) throw new Error("第二目标请选择不同的指标。");
       if ([request.objective,request.secondary_objective].every(key=>['cycle_energy','cycle_efficiency'].includes(key))) throw new Error('周期耗电与周期效率在同一负载周期下等价，第二目标请选择其他指标。');
       if (needsCycle()) {
@@ -1419,6 +1466,8 @@
     const methodLabel = optimizationConfig?.algorithms?.find(item => item.id === methodId)?.label || ({stratified_v1:'分层采样 + 局部搜索',adaptive_poll_v1:'自适应邻域搜索',hybrid_de_v1:'混合差分进化'}[methodId] || '历史搜索方法');
     container.append(el('p', 'muted', `本任务方法：${methodLabel} · 随机种子 ${job.request.seed ?? '—'}`));
     const constraints = job.request.constraints || [];
+    const robust=!!job.request.tolerances?.length;
+    if(robust)container.append(el('p','source-box',`公差情景：${job.request.tolerances.map(t=>`${t.key} ± ${fmt(t.delta,8)} mm`).join('；')}。目标值与约束范围取全部采样，常规快照与曲线保留名义结果。气隙偏差时${job.request.tolerance_gap_mode==='fixed_neck_bottom'?'槽颈底位置固定，联动 hr0':'保持名义 hr0'}。`));
     if (constraints.some(c => c.metric === 'TM_curve')) container.append(el('p', 'muted', '本任务已启用转矩曲线计算；峰值约束取完整 51 个计算采样的最大值，采样不完整的候选不满足约束。'));
     if (job.request.load_cycle?.length) container.append(el('p','muted',`本任务负载周期：${job.request.load_cycle.map(s=>`${fmt(s.load_fraction*100)}% × ${fmt(s.hours)} 小时`).join('；')}。耗电单位 kWh；效率为总输出电量 / 总输入电量。`));
     const explicit=job.request.variables.filter(v=>v.values?.length);
@@ -1426,7 +1475,7 @@
     if(job.request.rotor_gap_mode==='fixed_neck_bottom')container.append(el('p','muted','本任务保持转子槽颈底位置：hr0 = hr0基准 + g基准 − g；转子外径 D2 = Di1 − 2g。'));
     const progress = el("progress"); progress.max = job.budget; progress.value = job.evaluated;
     progress.setAttribute("aria-label", `已评估 ${job.evaluated}，预算 ${job.budget}`);
-    container.append(progress, el("p", "muted", `已评估 ${job.evaluated} / ${job.budget}；满足约束 ${job.feasible_count ?? job.candidates.filter(c => c.feasible).length} 个；失败与基准计算均计入预算。`), el("p", "", job.message));
+    container.append(progress, el("p", "muted", `已评估 ${job.evaluated} / ${job.budget}${robust?' 次情景计算':''}；满足约束 ${job.feasible_count ?? job.candidates.filter(c => c.feasible).length} 个${robust?'完整候选组':''}；失败与基准计算均计入预算。`), el("p", "", job.message));
     const actions = el("div", "feature-actions");
     if (!terminalJobs.has(job.status)) {
       const cancel = button(job.status === "cancelling" ? "当前计算结束后停止" : "取消任务", "button", async () => { try { showJob(await api(`/optimization/jobs/${job.id}/cancel`, { method: "POST" })); watchJob(job.id); } catch (error) { showToast(errorText(error), "error"); } });
@@ -1443,16 +1492,16 @@
       const bestCycle=job.candidates.find(c=>c.calculation_id===job.best_id)?.load_cycle;
       if(baseCycle?.status==='available'&&bestCycle?.status==='available') {
         const saved=baseCycle.input_energy_kwh-bestCycle.input_energy_kwh;
-        container.append(el('p','source-box',`同一负载周期下，第一目标最佳候选比基准${saved>=0?'少':'多'}耗电 ${fmt(Math.abs(saved),7)} kWh（${fmt(Math.abs(saved)/baseCycle.input_energy_kwh*100,5)}%）；仅比较本次保存的计算结果。`));
+        container.append(el('p','source-box',`${robust?'名义尺寸 · ':''}同一负载周期下，第一目标最佳候选比基准${saved>=0?'少':'多'}耗电 ${fmt(Math.abs(saved),7)} kWh（${fmt(Math.abs(saved)/baseCycle.input_energy_kwh*100,5)}%）；仅比较本次保存的计算结果。`));
       }
     }
-    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, load_cycle: job.request.load_cycle, rotor_gap_mode:job.request.rotor_gap_mode, seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
+    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的搜索配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, load_cycle: job.request.load_cycle, rotor_gap_mode:job.request.rotor_gap_mode, tolerances:job.request.tolerances, tolerance_gap_mode:job.request.tolerance_gap_mode, seed: job.request.seed, baseline: job.request.parameters.SizeX }, null, 2))); container.append(settings);
     if (!job.candidates.length) { container.append(el("p", "muted", "尚无完成的候选。")); return; }
     const pareto = new Set(job.pareto_ids || []);
     if (job.request.secondary_objective) {
       const section = el('section', 'feature-content'); section.append(el('h3', '', `折中候选 · ${pareto.size} 个`), el('p', 'muted', '在本次已评估且满足约束的方案中，这些方案没有被其他方案同时超越两个目标。★ 仍表示第一目标最佳；可选择任意折中方案继续设计。'));
       const keys = [job.request.objective, job.request.secondary_objective];
-      const labels = keys.map(key => optimizationConfig?.objectives.find(o => o.id === key)?.label || key);
+      const labels = keys.map(key => (robust?'最不利采样 · ':'')+(optimizationConfig?.objectives.find(o => o.id === key)?.label || key));
       const points = job.candidates.filter(c => c.feasible && keys.every(k => Number.isFinite(c.objectives?.[k])));
       if (points.length) {
         const ranges = keys.map(k => { const values = points.map(c => c.objectives[k]), lo = Math.min(...values), hi = Math.max(...values); const pad = (hi-lo || Math.abs(lo)*.01 || 1)*.08; return [lo-pad, hi+pad]; });
@@ -1476,7 +1525,7 @@
       container.append(section);
     }
     const scroll = el("div", "table-scroll"), table = el("table", "data-table"), head = el("thead"), heading = el("tr"), body = el("tbody");
-    ["序号", "搜索变量", "目标值", ...(job.request.load_cycle?.length ? ['负载周期结果'] : []), ...(constraints.length ? ['约束计算值'] : []), "约束与诊断", "操作"].forEach(title => heading.append(el("th", "", title))); head.append(heading);
+    ["序号", "搜索变量", robust?'最不利采样目标值':'目标值', ...(job.request.load_cycle?.length ? [robust?'名义尺寸 · 负载周期':'负载周期结果'] : []), ...(constraints.length ? [robust?'约束采样范围':'约束计算值'] : []), "约束与诊断", "操作"].forEach(title => heading.append(el("th", "", title))); head.append(heading);
     job.candidates.forEach(candidate => {
       const row = el("tr"); row.append(el("td", "", `${candidate.ordinal}${candidate.ordinal === 1 ? " 基准" : ""}${candidate.calculation_id === job.best_id ? " ★" : ""}`));
       const secondary = job.request.secondary_objective;
@@ -1487,14 +1536,17 @@
         ? `${fmt(candidate.load_cycle.input_energy_kwh,7)} kWh\n周期效率 ${fmt(candidate.load_cycle.efficiency*100,5)}%`
         : candidate.load_cycle?.reason || '此记录没有保存负载周期结果'));
       if (constraints.length) {
-        const readings = constraints.map(c => `${c.metric}=${fmt(candidate.constraint_values?.[c.metric], 7)}${c.metric === 'TM_curve' && Number.isFinite(candidate.torque_peak?.slip) ? ' · s=' + fmt(candidate.torque_peak.slip, 5) : ''}`);
-        if (candidate.torque_peak?.reason && constraints.some(c => c.metric === 'TM_curve')) readings.push(candidate.torque_peak.reason);
+        const readings = constraints.map(c => {const r=candidate.robustness?.metric_ranges?.[c.metric];return robust?`${c.metric}=${fmt(r?.minimum,7)}–${fmt(r?.maximum,7)}${r?.complete?'':'（未完整）'}`:`${c.metric}=${fmt(candidate.constraint_values?.[c.metric], 7)}${c.metric === 'TM_curve' && Number.isFinite(candidate.torque_peak?.slip) ? ' · s=' + fmt(candidate.torque_peak.slip, 5) : ''}`;});
+        if (!robust && candidate.torque_peak?.reason && constraints.some(c => c.metric === 'TM_curve')) readings.push(candidate.torque_peak.reason);
         row.append(el('td', '', readings.join('\n')));
       }
       row.append(el("td", "", candidate.error || (candidate.feasible ? (pareto.has(candidate.calculation_id) ? "满足约束 · 折中候选" : "满足约束") : candidate.violations.join("；"))));
       const action = el("td"); if (candidate.calculation_id) action.append(button("打开", "text-button", () => openSnapshot(candidate.calculation_id)), reportLink(candidate.calculation_id)); row.append(action); body.append(row);
     });
     table.append(head, body); scroll.append(table); container.append(scroll);
+    if(robust&&job.samples?.length) {
+      const details=el('details','trace-details');details.append(el('summary','',`已保存的公差采样 · ${job.samples.length} 次（含未完成组）`),sampleTable(job.samples,job.request.tolerances,job.candidates.find(c=>c.robustness)?.robustness?.objective_specs));container.append(details);
+    }
   }
 
   let resourceState = null, resourceBusy = false, resourceRequest = 0;
@@ -1910,6 +1962,9 @@
   $("#add-optimization-constraint").addEventListener("click", () => addOptimizationConstraint());
   $('#optimization-objective').addEventListener('change',updateCycleForm);
   $('#optimization-secondary').addEventListener('change',updateCycleForm);
+  $('#optimization-tolerance-enabled').addEventListener('change',updateToleranceForm);
+  $('#optimization-budget').addEventListener('input',updateToleranceForm);
+  $('#add-tolerance').addEventListener('click',addTolerance);
   $('#add-cycle-stage').addEventListener('click',()=>addCycleStage());
   $("#optimization-form").addEventListener("submit", startOptimization);
   $("#refresh-optimization-jobs").addEventListener("click", loadOptimizationJobs);

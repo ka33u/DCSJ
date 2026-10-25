@@ -11,7 +11,7 @@ import time
 
 from .engine import calculate_design, CalculationError
 from .parameters import InputError
-from . import load_cycle, manufacturing
+from . import load_cycle, manufacturing, robustness
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_values,
                            objective_keys, pareto_front, OBJECTIVES, SOLVER_SHA256)
 
@@ -39,16 +39,23 @@ def compare(suite, compute=calculate_design):
                     configurations.append((case['id'], request))
     cache, identity = {}, None
     for case_id, request in configurations:
-        search = Search(request)
+        group_size = robustness.sample_count(request)
+        search = Search(request.model_copy(update={'max_evaluations':request.max_evaluations // group_size}))
         candidates = []
-        new_calls = 0
+        new_calls = cached = rejected = evaluated = 0
         started = time.monotonic()
-        for ordinal in range(1, request.max_evaluations + 1):
-            p = search.candidate()
-            if p is None: break
+
+        def evaluate(p):
+            nonlocal identity, new_calls, cached, rejected
+            if request.tolerances:
+                try: robustness.validate_scenario(p)
+                except InputError as error:
+                    rejected += 1
+                    return {'error':str(error)}
             encoded = json.dumps(p, sort_keys=True, ensure_ascii=False, allow_nan=False)
-            entry = {'ordinal': ordinal, 'parameters': p, 'feasible': False, 'objectives': {}}
-            if encoded not in cache:
+            if encoded in cache:
+                cached += 1
+            else:
                 new_calls += 1
                 try:
                     result = compute(p)
@@ -60,20 +67,42 @@ def compare(suite, compute=calculate_design):
                     cache[encoded] = {'result': result}
                 except (CalculationError, InputError) as error:
                     cache[encoded] = {'error': str(error)}
-            measured = cache[encoded]
-            if 'error' in measured:
-                entry['error'] = measured['error']
+            return cache[encoded]
+
+        for ordinal in range(1, request.max_evaluations // group_size + 1):
+            p = search.candidate()
+            if p is None: break
+            entry = {'ordinal': ordinal, 'parameters': p, 'feasible': False, 'objectives': {}}
+            if request.tolerances:
+                samples=[]
+                for scenario in robustness.scenarios(request,p):
+                    measured=evaluate(scenario['parameters']); evaluated+=1
+                    if 'error' in measured:
+                        sample={**scenario,'values':{},'violations':['输入无效或数值核未完成此情景。'],
+                                'error':measured['error'],'calculation_id':None}
+                    else: sample=robustness.measured(request,scenario,measured['result'])
+                    samples.append(sample)
+                record,values,violation=robustness.summarize(request,p,samples)
+                entry.update(feasible=record['feasible'],violations=record['violations'],
+                             objectives=record['objectives'],values=values,robustness=record,
+                             nominal_values=samples[0]['values'],load_cycle=samples[0].get('load_cycle'),
+                             manufacturing=manufacturing.audit(request,p))
+                search.consider(p,values,record['feasible'],violation=violation)
             else:
-                result = measured['result']
-                cycle = load_cycle.evaluate(result, request.load_cycle)
-                values = metrics(result, cycle=cycle)
-                violations = assess(request, values)
-                if not in_region(request, p): violations.append('Reference outside search region')
-                entry.update(feasible=not violations, violations=violations,
-                             objectives=objective_values(request, values), values=values,
-                             load_cycle=cycle, manufacturing=manufacturing.audit(request, p),
-                             input_sha256=result['provenance'].get('input_sha256'))
-                search.consider(p, values, not violations)
+                measured=evaluate(p);evaluated+=1
+                if 'error' in measured:
+                    entry['error'] = measured['error']
+                else:
+                    result = measured['result']
+                    cycle = load_cycle.evaluate(result, request.load_cycle)
+                    values = metrics(result, cycle=cycle)
+                    violations = assess(request, values)
+                    if not in_region(request, p): violations.append('Reference outside search region')
+                    entry.update(feasible=not violations, violations=violations,
+                                 objectives=objective_values(request, values), values=values,
+                                 load_cycle=cycle, manufacturing=manufacturing.audit(request, p),
+                                 input_sha256=result['provenance'].get('input_sha256'))
+                    search.consider(p, values, not violations)
             candidates.append(entry)
         feasible = [c for c in candidates if c['feasible']]
         key = request.objective
@@ -81,8 +110,8 @@ def compare(suite, compute=calculate_design):
         best = max(feasible, key=lambda c: sign*c['objectives'][key]) if feasible else None
         frontier = pareto_front(candidates, objective_keys(request))
         yield {'case_id': case_id, 'request': request.model_dump(), 'solver_sha256': SOLVER_SHA256,
-               'resource_identity': identity, 'evaluated': len(candidates), 'engine_calls': new_calls,
-               'cached_evaluations': len(candidates)-new_calls, 'feasible': len(feasible),
+               'resource_identity': identity, 'evaluated': evaluated, 'engine_calls': new_calls,
+               'cached_evaluations': cached, 'validation_failures':rejected, 'feasible': len(feasible),
                'best_objective': best['objectives'][key] if best else None,
                'best_ordinal': best['ordinal'] if best else None,
                'pareto_ordinals': [c['ordinal'] for c in frontier], 'candidates': candidates,

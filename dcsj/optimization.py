@@ -9,11 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field, StrictFloat, model_validator
 from .parameters import INTEGER_KEYS, validate
 from .engine import available_materials
 from .curves import sampled_torque_peak
-from . import load_cycle, manufacturing
+from . import load_cycle, manufacturing, robustness
 from .load_cycle import LoadStage
 
 SOLVER_SHA256 = hashlib.sha256(b''.join(Path(p).read_bytes() for p in
-    (__file__, load_cycle.__file__, manufacturing.__file__))).hexdigest()
+    (__file__, load_cycle.__file__, manufacturing.__file__, robustness.__file__,
+     Path(__file__).with_name('robust_jobs.py')))).hexdigest()
 
 
 def available_choices():
@@ -129,6 +130,8 @@ class SearchInput(BaseModel):
     secondary_objective: str | None = None
     load_cycle: list[LoadStage] | None = Field(default=None, min_length=1, max_length=32)
     rotor_gap_mode: Literal['independent', 'fixed_neck_bottom'] = 'independent'
+    tolerances: list[robustness.Tolerance] | None = Field(default=None, min_length=1, max_length=3)
+    tolerance_gap_mode: Literal['independent', 'fixed_neck_bottom'] = 'independent'
     algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1'] = 'stratified_v1'
     constraints: list[Constraint] = Field(default_factory=list, max_length=15)
     max_evaluations: int = Field(default=24, ge=2, le=128)
@@ -153,6 +156,13 @@ class SearchInput(BaseModel):
         self.parameters = validate(self.parameters, strict=True)
         if self.parameters['_wire_target'] != 0:
             raise ValueError('寻优前请将目标槽满率设为 0，以固定线规，避免内核覆盖搜索变量')
+        if self.tolerances:
+            if len({t.key for t in self.tolerances}) != len(self.tolerances):
+                raise ValueError('同一尺寸的公差只能配置一次')
+            if self.max_evaluations < 2 * robustness.sample_count(self):
+                raise ValueError(f'公差寻优至少需要 {2*robustness.sample_count(self)} 次评估预算（含基准和一个候选）')
+        if self.tolerance_gap_mode == 'fixed_neck_bottom' and not any(t.key == 'g' for t in self.tolerances or []):
+            raise ValueError('公差槽颈联动需要配置气隙 g 的公差')
         if self.rotor_gap_mode == 'fixed_neck_bottom':
             gap = next((v for v in self.variables if v.key == 'g'), None)
             p = self.parameters
@@ -180,6 +190,7 @@ def config():
                            'sample_loads': list(reversed(load_cycle.SAMPLE_LOADS)), 'note': load_cycle.NOTE},
             'materials': sorted(available_choices()),
             'manufacturing': {'max_values': 64, 'rotor_gap_modes': ['independent', 'fixed_neck_bottom']},
+            'tolerances': {'keys':['L','g','Djj','Dmm'], 'max_variables':3, 'note':robustness.NOTE},
             'max_evaluations': 128,
             'algorithms': [{'id': 'stratified_v1', 'label': '分层采样 + 局部搜索'},
                            {'id': 'adaptive_poll_v1', 'label': '自适应邻域搜索'},
@@ -212,7 +223,7 @@ def assess(request, values):
         value = values.get(OBJECTIVES[key][0])
         if value is None or not math.isfinite(value):
             violations.append(f'{key} 目标没有有效结果')
-    if request.algorithm != 'stratified_v1':
+    if request.algorithm != 'stratified_v1' or request.tolerances:
         for key in ('ATA1', 'PF1'):
             if not 0 < values.get(key, math.nan) <= 1:
                 violations.append(f'{key} 必须在 (0, 1] 范围')
@@ -331,7 +342,7 @@ class StratifiedSearch:
             if accepted is not None: return accepted
         return self._allowed_candidate()
 
-    def consider(self, parameters, values, feasible):
+    def consider(self, parameters, values, feasible, *, violation=None):
         metric, direction, _ = OBJECTIVES[self.request.objective]
         value = values.get(metric)
         if value is None or not math.isfinite(value):
@@ -496,7 +507,7 @@ class HybridSearch(StratifiedSearch):
             if accepted is not None: return accepted
         return self._grid_candidate() if self.grid is not None else None
 
-    def consider(self, parameters, values, feasible):
+    def consider(self, parameters, values, feasible, *, violation=None):
         objectives = objective_values(self.request, values)
         if not all(v is not None and math.isfinite(v) for v in objectives.values()):
             return None, False
@@ -504,7 +515,7 @@ class HybridSearch(StratifiedSearch):
         value, improved = super().consider(parameters, values, feasible)
         if in_region(self.request, parameters):
             self.records.append({'parameters': dict(parameters), 'objectives': objectives,
-                                 'feasible': feasible, 'violation': violation_score(self.request, values)})
+                                 'feasible': feasible, 'violation': violation_score(self.request, values) if violation is None else violation})
         return value, improved
 
 

@@ -34,8 +34,9 @@ def get(identity, *, database=None, candidates=True):
         result = _decode(row)
         if candidates:
             result['candidates'] = []
-            for row in db.execute("SELECT c.*, json_extract(s.result,'$.optimization') AS evaluation "
+            for row in db.execute("SELECT c.*, COALESCE(a.record,json_extract(s.result,'$.optimization')) AS evaluation "
                                   'FROM optimization_candidates c LEFT JOIN calculations s ON s.id=c.calculation_id '
+                                  'LEFT JOIN optimization_assessments a ON a.job_id=c.job_id AND a.ordinal=c.ordinal '
                                   'WHERE c.job_id=? ORDER BY c.ordinal', (identity,)):
                 item = dict(row)
                 for key in ('parameters', 'violations'):
@@ -48,7 +49,11 @@ def get(identity, *, database=None, candidates=True):
                 item['torque_peak'] = evaluation.get('torque_peak')
                 item['load_cycle'] = evaluation.get('load_cycle')
                 item['manufacturing'] = evaluation.get('manufacturing')
+                item['robustness'] = evaluation.get('robustness')
                 result['candidates'].append(item)
+            if result['request'].get('tolerances'):
+                result['samples'] = [{'ordinal':r['ordinal'], **json.loads(r['record'])} for r in db.execute(
+                    'SELECT ordinal,record FROM optimization_samples WHERE job_id=? ORDER BY ordinal,sample_index',(identity,))]
             keys = [key for key in (result['request']['objective'], result['request'].get('secondary_objective')) if key]
             result['pareto_ids'] = [c['calculation_id'] for c in pareto_front(result['candidates'], keys)] if len(keys) > 1 else []
             result['feasible_count'] = sum(c['feasible'] for c in result['candidates'])
@@ -150,6 +155,9 @@ class Worker:
     def run_job(self, identity):
         job = get(identity, database=self.database)
         request = saved_request(job['request'])
+        if request.tolerances:
+            from .robust_jobs import run
+            return run(self, identity, request, compute)
         search = Search(request)
         best_id, completed = None, 0
         resource_identity = None

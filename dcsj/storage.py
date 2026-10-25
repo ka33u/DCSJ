@@ -8,7 +8,7 @@ import sqlite3
 import threading
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 _migration_lock = threading.Lock()
 _initialized = set()
 
@@ -89,6 +89,11 @@ def _migrate(db, path):
                 "ordinal INTEGER NOT NULL, parameters TEXT NOT NULL, calculation_id TEXT, objective REAL, feasible INTEGER NOT NULL, "
                 "violations TEXT NOT NULL, error TEXT, PRIMARY KEY(job_id, ordinal))",
                 "CREATE TABLE IF NOT EXISTS optimization_workers (id TEXT PRIMARY KEY, heartbeat REAL NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS optimization_samples (job_id TEXT NOT NULL REFERENCES optimization_jobs(id), "
+                "ordinal INTEGER NOT NULL, sample_index INTEGER NOT NULL, record TEXT NOT NULL, "
+                "PRIMARY KEY(job_id,ordinal,sample_index))",
+                "CREATE TABLE IF NOT EXISTS optimization_assessments (job_id TEXT NOT NULL REFERENCES optimization_jobs(id), "
+                "ordinal INTEGER NOT NULL, record TEXT NOT NULL, PRIMARY KEY(job_id,ordinal))",
                 "CREATE TABLE IF NOT EXISTS comparison_sets (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
                 "notes TEXT NOT NULL, baseline_id TEXT NOT NULL REFERENCES calculations(id), "
                 "result TEXT NOT NULL, created_at TEXT NOT NULL)",

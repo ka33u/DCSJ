@@ -105,7 +105,8 @@ def render(snapshot):
     title = snapshot['name']
     pdf_link = (f'<a href="/api/v1/calculations/{escape(snapshot["calculation_id"])}/report.pdf" '
                 'style="color:white;margin-left:18px">下载 PDF</a>') if pdf_status()['available'] else ''
-    content = [f'<section class="summary"><header><span class="tag">DCSJ / 电磁设计计算报告</span><h1>{text(title)}</h1>',
+    nominal = '（名义尺寸）' if snapshot.get('optimization', {}).get('robustness') else ''
+    content = [f'<section class="summary"><header><span class="tag">DCSJ / 电磁设计计算报告{nominal}</span><h1>{text(title)}</h1>',
                f'<small>计算时间（北京时间）：{text(summary.local_time(snapshot["created_at"]))}　',
                f'设计版本：{text(snapshot.get("project_revision"))}</small></header>',
                '<h2>额定条件</h2><p class="model">型号：' + text(p.get('SizeX')) + '</p>',
@@ -122,6 +123,13 @@ def render(snapshot):
                 '<p class="legend">差值＝计算结果−设计目标；效率与槽满率的差值单位为百分点。s 表示峰值处转差率。</p>',
                 '<h2>运行与电磁指标</h2>', table([], summary.grid(summary.performance(v)), 'pairs'), '</section>']
     curves = [curve for curve in snapshot.get('curves', []) if curve.get('display') is not False]
+    robust = summary.robustness_summary(snapshot)
+    if robust:
+        content += ['<h2 class="break">公差情景评估</h2><p>' + text(summary.TOLERANCE_NOTE) + '</p>',
+                    '<p>' + text(robust['text']) + '</p><p>' + text(robust['note']) + '</p>',
+                    table(['目标', '最不利采样值', '情景编号'], robust['objectives']),
+                    table(['指标', '采样最小值', '采样最大值', '完整'], robust['ranges']),
+                    table(summary.TOLERANCE_HEADERS, robust['rows'])]
     manufacturing = summary.manufacturing_summary(snapshot)
     if manufacturing:
         content += ['<h2 class="break">寻优规格与尺寸联动</h2><p>' + text(manufacturing['text']) + '</p>',
@@ -129,12 +137,12 @@ def render(snapshot):
                     table(summary.MANUFACTURING_HEADERS, manufacturing['rows']) if manufacturing['rows'] else '']
     cycle = summary.cycle_summary(snapshot)
     if cycle:
-        content += [('<h2>' if manufacturing else '<h2 class="break">') + '负载周期能耗</h2><p>' + text(cycle['text']) + '</p>',
+        content += [('<h2>' if manufacturing else '<h2 class="break">') + ('名义尺寸 · ' if robust else '') + '负载周期能耗</h2><p>' + text(cycle['text']) + '</p>',
                     '<p>' + text(cycle['note']) + '</p>']
         if cycle['rows']:
             content.append(table(summary.CYCLE_HEADERS, cycle['rows']))
     if curves:
-        content.append(('<h2>' if cycle and not manufacturing else '<h2 class="break">') + '性能曲线</h2><p>' + text(summary.CURVE_NOTE) + '</p>')
+        content.append(('<h2>' if cycle and not manufacturing and not robust else '<h2 class="break">') + ('名义尺寸 · ' if robust else '') + '性能曲线</h2><p>' + text(summary.CURVE_NOTE) + '</p>')
         for curve in curves:
             content.append('<figure><figcaption>' + text(curve['title']) + '</figcaption>' + curve_svg(curve) + '</figure>')
     content += ['<h2 class="break">完整输入</h2>', table(['字段', '参数', '输入', '单位'], [

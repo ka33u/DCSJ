@@ -220,7 +220,8 @@ def _render(snapshot):
         return result
 
     p, values = snapshot['inputs'], snapshot['values']
-    story = [paragraph('DCSJ / 电磁设计计算报告', 'small'), paragraph(snapshot['name'], 'title'),
+    nominal = '（名义尺寸）' if snapshot.get('optimization', {}).get('robustness') else ''
+    story = [paragraph('DCSJ / 电磁设计计算报告' + nominal, 'small'), paragraph(snapshot['name'], 'title'),
              paragraph('计算时间（北京时间）：' + summary.local_time(snapshot['created_at']) +
                        '    设计版本：' + summary.number(snapshot.get('project_revision')), 'small'),
              paragraph('额定条件', 'sh2'), paragraph('型号：' + summary.number(p.get('SizeX')), 'compact'),
@@ -251,6 +252,13 @@ def _render(snapshot):
               paragraph('差值＝计算结果−设计目标；效率与槽满率的差值单位为百分点。s 表示峰值处转差率。', 'small'),
               paragraph('运行与电磁指标', 'sh2'), summary_table(summary.performance(values))]
     curves = [curve for curve in snapshot.get('curves', []) if curve.get('display') is not False]
+    robust = summary.robustness_summary(snapshot)
+    if robust:
+        story += [PageBreak(), paragraph('公差情景评估', 'h2'), paragraph(summary.TOLERANCE_NOTE),
+                  paragraph(robust['text']), paragraph(robust['note'], 'small'),
+                  table(['目标', '最不利采样值', '情景编号'], robust['objectives'], [WIDTH/3]*3),
+                  table(['指标', '采样最小值', '采样最大值', '完整'], robust['ranges'], [WIDTH/4]*4),
+                  table(summary.TOLERANCE_HEADERS, robust['rows'], [WIDTH*f for f in (.15,.21,.20,.24,.20)])]
     manufacturing = summary.manufacturing_summary(snapshot)
     if manufacturing:
         story += [PageBreak(), paragraph('寻优规格与尺寸联动', 'h2'), paragraph(manufacturing['text']), paragraph(manufacturing['note'], 'small')]
@@ -258,11 +266,11 @@ def _render(snapshot):
             story.append(table(summary.MANUFACTURING_HEADERS, manufacturing['rows'], [WIDTH*f for f in (.10,.56,.20,.14)]))
     cycle = summary.cycle_summary(snapshot)
     if cycle:
-        story += ([] if manufacturing else [PageBreak()]) + [paragraph('负载周期能耗', 'h2'), paragraph(cycle['text']), paragraph(cycle['note'], 'small')]
+        story += ([] if manufacturing else [PageBreak()]) + [paragraph(('名义尺寸 · ' if robust else '') + '负载周期能耗', 'h2'), paragraph(cycle['text']), paragraph(cycle['note'], 'small')]
         if cycle['rows']:
             story.append(table(summary.CYCLE_HEADERS, cycle['rows'], [WIDTH/6]*6))
     if curves:
-        story += ([] if cycle and not manufacturing else [PageBreak()]) + [paragraph('性能曲线', 'h2')]
+        story += ([] if cycle and not manufacturing and not robust else [PageBreak()]) + [paragraph(('名义尺寸 · ' if robust else '') + '性能曲线', 'h2')]
         story.append(paragraph(summary.CURVE_NOTE, 'small'))
         for index, curve in enumerate(curves):
             if index and index % 2 == 0:

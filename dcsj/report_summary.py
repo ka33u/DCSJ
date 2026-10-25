@@ -28,6 +28,30 @@ CURVE_NOTE = '平滑曲线用于观察趋势；默认校核使用 IST1、TST1、
 
 CYCLE_HEADERS = ['负载 %', '小时', '输入 kW', '输出 kW', '耗电 kWh', '取值']
 MANUFACTURING_HEADERS = ['变量', '允许规格', '本次输入', '规格匹配']
+TOLERANCE_HEADERS = ['情景', '输入尺寸 mm', '采样目标指标', '校核结果', '原始快照 ID']
+TOLERANCE_NOTE = '常规指标、性能曲线和负载周期为名义尺寸结果；公差寻优目标取最不利采样。'
+
+
+def robustness_summary(snapshot):
+    record = snapshot.get('optimization', {}).get('robustness')
+    if not record:
+        return None
+    specs = record.get('objective_specs', {})
+    objectives = [[specs.get(k, {}).get('label', k), number(v, 8), record['worst_samples'].get(k)]
+                  for k, v in record['objectives'].items()]
+    ranges = [[k, number(r['minimum'], 8), number(r['maximum'], 8), '是' if r['complete'] else '否']
+              for k, r in record['metric_ranges'].items()]
+    keys = list(dict.fromkeys([t['key'] for t in record['tolerances']] + ['hr0']))
+    rows = [[f"{s['index']} · {s['label']}",
+             '；'.join(f"{k}={number(s['parameters'].get(k),8)}" for k in keys),
+             '；'.join(f"{o['metric']}={number(s.get('values',{}).get(o['metric']),8)}" for o in specs.values()),
+             s.get('error') or '；'.join(s.get('violations', [])) or '满足约束', s.get('calculation_id') or '—']
+            for s in record['samples']]
+    state = '未完成' if record['status']=='incomplete' else '存在计算失败' if record['status']=='failed' else '全部采样满足约束' if record['feasible'] else '存在约束不满足'
+    tolerances = '；'.join(f"{t['key']} ± {number(t['delta'],8)} mm" for t in record['tolerances'])
+    gap = '气隙偏差时保持槽颈底位置，hr0 反向变化' if record['gap_mode']=='fixed_neck_bottom' else '气隙偏差时保持名义 hr0'
+    return {'text':f"{tolerances}；{gap}。已评估 {record['evaluated_samples']}/{record['expected_samples']} 个情景 · {state}。",
+            'note':record['note'], 'objectives':objectives, 'ranges':ranges, 'rows':rows}
 
 
 def manufacturing_summary(snapshot):
