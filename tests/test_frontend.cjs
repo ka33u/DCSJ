@@ -1224,6 +1224,121 @@ test('nominal continuation sends only extra budget and distinguishes inherited a
   assert.match(detail.textContent,/追加预算任务：/);
 });
 
+async function benefitApp(t,job,extraRoute=()=>undefined){
+  const ui=await app(t,(path,request)=>{
+    if(path==='/optimization/config')return {method:'人工验收',variables:[{key:'L',label:'长度'}],materials:[],constraint_metrics:[],
+      objectives:[{id:'efficiency',label:'效率',direction:'max'},{id:'material_cost',label:'成本',direction:'min'},
+        {id:'cycle_efficiency',label:'周期效率',direction:'max'},{id:'cycle_energy',label:'周期耗电',direction:'min'}]};
+    if(path==='/optimization/jobs')return {items:[job]};
+    if(path==='/optimization/jobs/'+job.id)return job;
+    return extraRoute(path,request);
+  });
+  ui.nav('optimization');await until(()=>ui.doc.querySelector('#optimization-jobs button'),'Benefit task available');
+  ui.find('#optimization-jobs button','查看任务').click();
+  await until(()=>ui.doc.querySelector('#continuation-benefit'),'Benefit summary rendered');
+  return {...ui,panel:ui.doc.querySelector('#continuation-benefit')};
+}
+
+function benefitJob(candidates,{objective='efficiency',secondary=null,inherited=2,prior='old',current='new',status='succeeded'}={}){
+  return {id:'benefit-job',name:'人工续算验收',status,evaluated:candidates.length,budget:candidates.length,best_id:current,
+    request:{objective,secondary_objective:secondary,variables:[{key:'L'}],parameters,constraints:[],seed:19,
+      continuation:{source_job_id:'source',inherited_attempts:inherited,additional_evaluations:Math.max(1,candidates.length-inherited),inherited_best_id:prior}},
+    candidates:candidates.map((c,index)=>({ordinal:index+1,parameters:{L:100+index},feasible:true,violations:[],...c})),pareto_ids:[]};
+}
+
+test('continuation benefit compares complete best designs and shows a secondary regression with correct units',async t=>{
+  const job=benefitJob([
+    {calculation_id:'base',objective:100,objectives:{material_cost:100,efficiency:.88}},
+    {calculation_id:'old',objective:90,objectives:{material_cost:90,efficiency:.9}},
+    {calculation_id:'new',objective:80,objectives:{material_cost:80,efficiency:.88}},
+    {calculation_id:'tradeoff',objective:95,objectives:{material_cost:95,efficiency:.91}},
+    {calculation_id:'duplicate',objective:90,objectives:{material_cost:90,efficiency:.9}},
+    {calculation_id:'infeasible',objective:1,objectives:{material_cost:1,efficiency:.99},feasible:false,violations:['槽满率超限']},
+    {calculation_id:null,feasible:false,error:'计算失败'},
+  ],{objective:'material_cost',secondary:'efficiency'});
+  job.pareto_ids=['old','new','tradeoff','duplicate'];
+  let comparison;
+  const ui=await benefitApp(t,job,(path,request)=>{
+    if(path==='/calculations')return {items:[],total:0};
+    if(path==='/comparisons'){comparison=request.body;return {baseline_id:'old',warnings:[],schemes:[],metrics:[],parameter_differences:[]};}
+  });
+  assert.deepEqual([...ui.panel.querySelectorAll('.metric-value')].map(n=>n.textContent),['5','3','1','2']);
+  const cost=ui.panel.querySelector('[data-objective=material_cost]'),efficiency=ui.panel.querySelector('[data-objective=efficiency]');
+  assert.deepEqual([...cost.querySelectorAll('td')].map(n=>n.textContent),['90 报价币种','80 报价币种','减少 10 报价币种（改善）']);
+  assert.deepEqual([...efficiency.querySelectorAll('td')].map(n=>n.textContent),['90 %','88 %','减少 2 个百分点（退步）']);
+  assert.equal(cost.querySelector('[data-change]').dataset.change,'improved');
+  assert.equal(efficiency.querySelector('[data-change]').dataset.change,'regressed');
+  assert.match(ui.panel.textContent,/追加前最佳 #2当前最佳 #3/);
+  assert.doesNotMatch(ui.panel.textContent,/91 %|99 %|NaN|Infinity/);
+  ui.find('#continuation-benefit button','对比追加前后方案').click();
+  await until(()=>comparison,'Explicit comparison requested');
+  assert.deepEqual(comparison,{calculation_ids:['old','new'],baseline_id:'old'});
+  assert.equal(ui.calls.filter(c=>c.url.pathname==='/api/v1/calculate').length,0);
+});
+
+test('unchanged first objective can gain a distinct tradeoff without counting equal-vector duplicates',async t=>{
+  const job=benefitJob([
+    {calculation_id:'base',objective:.88,objectives:{efficiency:.88,material_cost:110}},
+    {calculation_id:'old',objective:.9,objectives:{efficiency:.9,material_cost:100}},
+    {calculation_id:'tradeoff',objective:.89,objectives:{efficiency:.89,material_cost:80}},
+    {calculation_id:'duplicate',objective:.9,objectives:{efficiency:.9,material_cost:100}},
+    {calculation_id:'duplicate-tradeoff',objective:.89,objectives:{efficiency:.89,material_cost:80}},
+  ],{secondary:'material_cost',current:'old'});
+  job.pareto_ids=['old','tradeoff','duplicate','duplicate-tradeoff'];
+  const ui=await benefitApp(t,job);
+  assert.deepEqual([...ui.panel.querySelectorAll('.metric-value')].map(n=>n.textContent),['3','3','0','1']);
+  assert.match(ui.panel.textContent,/当前第一目标最佳仍为继承方案/);
+  assert.equal(ui.panel.querySelectorAll('[data-change=unchanged]').length,2);
+  assert.equal(ui.panel.querySelector('button'),null);
+});
+
+test('continuation benefit does not invent a baseline when feasibility is first achieved',async t=>{
+  const job=benefitJob([
+    {calculation_id:'infeasible',objective:.99,objectives:{efficiency:.99},feasible:false,violations:['约束超限']},
+    {feasible:false,error:'未收敛'},
+    {calculation_id:'new',objective:.901,objectives:{efficiency:.901}},
+  ],{prior:null});
+  const ui=await benefitApp(t,job);
+  assert.match(ui.panel.textContent,/本次首次找到满足全部约束的方案 #3/);
+  assert.deepEqual([...ui.panel.querySelector('tbody tr').querySelectorAll('td')].map(n=>n.textContent),['—','90.1 %','—']);
+  assert.equal(ui.panel.querySelector('[data-change]'),null);
+});
+
+test('continuation benefit preserves zero cost and does not coerce missing objectives or missing candidates',async t=>{
+  for(const incomplete of [false,true])await t.test(incomplete?'partial candidate list':'missing objective',async t=>{
+    const job=benefitJob([
+      {calculation_id:'base',objective:3,objectives:{material_cost:3,efficiency:.9}},
+      {calculation_id:'old',objective:0,objectives:{material_cost:0,efficiency:null}},
+      {calculation_id:'new',objective:0,objectives:{material_cost:0,efficiency:.91}},
+    ],{objective:'material_cost',secondary:'efficiency'});
+    if(incomplete)job.evaluated=4;
+    const ui=await benefitApp(t,job);
+    if(incomplete){
+      assert.match(ui.panel.textContent,/候选记录尚未完整/);assert.equal(ui.panel.querySelector('table'),null);
+    }else{
+      assert.deepEqual([...ui.panel.querySelector('[data-objective=material_cost]').querySelectorAll('td')].map(n=>n.textContent),['0 报价币种','0 报价币种','未变化']);
+      assert.deepEqual([...ui.panel.querySelector('[data-objective=efficiency]').querySelectorAll('td')].map(n=>n.textContent),['—','91 %','—']);
+    }
+    assert.doesNotMatch(ui.panel.textContent,/NaN|Infinity/);
+  });
+});
+
+test('queued or failed-only additions keep prior values and count only new attempts',async t=>{
+  for(const queued of [true,false])await t.test(queued?'queued':'all new failed',async t=>{
+    const candidates=[
+      {calculation_id:'base',objective:120,objectives:{cycle_energy:120,cycle_efficiency:.85}},
+      {calculation_id:'old',objective:100,objectives:{cycle_energy:100,cycle_efficiency:.9}},
+    ];
+    if(!queued)candidates.push({feasible:false,error:'计算失败'},{feasible:false,error:'未收敛'});
+    const job=benefitJob(candidates,{objective:'cycle_energy',secondary:'cycle_efficiency',current:'old',status:queued?'queued':'succeeded'});
+    const ui=await benefitApp(t,job);
+    assert.deepEqual([...ui.panel.querySelectorAll('.metric-value')].map(n=>n.textContent),queued?['0','0','0','0']:['2','0','2','0']);
+    assert.deepEqual([...ui.panel.querySelector('[data-objective=cycle_energy]').querySelectorAll('td')].map(n=>n.textContent),['100 kWh','100 kWh','未变化']);
+    assert.deepEqual([...ui.panel.querySelector('[data-objective=cycle_efficiency]').querySelectorAll('td')].map(n=>n.textContent),['90 %','90 %','未变化']);
+    if(queued)assert.match(ui.panel.textContent,/尚无新增候选完成计算/);
+  });
+});
+
 test('failed verification retains all scenarios for a new search with explicit budget',async t=>{
   const source={id:'failed-check',name:'复核失败',status:'failed',evaluated:11,budget:11,best_id:null,
     request:{seed:42,objective:'efficiency',variables:[{key:'L',values:[133,140]}],parameters:{...parameters,L:133},tolerances:[{key:'g',delta:.04}],constraints:[],

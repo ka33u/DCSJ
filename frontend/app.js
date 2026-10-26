@@ -1531,7 +1531,6 @@
     }
     if(continuation){
       container.append(el('p','source-box',`继承原任务 ${continuation.inherited_attempts} 个已记录候选（含失败记录），本次追加 ${continuation.additional_evaluations} 次预算。原目标、约束、材料价格和随机种子保持固定；仅计算新候选。`),button('查看续算源任务','button',()=>{selectedJob=continuation.source_job_id;watchJob(selectedJob);}));
-      if(continuation.inherited_best_id)container.append(el('p','muted',job.best_id===continuation.inherited_best_id?'当前第一目标最佳仍为继承方案。':'当前第一目标最佳已由新增候选更新。'));
     }
     const constraints = job.request.constraints || [];
     const robust=!!job.request.tolerances?.length;
@@ -1551,6 +1550,7 @@
     const progress = el("progress"); progress.max = continuation?continuation.additional_evaluations:job.budget; progress.value = continuation?Math.max(0,job.evaluated-continuation.inherited_attempts):job.evaluated;
     progress.setAttribute("aria-label", continuation?`新增已评估 ${progress.value}，追加预算 ${progress.max}`:`已评估 ${job.evaluated}，预算 ${job.budget}`);
     container.append(progress, el("p", "muted", `${continuation?`本次新增 ${progress.value} / ${progress.max}；继承 ${continuation.inherited_attempts}；累计`:'已评估'} ${job.evaluated} / ${job.budget}${robust?' 次情景计算':''}；满足约束 ${job.feasible_count ?? job.candidates.filter(c => c.feasible).length} 个${robust?'完整候选组':''}；失败与基准计算均计入预算。`), el("p", "", job.message));
+    if(continuation&&!robust&&!verification&&!feedback)container.append(continuationBenefit(job));
     const actions = el("div", "feature-actions");
     if (!terminalJobs.has(job.status)) {
       const cancel = button(job.status === "cancelling" ? "当前计算结束后停止" : "取消任务", "button", async () => { try { showJob(await api(`/optimization/jobs/${job.id}/cancel`, { method: "POST" })); watchJob(job.id); } catch (error) { showToast(errorText(error), "error"); } });
@@ -1647,6 +1647,87 @@
     if(robust&&job.samples?.length) {
       const details=el('details','trace-details');details.append(el('summary','',`已保存的公差采样 · ${job.samples.length} 次（含未完成组）`),sampleTable(job.samples,job.request.tolerances,job.candidates.find(c=>c.robustness)?.robustness?.objective_specs));container.append(details);
     }
+  }
+
+  function continuationBenefit(job){
+    const section=el('section','feature-content continuation-benefit');section.id='continuation-benefit';
+    const title=el('h3','','本次追加的实际收益');title.id='continuation-benefit-title';
+    section.setAttribute('aria-labelledby',title.id);section.append(title);
+    const meta=job.request.continuation, boundary=meta.inherited_attempts;
+    const ordered=[...job.candidates].sort((a,b)=>a.ordinal-b.ordinal);
+    if(!Number.isInteger(boundary)||boundary<1||ordered.length!==job.evaluated||boundary>ordered.length||ordered.some((c,i)=>c.ordinal!==i+1)){
+      section.append(el('p','muted','候选记录尚未完整，暂无法比较追加前后的结果。'));return section;
+    }
+    const inherited=ordered.slice(0,boundary), added=ordered.slice(boundary);
+    const primary=job.request.objective, keys=[primary,...(job.request.secondary_objective?[job.request.secondary_objective]:[])];
+    const saved=c=>!!c?.calculation_id&&c.feasible===true&&!c.error;
+    const value=(c,key)=>{
+      if(!saved(c))return null;
+      const raw=c.objectives?.[key]===undefined&&key===primary?c.objective:c.objectives?.[key];
+      return Number.isFinite(raw)?raw:null;
+    };
+    const prior=inherited.find(c=>c.calculation_id===meta.inherited_best_id&&saved(c));
+    const current=ordered.find(c=>c.calculation_id===job.best_id&&saved(c));
+    const stats=el('div','metric-grid continuation-counts');
+    function count(label,amount){const card=el('div','metric-card');card.append(el('span','metric-label',label),el('div','metric-value',amount));stats.append(card);}
+    count('新增已评估',String(added.length));
+    count('新增可行方案',String(added.filter(saved).length));
+    count('新增计算失败',String(added.filter(c=>!!c.error).length));
+    if(keys.length===2){
+      const vector=c=>keys.every(k=>value(c,k)!==null)?JSON.stringify(keys.map(k=>value(c,k))):null;
+      const oldVectors=new Set(inherited.filter(saved).map(vector).filter(Boolean));
+      const front=new Set(Array.isArray(job.pareto_ids)?job.pareto_ids:[]);
+      const freshVectors=new Set(added.filter(c=>saved(c)&&front.has(c.calculation_id)).map(vector).filter(v=>v&&!oldVectors.has(v)));
+      count('新增折中结果',Array.isArray(job.pareto_ids)?String(freshVectors.size):'—');
+    }
+    section.append(stats);
+    if(!added.length)section.append(el('p','muted','尚无新增候选完成计算。'));
+    else if(current&&prior)section.append(el('p','muted',current.calculation_id===prior.calculation_id?'当前第一目标最佳仍为继承方案。':'当前第一目标最佳已由新增候选更新。'));
+    else if(current&&!meta.inherited_best_id)section.append(el('p','muted',`本次首次找到满足全部约束的方案 #${current.ordinal}。`));
+    else if(meta.inherited_best_id||job.best_id)section.append(el('p','muted','最佳方案记录不完整，缺失的目标值暂不比较。'));
+    else section.append(el('p','muted','当前尚无满足全部约束的方案。'));
+    const specs={
+      efficiency:{label:'效率',unit:'%',factor:100,deltaUnit:'个百分点',direction:'max'},
+      cycle_efficiency:{label:'负载周期效率',unit:'%',factor:100,deltaUnit:'个百分点',direction:'max'},
+      power_factor:{label:'功率因数',unit:'',factor:1,deltaUnit:'',direction:'max'},
+      material_cost:{label:'材料成本',unit:'报价币种',factor:1,deltaUnit:'报价币种',direction:'min'},
+      copper_mass:{label:'铜重',unit:'kg',factor:1,deltaUnit:'kg',direction:'min'},
+      total_loss:{label:'总损耗',unit:'W',factor:1,deltaUnit:'W',direction:'min'},
+      cycle_energy:{label:'负载周期耗电',unit:'kWh',factor:1,deltaUnit:'kWh',direction:'min'},
+    };
+    const scroll=el('div','table-scroll'),table=el('table','data-table continuation-comparison'),head=el('thead'),heading=el('tr'),body=el('tbody');
+    ['目标',`追加前最佳${prior?' #'+prior.ordinal:''}`,`当前最佳${current?' #'+current.ordinal:''}`,'实际变化'].forEach(text=>heading.append(el('th','',text)));
+    head.append(heading);
+    keys.forEach((key,index)=>{
+      const config=optimizationConfig?.objectives?.find(o=>o.id===key);
+      const spec=specs[key]||{label:config?.label||key,unit:'',factor:1,deltaUnit:'',direction:config?.direction};
+      const before=value(prior,key),after=value(current,key);
+      const format=x=>x===null?'—':`${fmt(x*spec.factor,6)}${spec.unit?' '+spec.unit:''}`;
+      const row=el('tr');row.dataset.objective=key;
+      const label=el('th','',`${index?'第二目标':'第一目标'} · ${spec.label}`);label.scope='row';
+      row.append(label,el('td','',format(before)),el('td','',format(after)));
+      const change=el('td','','—');
+      if(before!==null&&after!==null){
+        const delta=after-before,improvement=delta*(spec.direction==='min'?-1:1);
+        if(delta===0){change.textContent='未变化';change.dataset.change='unchanged';}
+        else{
+          const direction=spec.direction==='max'||spec.direction==='min';
+          const outcome=direction?(improvement>0?'改善':'退步'):'变化';
+          change.textContent=`${delta>0?'增加':'减少'} ${fmt(Math.abs(delta)*spec.factor,6)}${spec.deltaUnit?' '+spec.deltaUnit:''}（${outcome}）`;
+          if(direction){change.dataset.change=improvement>0?'improved':'regressed';change.className='benefit-'+change.dataset.change;}
+        }
+      }
+      row.append(change);body.append(row);
+    });
+    table.append(head,body);scroll.append(table);section.append(scroll);
+    section.append(el('p','muted small',keys.length===2?'两列各对应一个第一目标最佳完整方案；第二目标可能随第一目标改善而退步。新增折中结果按目标值去重。':'依据本次已完成的真实计算；运行中的任务会随新增结果更新。'));
+    if(prior&&current&&prior.calculation_id!==current.calculation_id)section.append(button('对比追加前后方案','button button-small',()=>{
+      state.selectedCalculations.clear();
+      selectCalculation({id:prior.calculation_id,name:`${job.name} / 追加前最佳`});
+      selectCalculation({id:current.calculation_id,name:`${job.name} / 当前最佳`});
+      navigate('comparisons');runComparison();
+    }));
+    return section;
   }
 
   function continuationControls(container,job){
