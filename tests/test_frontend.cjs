@@ -879,9 +879,9 @@ test('multiobjective search submits independent goals and renders only feasible 
   assert.equal(submitted.secondary_objective,'material_cost');assert.equal(submitted.algorithm,'hybrid_de_v1');
   assert.equal(submitted.objective,'efficiency');assert.equal(submitted.parameters.L,100);
   const detail=ui.doc.querySelector('#optimization-detail');assert.match(detail.textContent,/折中候选 · 2 个/);
-  assert.equal(detail.querySelectorAll('svg circle').length,2);
+  assert.equal(detail.querySelectorAll('.optimization-pareto-chart circle').length,2);
   assert.match(detail.textContent,/第二目标：100/);assert.match(detail.textContent,/功率因数低于约束/);
-  assert.equal(detail.querySelectorAll('tbody tr').length,3);
+  assert.equal(detail.querySelectorAll(':scope > .table-scroll tbody tr').length,3);
   [...detail.querySelectorAll('button')].find(b=>b.textContent.startsWith('#1 ·')).click();await settle();
   assert.equal(ui.doc.querySelector('#current-design').textContent,'折中候选A');
 });
@@ -1180,6 +1180,7 @@ test('post-search verification freezes a selected candidate, exposes its budget 
   form.dispatchEvent(new ui.w.Event('submit',{cancelable:true}));await until(()=>posted&&d.querySelector('#optimization-detail').textContent.includes('新点种子 99'),'Queued verification');
   assert.deepEqual(posted,{candidate_ordinal:2,interior_samples:16,seed:99});assert.equal(posted.parameters,undefined);
   assert.match(d.querySelector('#optimization-detail').textContent,/未参与原搜索/);
+  assert.equal(d.querySelector('#objective-progress'),null,'Fixed-plan verification uses scenario accounting, not nominal attempt charts');
   assert.doesNotMatch(d.querySelector('#optimization-detail').textContent,/★/,'An unfinished candidate is not marked as best');
   ui.find('#optimization-detail button','查看源任务').click();await until(()=>d.querySelector('#verification-form'),'Source reopened');
   assert.match(d.querySelector('#optimization-detail').textContent,/关联复核/);
@@ -1235,7 +1236,7 @@ async function benefitApp(t,job,extraRoute=()=>undefined){
   });
   ui.nav('optimization');await until(()=>ui.doc.querySelector('#optimization-jobs button'),'Benefit task available');
   ui.find('#optimization-jobs button','查看任务').click();
-  await until(()=>ui.doc.querySelector('#continuation-benefit'),'Benefit summary rendered');
+  await until(()=>ui.doc.querySelector(job.request.continuation?'#continuation-benefit':'#objective-progress'),'Optimization result rendered');
   return {...ui,panel:ui.doc.querySelector('#continuation-benefit')};
 }
 
@@ -1337,6 +1338,93 @@ test('queued or failed-only additions keep prior values and count only new attem
     assert.deepEqual([...ui.panel.querySelector('[data-objective=cycle_efficiency]').querySelectorAll('td')].map(n=>n.textContent),['90 %','90 %','未变化']);
     if(queued)assert.match(ui.panel.textContent,/尚无新增候选完成计算/);
   });
+});
+
+test('objective progress uses charged attempts, independent objective extremes and exact saved snapshots',async t=>{
+  const job=benefitJob([
+    {feasible:false,objective:.99,violations:['不满足约束']},
+    {calculation_id:'old',objective:.9,objectives:{efficiency:.9,material_cost:100}},
+    {feasible:false,error:'计算失败'},
+    {calculation_id:'rejected',feasible:false,objective:.98,objectives:{efficiency:.98,material_cost:1},violations:['不满足约束']},
+    {calculation_id:'cost-best',objective:.89,objectives:{efficiency:.89,material_cost:80}},
+    {calculation_id:'new',objective:.91,objectives:{efficiency:.91,material_cost:90}},
+    {calculation_id:'equal',objective:.91,objectives:{efficiency:.91,material_cost:90}},
+  ],{secondary:'material_cost',inherited:4});
+  job.budget=100;const before=JSON.stringify(job);
+  const ui=await benefitApp(t,job,path=>path==='/calculations/cost-best'?snapshot('cost-best'):undefined);
+  const progress=ui.doc.querySelector('#objective-progress');
+  const efficiency=progress.querySelector('[data-objective=efficiency]'),cost=progress.querySelector('[data-objective=material_cost]');
+  assert.match(efficiency.textContent,/当前最佳 91 % · 方案 #6/);
+  assert.match(cost.textContent,/当前最佳 80 报价币种 · 方案 #5/);
+  assert.match(efficiency.textContent,/最近 1 次评估/);assert.match(cost.textContent,/最近 2 次评估/);
+  assert.deepEqual([...efficiency.querySelectorAll('[data-improvement-attempt]')].map(n=>n.dataset.improvementAttempt),['2','6']);
+  assert.deepEqual([...cost.querySelectorAll('[data-improvement-attempt]')].map(n=>n.dataset.improvementAttempt),['2','5']);
+  assert.equal(progress.querySelectorAll('[data-inherited-boundary="4"]').length,2);
+  const path=efficiency.querySelector('path').getAttribute('d');
+  assert.match(path,/^M218\.86,/,'First feasible result starts at attempt2, not zero');
+  assert.equal((path.match(/H/g)||[]).length,5,'Failed and infeasible attempts retain horizontal plateaus');
+  assert.doesNotMatch(path,/[LCQ]/,'No smoothing or diagonal interpolation');
+  assert.equal([...efficiency.querySelectorAll('[data-attempt-tick]')].at(-1).textContent,'7','No unspent-budget projection');
+  assert.deepEqual([...cost.querySelectorAll('tbody tr')].map(r=>[...r.children].map(c=>c.textContent)),[['2','100 报价币种','#2'],['5','80 报价币种','#5']]);
+  assert.match(ui.panel.textContent,/当前最佳 #6/);assert.match(ui.panel.textContent,/90 报价币种/,'Complete-design comparison keeps primary-best cost');
+  assert.equal(JSON.stringify(job),before,'Rendering cannot rewrite the saved task');
+  ui.find('#objective-progress button','打开此目标最佳 #5').click();
+  await until(()=>ui.doc.querySelector('#current-design').textContent==='cost-best','Secondary extreme snapshot opened');
+  assert.ok(ui.calls.some(c=>c.url.pathname==='/api/v1/calculations/cost-best'));
+  assert.ok(!ui.calls.some(c=>c.method!=='GET'),'Inspecting progress must not spend budget');
+});
+
+test('objective progress handles a zero-valued constant legacy root without inventing later improvements',async t=>{
+  const job=benefitJob([{calculation_id:'a',objective:0},{calculation_id:'b',objective:0}],{objective:'material_cost',current:'a'});
+  delete job.request.continuation;
+  const ui=await benefitApp(t,job),progress=ui.doc.querySelector('#objective-progress');
+  assert.match(progress.textContent,/当前最佳 0 报价币种 · 方案 #1/);
+  assert.equal(progress.querySelectorAll('[data-improvement-attempt]').length,1);
+  assert.equal(progress.querySelector('[data-inherited-boundary]'),null);
+  assert.match(progress.textContent,/最近 1 次评估/);
+  assert.doesNotMatch(progress.innerHTML,/NaN|Infinity/);
+  assert.ok(progress.querySelector('path').getAttribute('d').includes('H536.00'));
+});
+
+test('objective progress suppresses incomplete histories and missing feasible objective values',async t=>{
+  for(const defect of ['partial','duplicate ordinal','missing objective','missing snapshot'])await t.test(defect,async t=>{
+    const job=benefitJob([
+      {calculation_id:'old',objective:.9,objectives:{efficiency:.9,cycle_energy:100}},
+      {calculation_id:'new',objective:.91,objectives:{efficiency:.91,cycle_energy:90}},
+    ],{secondary:'cycle_energy',inherited:1});
+    if(defect==='partial')job.evaluated=3;
+    if(defect==='duplicate ordinal')job.candidates[1].ordinal=1;
+    if(defect==='missing objective')job.candidates[1].objectives.cycle_energy=null;
+    if(defect==='missing snapshot')job.candidates[1].calculation_id=null;
+    const ui=await benefitApp(t,job),progress=ui.doc.querySelector('#objective-progress');
+    if(defect==='missing objective'){
+      assert.ok(progress.querySelector('[data-objective=efficiency] svg'));
+      assert.equal(progress.querySelector('[data-objective=cycle_energy] svg'),null);
+      assert.match(progress.querySelector('[data-objective=cycle_energy]').textContent,/缺少已保存的有效目标值/);
+    }else assert.equal(progress.querySelector('svg'),null);
+    assert.doesNotMatch(progress.innerHTML,/NaN|Infinity/);
+  });
+});
+
+test('objective progress does not draw before a first feasible result or for an empty queue',async t=>{
+  for(const empty of [false,true])await t.test(empty?'queued':'none feasible',async t=>{
+    const job=benefitJob(empty?[]:[{feasible:false,error:'失败'},{calculation_id:'bad',feasible:false,objective:.99,violations:['超限']}],{status:empty?'queued':'succeeded',current:null,prior:null});
+    delete job.request.continuation;
+    const ui=await benefitApp(t,job),progress=ui.doc.querySelector('#objective-progress');
+    assert.equal(progress.querySelector('svg'),null);assert.equal(progress.querySelector('button'),null);
+    assert.match(progress.textContent,empty?/尚无已完成候选/:/尚无满足约束的已算方案/);
+  });
+});
+
+test('objective progress preserves cycle energy and efficiency units',async t=>{
+  const job=benefitJob([
+    {calculation_id:'old',objective:120,objectives:{cycle_energy:120,cycle_efficiency:.85}},
+    {calculation_id:'new',objective:100,objectives:{cycle_energy:100,cycle_efficiency:.9}},
+  ],{objective:'cycle_energy',secondary:'cycle_efficiency',inherited:1});
+  const ui=await benefitApp(t,job),progress=ui.doc.querySelector('#objective-progress');
+  assert.match(progress.querySelector('[data-objective=cycle_energy]').textContent,/当前最佳 100 kWh/);
+  assert.match(progress.querySelector('[data-objective=cycle_efficiency]').textContent,/当前最佳 90 %/);
+  assert.doesNotMatch(progress.innerHTML,/NaN|Infinity/);
 });
 
 test('failed verification retains all scenarios for a new search with explicit budget',async t=>{

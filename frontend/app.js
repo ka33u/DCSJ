@@ -1551,6 +1551,7 @@
     progress.setAttribute("aria-label", continuation?`新增已评估 ${progress.value}，追加预算 ${progress.max}`:`已评估 ${job.evaluated}，预算 ${job.budget}`);
     container.append(progress, el("p", "muted", `${continuation?`本次新增 ${progress.value} / ${progress.max}；继承 ${continuation.inherited_attempts}；累计`:'已评估'} ${job.evaluated} / ${job.budget}${robust?' 次情景计算':''}；满足约束 ${job.feasible_count ?? job.candidates.filter(c => c.feasible).length} 个${robust?'完整候选组':''}；失败与基准计算均计入预算。`), el("p", "", job.message));
     if(continuation&&!robust&&!verification&&!feedback)container.append(continuationBenefit(job));
+    if(!robust&&!verification&&!feedback)container.append(objectiveProgress(job));
     const actions = el("div", "feature-actions");
     if (!terminalJobs.has(job.status)) {
       const cancel = button(job.status === "cancelling" ? "当前计算结束后停止" : "取消任务", "button", async () => { try { showJob(await api(`/optimization/jobs/${job.id}/cancel`, { method: "POST" })); watchJob(job.id); } catch (error) { showToast(errorText(error), "error"); } });
@@ -1649,6 +1650,88 @@
     }
   }
 
+  function optimizationObjectiveSpec(key){
+    const specs={
+      efficiency:{label:'效率',unit:'%',factor:100,deltaUnit:'个百分点',direction:'max'},
+      cycle_efficiency:{label:'负载周期效率',unit:'%',factor:100,deltaUnit:'个百分点',direction:'max'},
+      power_factor:{label:'功率因数',unit:'',factor:1,deltaUnit:'',direction:'max'},
+      material_cost:{label:'材料成本',unit:'报价币种',factor:1,deltaUnit:'报价币种',direction:'min'},
+      copper_mass:{label:'铜重',unit:'kg',factor:1,deltaUnit:'kg',direction:'min'},
+      total_loss:{label:'总损耗',unit:'W',factor:1,deltaUnit:'W',direction:'min'},
+      cycle_energy:{label:'负载周期耗电',unit:'kWh',factor:1,deltaUnit:'kWh',direction:'min'},
+    };
+    const config=optimizationConfig?.objectives?.find(o=>o.id===key);
+    return specs[key]||{label:config?.label||key,unit:'',factor:1,deltaUnit:'',direction:config?.direction};
+  }
+
+  function objectiveProgress(job){
+    const section=el('section','feature-content objective-progress');section.id='objective-progress';
+    const heading=el('h3','','已算方案的目标进展');heading.id='objective-progress-title';
+    section.setAttribute('aria-labelledby',heading.id);section.append(heading);
+    const ordered=[...job.candidates].sort((a,b)=>a.ordinal-b.ordinal);
+    if(!Number.isInteger(job.evaluated)||job.evaluated<0||ordered.length!==job.evaluated||ordered.some((c,i)=>c.ordinal!==i+1)){
+      section.append(el('p','muted','候选记录尚未完整，暂无法绘制目标进展。'));return section;
+    }
+    if(!ordered.length){section.append(el('p','muted','尚无已完成候选。'));return section;}
+    const keys=[job.request.objective,...(job.request.secondary_objective?[job.request.secondary_objective]:[])];
+    section.append(el('p','muted small','各目标分别取已算可行方案的最佳值，可能对应不同方案；横轴包含失败和不满足约束的计算。'));
+    const charts=el('div','objective-progress-grid');
+    for(const key of keys){
+      const spec=optimizationObjectiveSpec(key),card=el('div','objective-progress-card');card.dataset.objective=key;
+      card.append(el('h4','',`${spec.label}${spec.unit?'（'+spec.unit+'）':''}${spec.direction==='min'?' · 越低越好':spec.direction==='max'?' · 越高越好':''}`));
+      charts.append(card);
+      if(!['max','min'].includes(spec.direction)){card.append(el('p','muted','此记录缺少目标方向，暂无法绘制。'));continue;}
+      const value=c=>c.objectives?.[key]===undefined&&key===job.request.objective?c.objective:c.objectives?.[key];
+      if(ordered.some(c=>c.feasible===true&&(!c.calculation_id||c.error||!Number.isFinite(value(c))||!Number.isFinite(value(c)*spec.factor)))){
+        card.append(el('p','muted','有可行候选缺少已保存的有效目标值，暂无法完整绘制。'));continue;
+      }
+      const points=[],improvements=[];let best=null;
+      for(const c of ordered){
+        if(c.feasible===true&&c.calculation_id&&!c.error&&Number.isFinite(value(c))){
+          const better=best===null||(spec.direction==='max'?value(c)>value(best):value(c)<value(best));
+          if(better){best=c;improvements.push({attempt:c.ordinal,best:c,value:value(c)*spec.factor});}
+        }
+        if(best)points.push({attempt:c.ordinal,best,value:value(best)*spec.factor});
+      }
+      if(!best){card.append(el('p','muted','尚无满足约束的已算方案。'));continue;}
+      const format=v=>`${fmt(v,6)}${spec.unit?' '+spec.unit:''}`;
+      card.append(el('p','progress-current',`当前最佳 ${format(value(best)*spec.factor)} · 方案 #${best.ordinal}`),
+        el('p','muted small',`最近 ${job.evaluated-best.ordinal} 次评估未更新此目标最佳值。`));
+      const low=Math.min(...points.map(p=>p.value)),high=Math.max(...points.map(p=>p.value));
+      const pad=Math.max((high-low)*.12,Math.abs(high)*.00001,1e-6),minimum=low>=0?Math.max(0,low-pad):low-pad,maximum=high+pad;
+      const left=92,right=536,top=35,bottom=207,px=n=>left+n/job.evaluated*(right-left),py=v=>bottom-(v-minimum)/(maximum-minimum)*(bottom-top);
+      const svg=svgNode('svg',{viewBox:'0 0 560 252',class:'curve-svg objective-progress-chart',role:'img','aria-label':`${spec.label}最佳值随累计已评估次数变化，单位${spec.unit||'比值'}`});
+      svg.append(svgNode('title',{},`${spec.label}目标进展；每个台阶对应实际计算，详情见改善记录。`));
+      for(let i=0;i<=4;i++){
+        const y=top+(bottom-top)*i/4;
+        svg.append(svgNode('line',{x1:left,x2:right,y1:y,y2:y,stroke:'#dce5df','stroke-dasharray':'3 4'}),
+          svgNode('text',{x:left-8,y:y+4,'text-anchor':'end','font-size':11},fmt(maximum-(maximum-minimum)*i/4,6)));
+      }
+      const ticks=[...new Set(Array.from({length:5},(_,i)=>Math.round(job.evaluated*i/4)))];
+      for(const n of ticks)svg.append(svgNode('text',{x:px(n),y:bottom+20,'text-anchor':'middle','font-size':11,'data-attempt-tick':n},String(n)));
+      svg.append(svgNode('rect',{x:left,y:top,width:right-left,height:bottom-top,fill:'none',stroke:'#aabdb0'}),
+        svgNode('text',{x:(left+right)/2,y:246,'text-anchor':'middle','font-size':12},'累计已评估次数'));
+      const boundary=job.request.continuation?.inherited_attempts;
+      if(Number.isInteger(boundary)&&boundary>=1&&boundary<=job.evaluated){
+        svg.append(svgNode('line',{x1:px(boundary),x2:px(boundary),y1:top,y2:bottom,stroke:'#a36b26','stroke-dasharray':'5 4','data-inherited-boundary':boundary}),
+          svgNode('text',{x:px(boundary),y:23,'text-anchor':boundary>job.evaluated/2?'end':'start','font-size':11,fill:'#895b23'},'本次追加起点'));
+      }
+      const path=points.map((p,i)=>i?`H${px(p.attempt).toFixed(2)} V${py(p.value).toFixed(2)}`:`M${px(p.attempt).toFixed(2)},${py(p.value).toFixed(2)}`).join(' ');
+      svg.append(svgNode('path',{d:path,fill:'none',stroke:'#18766c','stroke-width':2,'data-progress-objective':key}));
+      for(const p of improvements){
+        const marker=svgNode('circle',{cx:px(p.attempt),cy:py(p.value),r:3,fill:'#18766c','data-improvement-attempt':p.attempt});
+        marker.append(svgNode('title',{},`已评估 ${p.attempt} 次 · 方案 #${p.best.ordinal} · ${format(p.value)}`));svg.append(marker);
+      }
+      card.append(svg,button(`打开此目标最佳 #${best.ordinal}`,'button button-small',()=>openSnapshot(best.calculation_id)));
+      const details=el('details','trace-details');details.append(el('summary','',`查看改善记录 · ${improvements.length} 次（含首次可行）`));
+      const scroll=el('div','table-scroll'),table=el('table','data-table'),head=el('thead'),tr=el('tr'),body=el('tbody');
+      ['已评估次数',spec.label,'来自方案'].forEach(text=>tr.append(el('th','',text)));head.append(tr);
+      for(const p of improvements){const row=el('tr');row.dataset.attempt=p.attempt;row.append(el('td','',String(p.attempt)),el('td','',format(p.value)),el('td','',`#${p.best.ordinal}`));body.append(row);}
+      table.append(head,body);scroll.append(table);details.append(scroll);card.append(details);
+    }
+    section.append(charts);return section;
+  }
+
   function continuationBenefit(job){
     const section=el('section','feature-content continuation-benefit');section.id='continuation-benefit';
     const title=el('h3','','本次追加的实际收益');title.id='continuation-benefit-title';
@@ -1686,21 +1769,11 @@
     else if(current&&!meta.inherited_best_id)section.append(el('p','muted',`本次首次找到满足全部约束的方案 #${current.ordinal}。`));
     else if(meta.inherited_best_id||job.best_id)section.append(el('p','muted','最佳方案记录不完整，缺失的目标值暂不比较。'));
     else section.append(el('p','muted','当前尚无满足全部约束的方案。'));
-    const specs={
-      efficiency:{label:'效率',unit:'%',factor:100,deltaUnit:'个百分点',direction:'max'},
-      cycle_efficiency:{label:'负载周期效率',unit:'%',factor:100,deltaUnit:'个百分点',direction:'max'},
-      power_factor:{label:'功率因数',unit:'',factor:1,deltaUnit:'',direction:'max'},
-      material_cost:{label:'材料成本',unit:'报价币种',factor:1,deltaUnit:'报价币种',direction:'min'},
-      copper_mass:{label:'铜重',unit:'kg',factor:1,deltaUnit:'kg',direction:'min'},
-      total_loss:{label:'总损耗',unit:'W',factor:1,deltaUnit:'W',direction:'min'},
-      cycle_energy:{label:'负载周期耗电',unit:'kWh',factor:1,deltaUnit:'kWh',direction:'min'},
-    };
     const scroll=el('div','table-scroll'),table=el('table','data-table continuation-comparison'),head=el('thead'),heading=el('tr'),body=el('tbody');
     ['目标',`追加前最佳${prior?' #'+prior.ordinal:''}`,`当前最佳${current?' #'+current.ordinal:''}`,'实际变化'].forEach(text=>heading.append(el('th','',text)));
     head.append(heading);
     keys.forEach((key,index)=>{
-      const config=optimizationConfig?.objectives?.find(o=>o.id===key);
-      const spec=specs[key]||{label:config?.label||key,unit:'',factor:1,deltaUnit:'',direction:config?.direction};
+      const spec=optimizationObjectiveSpec(key);
       const before=value(prior,key),after=value(current,key);
       const format=x=>x===null?'—':`${fmt(x*spec.factor,6)}${spec.unit?' '+spec.unit:''}`;
       const row=el('tr');row.dataset.objective=key;
