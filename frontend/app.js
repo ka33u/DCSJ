@@ -1279,6 +1279,7 @@
   }
 
   let optimizationConfig = null, optimizationBase = null, selectedJob = null, jobPoll = null, jobRequest = 0;
+  const optimizationPriceDraft = new Map();
   const jobStatus = { queued: "排队中", running: "计算中", cancelling: "正在取消", cancelled: "已取消", succeeded: "已完成", failed: "失败", interrupted: "执行中断" };
   const terminalJobs = new Set(["cancelled", "succeeded", "failed", "interrupted"]);
   async function loadOptimizationConfig() {
@@ -1303,6 +1304,7 @@
     $("#optimization-base").textContent = `基准：${state.name} · ${fmt(optimizationBase.kW)} kW · ${fmt(optimizationBase.p)} 极；后续修改工作台不会改变此任务基准。`;
     $("#optimization-name").value = `${state.name} · 寻优`.slice(0, 120);
     $$("#optimization-variables .search-variable").forEach(row => suggestVariableBounds(row));
+    updatePricingForm();
   }
   function inputField(label, type, name, value = "") {
     const wrapper = el("label", "", label), input = el("input", "text-input");
@@ -1313,7 +1315,7 @@
     const key = $("select[name=key]", row).value;
     const isMaterial = key === "Paihao";
     updateVariableMode(row); updateGapForm();
-    if (isMaterial) { $("input[name=choices]", row).value = optimizationConfig.materials.join(", "); return; }
+    if (isMaterial) { $("input[name=choices]", row).value = optimizationConfig.materials.join(", "); updatePricingForm(); return; }
     const base = Number(optimizationBase?.[key]);
     const integer = optimizationConfig.variables.find(v => v.key === key)?.integer;
     if (Number.isFinite(base) && base > 0) {
@@ -1336,6 +1338,25 @@
   function updateGapForm() {
     const enabled=$$('#optimization-variables select[name=key]').some(s=>s.value==='g');
     $('#optimization-gap-mode').disabled=!enabled;$('#optimization-gap-field').hidden=!enabled;
+    updatePricingForm();
+  }
+  function pricingMaterials() {
+    const rows=$$('#optimization-variables .search-variable').filter(row=>$('select[name=key]',row).value==='Paihao');
+    if(!rows.length)return [];
+    return [...new Set([optimizationBase?.Paihao,...rows.flatMap(row=>$('input[name=choices]',row).value.split(/[,，]/).map(s=>s.trim()))].filter(Boolean))];
+  }
+  function updatePricingForm() {
+    const materials=pricingMaterials(),panel=$('#optimization-price-panel'),toggle=$('#optimization-price-enabled'),rows=$('#optimization-price-rows');
+    panel.hidden=!materials.length;toggle.disabled=!materials.length;
+    const enabled=materials.length>0&&toggle.checked;
+    rows.hidden=!enabled;rows.replaceChildren();
+    $('#optimization-price-note').textContent=enabled?'按本次任务填写的固定单价计算；每 kg，与铜、铝单价使用同一币种。初始值沿用基准 Cfe，请按自己的报价修改。':`全部候选牌号使用基准硅钢单价 Cfe = ${fmt(optimizationBase?.Cfe,8)} /kg。需要区分价格时勾选分别设置。`;
+    for(const material of materials){
+      const field=inputField(material+(material===optimizationBase?.Paihao?'（基准）':''),'number','material-price');
+      const input=$('input',field);input.dataset.material=material;input.min='0';input.max='1000000';input.required=true;input.disabled=!enabled;
+      input.value=optimizationPriceDraft.has(material)?optimizationPriceDraft.get(material):String(optimizationBase?.Cfe??'');
+      input.addEventListener('input',()=>optimizationPriceDraft.set(material,input.value));rows.append(field);
+    }
   }
   function gapRecordText(gap) {
     return `保持槽颈底直径 ${fmt(gap.reference_neck_bottom_mm,8)} mm；本次 g=${fmt(gap.gap_mm,8)} mm，D2=${fmt(gap.rotor_outer_mm,8)} mm，hr0=${fmt(gap.hr0_mm,8)} mm；${gap.passed?'联动符合':'联动不符合'}。`;
@@ -1349,6 +1370,7 @@
     mode.addEventListener('change',()=>updateVariableMode(row));
     select.value = key; label.append(select); row.append(label,modeLabel, inputField("下限", "number", "minimum"), inputField("上限", "number", "maximum"), inputField("制造步长（可选）", "number", "step"),inputField('允许规格，逗号或空格分隔','text','values'), inputField("材料候选，逗号分隔", "text", "choices"), button("移除", "text-button", () => {row.remove();updateGapForm();}));
     select.addEventListener("change", () => { $("input[name=values]",row).value=""; suggestVariableBounds(row); });
+    $('input[name=choices]',row).addEventListener('input',updatePricingForm);
     $("#optimization-variables").append(row); suggestVariableBounds(row);
   }
   function addOptimizationConstraint() {
@@ -1451,6 +1473,11 @@
       const request = { name: $("#optimization-name").value, parameters: optimizationBase, variables, constraints, objective: $("#optimization-objective").value, max_evaluations: Number($("#optimization-budget").value), seed: Number($("#optimization-seed").value) };
       request.secondary_objective = $("#optimization-secondary").value || null;
       request.algorithm = $("#optimization-algorithm").value;
+      if(variables.some(v=>v.key==='Paihao')&&$('#optimization-price-enabled').checked){
+        const prices=$$('#optimization-price-rows input').map(input=>[input.dataset.material,input.value.trim()]);
+        if(prices.some(([,value])=>!value||!Number.isFinite(Number(value))||Number(value)<0||Number(value)>1000000))throw new Error('请为基准和每个候选牌号填写 0–1000000 的硅钢单价。');
+        request.material_prices=Object.fromEntries(prices.map(([material,value])=>[material,Number(value)]));
+      }
       request.rotor_gap_mode = $('#optimization-gap-mode').disabled?'independent':$('#optimization-gap-mode').value;
       if ($('#optimization-tolerance-enabled').checked) {
         request.tolerances=$$('#optimization-tolerance-rows .tolerance-row').map(row=>({key:$('[name=key]',row).value,delta:Number($('[name=delta]',row).value)}));
@@ -1504,6 +1531,7 @@
     }
     const constraints = job.request.constraints || [];
     const robust=!!job.request.tolerances?.length;
+    if(job.request.variables.some(v=>v.key==='Paihao'))container.append(el('p','source-box',job.request.material_prices?`硅钢分别定价（每 kg，同一币种）：${Object.entries(job.request.material_prices).map(([material,price])=>`${material} = ${fmt(price,8)}`).join('；')}。单价按任务保存。`:`本任务所有候选牌号统一使用硅钢单价 Cfe = ${fmt(job.request.parameters.Cfe,8)} /kg。`));
     if(methodId==='coupled_poll_v1'&&!verification)container.append(el('p','muted',robust?'本任务设置了公差，使用自适应邻域；不对跨情景的最不利值作邻点预测筛选。':'在邻域停滞时，利用已算邻点筛选成对变量调整；预测只用于安排试探顺序，候选结果均由真实计算确认。'));
     if(robust&&!verification&&!feedback&&job.request.tolerance_interior_samples)container.append(el('p','source-box',`区间内部采样：每组增加 ${job.request.tolerance_interior_samples} 个分层点${job.request.tolerance_sampling==='nested_lhs_v1'?'（逐级保留已有点）':'（独立分层，旧版方法）'} · 种子 ${job.request.seed}；与名义尺寸、全部角点一起参与约束和最不利目标评估。`));
     if(robust)container.append(el('p','source-box',`公差情景：${job.request.tolerances.map(t=>`${t.key} ± ${fmt(t.delta,8)} mm`).join('；')}。目标值与约束范围取全部采样，常规快照与曲线保留名义结果。气隙偏差时${job.request.tolerance_gap_mode==='fixed_neck_bottom'?'槽颈底位置固定，联动 hr0':'保持名义 hr0'}。`));
@@ -1548,7 +1576,7 @@
         container.append(el('p','source-box',`${robust?'名义尺寸 · ':''}同一负载周期下，第一目标最佳候选比基准${saved>=0?'少':'多'}耗电 ${fmt(Math.abs(saved),7)} kWh（${fmt(Math.abs(saved)/baseCycle.input_energy_kwh*100,5)}%）；仅比较本次保存的计算结果。`));
       }
     }
-    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的任务配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, variables: job.request.variables, constraints: job.request.constraints, load_cycle: job.request.load_cycle, rotor_gap_mode:job.request.rotor_gap_mode, tolerances:job.request.tolerances, tolerance_gap_mode:job.request.tolerance_gap_mode, tolerance_interior_samples:job.request.tolerance_interior_samples||0, tolerance_sampling:job.request.tolerance_sampling||'centered_lhs_v1', seed: job.request.seed, baseline: job.request.parameters.SizeX, verification:verification?Object.fromEntries(Object.entries(verification).filter(([key])=>key!=='plan')):undefined }, null, 2))); container.append(settings);
+    const settings = el("details", "trace-details"); settings.append(el("summary", "", "固定的任务配置"), el("pre", "", JSON.stringify({ algorithm: job.request.algorithm || 'stratified_v1', objective: job.request.objective, secondary_objective: job.request.secondary_objective, material_prices: job.request.material_prices, variables: job.request.variables, constraints: job.request.constraints, load_cycle: job.request.load_cycle, rotor_gap_mode:job.request.rotor_gap_mode, tolerances:job.request.tolerances, tolerance_gap_mode:job.request.tolerance_gap_mode, tolerance_interior_samples:job.request.tolerance_interior_samples||0, tolerance_sampling:job.request.tolerance_sampling||'centered_lhs_v1', seed: job.request.seed, baseline: job.request.parameters.SizeX, verification:verification?Object.fromEntries(Object.entries(verification).filter(([key])=>key!=='plan')):undefined }, null, 2))); container.append(settings);
     if (!job.candidates.length) { container.append(el("p", "muted", "尚无完成的候选。")); return; }
     const pareto = new Set(job.pareto_ids || []);
     if (job.request.secondary_objective) {
@@ -1584,6 +1612,7 @@
       const secondary = job.request.secondary_objective;
       const objectiveText = `${fmt(candidate.objective, 7)}${secondary ? '\n第二目标：' + fmt(candidate.objectives?.[secondary], 7) : ''}`;
       row.append(el("td", "", job.request.variables.map(v => `${v.key}=${fmt(candidate.parameters[v.key])}`).join("\n")), el("td", "", objectiveText));
+      if(candidate.material_pricing)row.children[1].append(el('p','small',`Cfe=${fmt(candidate.material_pricing.cfe,8)} /kg`));
       if(candidate.manufacturing?.rotor_gap)row.children[1].append(el('p','small',gapRecordText(candidate.manufacturing.rotor_gap)));
       if (job.request.load_cycle?.length) row.append(el('td','',candidate.load_cycle?.status==='available'
         ? `${fmt(candidate.load_cycle.input_energy_kwh,7)} kWh\n周期效率 ${fmt(candidate.load_cycle.efficiency*100,5)}%`
@@ -2067,6 +2096,7 @@
   $("#add-optimization-constraint").addEventListener("click", () => addOptimizationConstraint());
   $('#optimization-objective').addEventListener('change',updateCycleForm);
   $('#optimization-secondary').addEventListener('change',updateCycleForm);
+  $('#optimization-price-enabled').addEventListener('change',updatePricingForm);
   $('#optimization-tolerance-enabled').addEventListener('change',updateToleranceForm);
   $('#tolerance-interior-samples').addEventListener('change',updateToleranceForm);
   $('#optimization-budget').addEventListener('input',updateToleranceForm);

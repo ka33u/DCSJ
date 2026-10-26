@@ -9,7 +9,7 @@ from . import calculations, load_cycle, manufacturing, torque_refinement
 from .engine import CalculationError, CalculationUnavailableError, engine_status
 from .execution import BusyError, compute
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_keys,
-                           objective_values, violation_score, pareto_front, SOLVER_SHA256)
+                           objective_values, violation_score, pareto_front, material_pricing, SOLVER_SHA256)
 from .parameters import InputError, RETIRED_INPUT_KEYS
 from .curves import sampled_torque_peak
 from .storage import ConflictError, NotFoundError, audit, connect, database_path, dumps, now
@@ -57,6 +57,7 @@ def get(identity, *, database=None, candidates=True):
                 item['continuous_torque_peak'] = evaluation.get('continuous_torque_peak')
                 item['load_cycle'] = evaluation.get('load_cycle')
                 item['manufacturing'] = evaluation.get('manufacturing')
+                item['material_pricing'] = evaluation.get('material_pricing')
                 item['robustness'] = evaluation.get('robustness')
                 result['candidates'].append(item)
             if result['request'].get('tolerances'):
@@ -216,6 +217,7 @@ class Worker:
                                          'refined_torque_peak': torque_refinement.compact(result),
                                          'continuous_torque_peak': torque_refinement.compact(result, 'continuous_torque_peak'),
                                          'load_cycle': cycle,
+                                         'material_pricing': material_pricing(request, parameters),
                                          'manufacturing': manufacturing.audit(request, parameters)}
                 saved = calculations.save(result, f'{request.name} / {ordinal}', database=self.database)
                 calculation_id = saved['calculation_id']

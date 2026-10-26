@@ -903,6 +903,46 @@ for (const method of ['adaptive_poll_v1','coupled_poll_v1']) test(`${method} sel
   assert.equal(submitted.max_evaluations,24);assert.equal(submitted.secondary_objective,null);
 });
 
+test('material quotations preserve edits, require complete prices and freeze the displayed request',async t=>{
+  const submitted=[];let job;
+  const ui=await app(t,(path,req)=>{
+    if(path==='/example')return {name:'报价基准',parameters:{...parameters,L:100,Paihao:'A',Cfe:6.5}};
+    if(path==='/optimization/config')return {method:'测试',variables:[{key:'L',label:'长度'},{key:'Paihao',label:'材料'}],objectives:[{id:'material_cost',label:'材料成本'}],materials:['A','B <试制>','C'],constraint_metrics:[]};
+    if(path==='/optimization/jobs'&&req.method==='POST'){
+      submitted.push(req.body);job={id:'prices',name:'报价验证',status:'succeeded',budget:2,evaluated:1,request:req.body,
+        candidates:[{ordinal:1,parameters:{Paihao:'B <试制>',Cfe:2.5},objective:125,feasible:true,
+          material_pricing:{method:'per-material-cfe-v1',cfe:2.5}}]};return job;
+    }
+    if(path==='/optimization/jobs')return {items:[]};
+    if(path==='/optimization/jobs/prices')return job;
+  },[{key:'L',label:'长度',group:'basic',type:'number',role:'input'}]);
+  const d=ui.doc,change=(input,value,event='change')=>{input.value=value;input.dispatchEvent(new ui.w.Event(event));};
+  const submit=async()=>{d.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{cancelable:true}));await settle();};
+  d.querySelector('#load-example').click();await settle();ui.nav('optimization');await settle();d.querySelector('#optimization-use-current').click();
+  const panel=d.querySelector('#optimization-price-panel'),toggle=d.querySelector('#optimization-price-enabled');
+  assert.equal(panel.hidden,true);
+  const row=d.querySelector('.search-variable');change(row.querySelector('select[name=key]'),'Paihao');
+  const choices=row.querySelector('[name=choices]');change(choices,'B <试制>','input');
+  assert.equal(panel.hidden,false);assert.match(d.querySelector('#optimization-price-note').textContent,/6.5/);
+  await submit();assert.equal(submitted[0].material_prices,undefined,'Legacy unified Cfe is the default');
+  toggle.checked=true;toggle.dispatchEvent(new ui.w.Event('change'));
+  const price=name=>[...d.querySelectorAll('#optimization-price-rows input')].find(input=>input.dataset.material===name);
+  assert.equal(price('A').value,'6.5','Baseline price is required even outside candidate set');
+  change(price('A'),'6.3','input');change(price('B <试制>'),'2.5','input');
+  change(choices,'B <试制>，C','input');assert.equal(price('B <试制>').value,'2.5');assert.equal(price('C').value,'6.5');
+  change(price('C'),'','input');await submit();assert.equal(submitted.length,1);assert.match(d.querySelector('#optimization-error').textContent,/每个候选牌号/);
+  change(choices,'B <试制>','input');await submit();assert.equal(submitted.length,2);
+  assert.deepEqual(submitted[1].material_prices,{'A':6.3,'B <试制>':2.5});
+  assert.equal(submitted[1].parameters.Cfe,6.5,'Workbench base is not silently rewritten in the client');
+  const detail=d.querySelector('#optimization-detail');assert.match(detail.textContent,/B <试制> = 2.5/);assert.match(detail.textContent,/Cfe=2.5 \/kg/);
+  assert.equal(detail.querySelector('试制'),null,'Material references are text, not markup');
+  assert.match(detail.textContent,/"material_prices"/,'Stored configuration includes the quote table');
+  change(row.querySelector('select[name=key]'),'L');assert.equal(panel.hidden,true);await submit();assert.equal(submitted.at(-1).material_prices,undefined);
+  change(row.querySelector('select[name=key]'),'Paihao');assert.equal(price('A').value,'6.3');assert.equal(price('B <试制>').value,'2.5');
+  toggle.checked=false;toggle.dispatchEvent(new ui.w.Event('change'));await submit();assert.equal(submitted.at(-1).material_prices,undefined);
+  assert.ok([...d.querySelectorAll('#optimization-price-rows input')].every(input=>input.disabled));
+});
+
 test('curve peak constraint is distinct from TM1 and displays saved readings and unavailable sweeps',async t=>{
   let submitted;
   const constraints=[{metric:'TM_curve',minimum:3.1}];

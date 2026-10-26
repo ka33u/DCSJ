@@ -130,6 +130,8 @@ class SearchInput(BaseModel):
     variables: list[Variable] = Field(min_length=1, max_length=6)
     objective: str = 'efficiency'
     secondary_objective: str | None = None
+    material_prices: dict[str, StrictFloat] | None = Field(default=None, min_length=1, max_length=21,
+        description='可选的材料牌号→硅钢单价 Cfe；每 kg，与其他材料单价使用同一币种。价格由用户指定，不作为搜索变量。')
     load_cycle: list[LoadStage] | None = Field(default=None, min_length=1, max_length=32)
     rotor_gap_mode: Literal['independent', 'fixed_neck_bottom'] = 'independent'
     tolerances: list[robustness.Tolerance] | None = Field(default=None, min_length=1, max_length=3)
@@ -158,6 +160,19 @@ class SearchInput(BaseModel):
         if CYCLE_METRICS & (objectives | {c.metric for c in self.constraints}) and not self.load_cycle:
             raise ValueError('周期目标或约束需要提供负载周期 load_cycle')
         self.parameters = validate(self.parameters, strict=True)
+        if self.material_prices is not None:
+            material = next((v for v in self.variables if v.key == 'Paihao'), None)
+            if material is None:
+                raise ValueError('分别定价需要将材料牌号 Paihao 加入搜索变量')
+            required = set(material.choices) | {self.parameters['Paihao']}
+            if not required <= self.material_prices.keys():
+                raise ValueError('材料单价表须覆盖全部候选牌号及基准牌号')
+            if any(not allowed_material(k) for k in self.material_prices):
+                raise ValueError('材料单价表只能使用本机可计算的材料牌号')
+            if any(not math.isfinite(v) or not 0 <= v <= 1000000 for v in self.material_prices.values()):
+                raise ValueError('材料单价须为 0–1000000 的有限数值')
+            # Freeze the effective baseline price as well as the full price table.
+            self.parameters['Cfe'] = self.material_prices[self.parameters['Paihao']]
         if self.parameters['_wire_target'] != 0:
             raise ValueError('寻优前请将目标槽满率设为 0，以固定线规，避免内核覆盖搜索变量')
         if self.tolerance_interior_samples not in robustness.INTERIOR_COUNTS:
@@ -268,7 +283,7 @@ def snap(variable, value):
 
 
 def in_region(request, parameters):
-    return manufacturing.linkage_valid(request, parameters) and all(
+    return (request.material_prices is None or parameters.get('Cfe') == request.material_prices.get(parameters.get('Paihao'))) and manufacturing.linkage_valid(request, parameters) and all(
                parameters[v.key] in v.choices if v.key == 'Paihao' else
                manufacturing.nominal(v, parameters[v.key]) is not None if v.values else
                v.minimum <= parameters[v.key] <= v.maximum and (
@@ -291,6 +306,16 @@ def finite_grid(variables):
         if count > 4096: return None
         axes.append(axis)
     return list(itertools.product(*axes))
+
+
+def material_pricing(request, parameters):
+    """Frozen user-supplied prices, never prices inferred from the material name."""
+    if not any(v.key == 'Paihao' for v in request.variables):
+        return None
+    return {'method': 'per-material-cfe-v1' if request.material_prices is not None else 'fixed-cfe-v1',
+            'material': parameters['Paihao'], 'cfe': parameters['Cfe'],
+            'prices': dict(request.material_prices) if request.material_prices is not None else None,
+            'basis': '每 kg；与 Ccu 和 Cal 使用同一币种，按本次任务填写的单价计算'}
 
 
 class StratifiedSearch:
@@ -316,6 +341,8 @@ class StratifiedSearch:
             for v in self.request.variables:
                 if v.values: p[v.key] = snap(v, p[v.key])
         p = manufacturing.linked_parameters(self.request, p)
+        if self.request.material_prices is not None:
+            p['Cfe'] = self.request.material_prices[p['Paihao']]
         identity = tuple((v.key, manufacturing.nominal(v, p[v.key]) if
                           v.values and manufacturing.nominal(v, p[v.key]) is not None else p[v.key])
                          for v in self.request.variables)

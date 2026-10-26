@@ -159,6 +159,10 @@ def render(snapshot):
         (k, field_info(k)['label'], value, field_info(k)['unit']) for k, value in p.items()])]
     content += ['<h2 class="break">完整计算输出</h2>', table(['字段', '指标', '计算值', '单位'], [
         (k, field_info(k)['label'], value, field_info(k)['unit']) for k, value in v.items()])]
+    pricing = summary.material_price_summary(snapshot)
+    if pricing:
+        content += ['<h2>寻优材料计价</h2><p>' + text(pricing['text']) + '</p>',
+                    table(['材料引用', '硅钢单价 /kg', '本次采用'], pricing['rows'])]
     content.append('<h2>计算来源与版本</h2><div class="fingerprints"><p>记录 ID：' + text(snapshot['calculation_id']) + '</p>')
     for key, value in snapshot.get('provenance', {}).items():
         content.append('<p>' + text(key) + '：<code>' + text(value) + '</code></p>')

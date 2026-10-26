@@ -13,7 +13,7 @@ from .engine import calculate_design, CalculationError
 from .parameters import InputError
 from . import benchmark_quality, load_cycle, manufacturing, robustness, torque_refinement
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_values,
-                           objective_keys, pareto_front, OBJECTIVES, SOLVER_SHA256)
+                           objective_keys, pareto_front, material_pricing, OBJECTIVES, SOLVER_SHA256)
 
 BENCHMARK_SHA256 = hashlib.sha256(Path(__file__).read_bytes() + Path(benchmark_quality.__file__).read_bytes()).hexdigest()
 
@@ -76,7 +76,8 @@ def compare(suite, compute=calculate_design):
         for ordinal in range(1, request.max_evaluations // group_size + 1):
             p = search.candidate()
             if p is None: break
-            entry = {'ordinal': ordinal, 'parameters': p, 'feasible': False, 'objectives': {}}
+            entry = {'ordinal': ordinal, 'parameters': p, 'feasible': False, 'objectives': {},
+                     'material_pricing': material_pricing(request,p)}
             if request.tolerances:
                 samples=[]
                 for scenario in robustness.scenarios(request,p):

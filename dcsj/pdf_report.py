@@ -311,6 +311,10 @@ def _render(snapshot):
     story += [PageBreak(), paragraph('完整计算输出', 'h2'),
               table(['字段', '指标', '计算值', '单位'], [(k, field_info(k)['label'], v, field_info(k)['unit']) for k, v in values.items()],
                     [WIDTH * .16, WIDTH * .42, WIDTH * .26, WIDTH * .16])]
+    pricing = summary.material_price_summary(snapshot)
+    if pricing:
+        story.append(KeepTogether([paragraph('寻优材料计价', 'h2'), paragraph(pricing['text']),
+                  table(['材料引用', '硅钢单价 /kg', '本次采用'], pricing['rows'], [WIDTH*.55,WIDTH*.30,WIDTH*.15])]))
     provenance = [paragraph('计算来源与版本', 'h2'), paragraph('记录 ID：' + snapshot['calculation_id'], 'small')]
     for key, value in snapshot.get('provenance', {}).items():
         provenance.append(paragraph(key + '：' + plain(value)))

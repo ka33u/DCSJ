@@ -71,6 +71,18 @@ def manufacturing_summary(snapshot):
             'note': '规格清单由任务指定；匹配原库单精度存储值时保留原始输入。'}
 
 
+def material_price_summary(snapshot):
+    record = snapshot.get('optimization', {}).get('material_pricing')
+    if not record:
+        return None
+    separate = record['method'] == 'per-material-cfe-v1'
+    mode = '按牌号分别定价' if separate else '所有候选牌号统一定价'
+    prices = record['prices'] if separate else {record['material']: record['cfe']}
+    return {'text': f"{mode}；本次材料 {record['material']}，Cfe={number(record['cfe'],8)} /kg；"
+                    f"计算材料成本 CostFx={number(snapshot['values'].get('CostFx'),8)}。" + record['basis'] + '。',
+            'rows': [[name,number(price,8),'是' if name==record['material'] else ''] for name,price in prices.items()]}
+
+
 def cycle_summary(snapshot):
     """Read stored period energy; never derive a new result for an old report."""
     cycle = snapshot.get('optimization', {}).get('load_cycle')

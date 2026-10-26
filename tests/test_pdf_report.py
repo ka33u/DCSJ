@@ -33,6 +33,17 @@ def test_manufacturing_report_reads_saved_specs_and_linkage(snapshot):
     assert '寻优规格与尺寸联动' in reports.render(saved)
 
 
+def test_material_price_report_uses_frozen_quotes_and_preserves_old_reports(snapshot):
+    saved=saved_snapshot(snapshot)
+    assert '寻优材料计价' not in reports.render(saved)
+    saved['optimization']={'material_pricing':{'method':'per-material-cfe-v1','material':'B <试制>',
+        'cfe':2.5,'prices':{'A':4.,'B <试制>':2.5},'basis':'每 kg；同一币种'}}
+    _,text=pdf_text(pdf_report.render(saved))
+    assert '寻优材料计价' in text and 'Cfe=2.5 /kg' in text and 'CostFx=100' in text
+    html=reports.render(saved)
+    assert 'B &lt;试制&gt;' in html and 'B <试制>' not in html and '按牌号分别定价' in html
+
+
 def test_pdf_download_snapshot_fidelity_chinese_and_embedded_font(client, snapshot):
     assert pdf_fonts.font_path().is_file(), 'Run python scripts/install_pdf_font.py before PDF tests'
     snapshot['inputs']['SizeX'] = '中文设计 <script>原样文字</script>'

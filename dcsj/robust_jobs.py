@@ -1,6 +1,6 @@
 """Checkpoint every tolerance sample; publish a candidate only after assessment."""
 from . import robustness, manufacturing, calculations, torque_refinement
-from .optimization import Search, SOLVER_SHA256
+from .optimization import Search, SOLVER_SHA256, material_pricing
 from .parameters import InputError
 from .engine import CalculationError
 from .execution import BusyError
@@ -97,6 +97,7 @@ def run(worker, identity, request, compute, *, verification=None, feedback=None)
                       'constraints':[c.model_dump() for c in request.constraints],
                       'constraint_values':{c.metric:baseline_sample.get('values',{}).get(c.metric) for c in request.constraints},
                       'load_cycle':baseline_sample.get('load_cycle'), 'robustness':robust,
+                      'material_pricing':material_pricing(request,nominal),
                       'manufacturing':manufacturing.audit(request,nominal),
                       'refined_torque_peak':torque_refinement.compact(nominal_result or {}),
                       'continuous_torque_peak':torque_refinement.compact(nominal_result or {}, 'continuous_torque_peak'),
