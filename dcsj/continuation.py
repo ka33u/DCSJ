@@ -12,12 +12,17 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from . import engine, optimization as opt
+from .parameters import validate
 from .storage import ConflictError, NotFoundError, audit, connect, dumps, now
 
 MAX_ADDITIONAL = 128
 MAX_TOTAL = 1024
 METHOD = 'nominal-search-replay-v1'
 CONTINUATION_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+# 0.27.0 used the same replay and budget rules. Its raw int/float fingerprint
+# check rejected some valid discrete inputs; accepting normalized inputs does
+# not invalidate histories that already passed that stricter check.
+COMPATIBLE_SHA256 = {CONTINUATION_SHA256, 'ec2e294d6a240f2dbc09b29b607b03bdf0ab4720a2ba67bff5b85f7d8157df30'}
 RESOURCE_KEYS = ('kernel_sha256', 'wrapper_sha256', 'resource_package', 'resource_version')
 
 
@@ -70,7 +75,8 @@ def check_resources(request, expected):
 
 def check_result(result, parameters, resources):
     provenance = result.get('provenance', {})
-    if (result.get('inputs') != parameters or provenance.get('input_sha256') != fingerprint(parameters)
+    normalized = validate(parameters)
+    if (result.get('inputs') != normalized or provenance.get('input_sha256') != fingerprint(normalized)
             or any(provenance.get(k) != resources[k] for k in RESOURCE_KEYS)
             or not resources['materials'].get(parameters['Paihao'])
             or provenance.get('material_sha256') != resources['materials'][parameters['Paihao']]):
@@ -170,7 +176,7 @@ def _state(history):
     if metadata:
         inherited = integer(metadata['inherited_attempts'], 1, count)
         additional = integer(metadata['additional_evaluations'], 1, MAX_ADDITIONAL)
-        if (metadata['method'] != METHOD or metadata['continuation_sha256'] != CONTINUATION_SHA256
+        if (metadata['method'] != METHOD or metadata['continuation_sha256'] not in COMPATIBLE_SHA256
                 or metadata['solver_sha256'] != opt.SOLVER_SHA256 or metadata['resources'] != resources
                 or metadata['prefix_sha256'] != prefix_hash(history, inherited)
                 or not transitions or transitions[-1] != {'after': inherited, 'budget': job['budget']}
@@ -262,7 +268,7 @@ def create(identity, options, *, database=None, expected_metadata=None):
         'inherited_attempts': count, 'additional_evaluations': options.additional_evaluations,
         'inherited_best_id': source['best_id'], 'root_request': root, 'transitions': transitions,
         'resources': resources, 'prefix_sha256': prefix_hash(history, count)}
-    if expected_metadata is not None and metadata != expected_metadata:
+    if expected_metadata is not None and metadata != {**expected_metadata, 'continuation_sha256': CONTINUATION_SHA256}:
         raise ConflictError('原续算的源任务或固定配置已变化，不能以不同历史重试。')
     document = search.request.model_dump()
     document['name'] = root['name'][:100] + f' · 续算至 {budget} 次'

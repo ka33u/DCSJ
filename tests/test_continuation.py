@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from dcsj import continuation as cont, jobs, optimization as opt
 from dcsj.api import app
+from dcsj.parameters import validate
 from dcsj.storage import ConflictError, connect, dumps
 
 ALGORITHMS = ['stratified_v1', 'hybrid_de_v1', 'adaptive_poll_v1',
@@ -33,11 +34,11 @@ def setup(tmp_path, monkeypatch, parameters, snapshot):
         if s.fail or len(s.calls) % 4 == 0:
             raise jobs.CalculationError('Synthetic failure')
         result = copy.deepcopy(snapshot)
-        result['inputs'] = dict(p)
+        result['inputs'] = validate(p)
         result['values'].update(ATA1=.95-abs(p['L']-165)*.001, CostFx=p['L']*2,
             Sf=.6, Sn=.03, Pcu=100, Pal=80, Pfe=70, Pfw1=20, Ps1=10)
         result['provenance'].update({k:resources[k] for k in cont.RESOURCE_KEYS},
-            material_sha256=resources['materials'][p['Paihao']], input_sha256=cont.fingerprint(p))
+            material_sha256=resources['materials'][p['Paihao']], input_sha256=cont.fingerprint(result['inputs']))
         return result
     monkeypatch.setattr(jobs, 'compute', compute)
     s.worker = jobs.Worker(database); s.worker.touch()
@@ -124,6 +125,51 @@ def test_material_prices_stock_sizes_gap_linkage_and_assessments_survive(setup):
         assert p['g']+p['hr0'] == pytest.approx(1.1)
     assert len(cont.read_history(child['id'])['assessments']) == 4
     cont.state(cont.read_history(child['id']))
+
+
+@pytest.mark.parametrize('algorithm', ALGORITHMS)
+def test_integer_candidates_reuse_normalized_engine_inputs(setup, algorithm):
+    s = setup
+    root = s.root(algorithm=algorithm, variables=[{'key':'L','minimum':150,'maximum':170},
+        {'key':'ZZ','values':[14,16,18]}, {'key':'JJ','values':[1,2,3]}])
+    assert any(type(c['parameters']['ZZ']) is int for c in root['candidates'])
+    assert any(type(c['parameters']['JJ']) is int for c in root['candidates'])
+    calls = len(s.calls)
+    child = s.run(cont.create(root['id'], extra(4))['id'])
+    assert len(s.calls) == calls+4 and child['new_evaluated'] == 4
+    cont.state(cont.read_history(child['id']))
+    assert child['candidates'][:root['evaluated']] == [{**c,'job_id':child['id']} for c in root['candidates']]
+
+
+def test_normalized_fingerprint_accepts_numeric_types_but_rejects_changed_values(setup):
+    s = setup
+    p = validate(s.body['parameters']); p.update(ZZ=16, JJ=1)
+    result = jobs.compute(p)
+    assert type(result['inputs']['ZZ']) is float
+    assert cont.fingerprint(p) != result['provenance']['input_sha256']
+    cont.check_result(result,p,s.resources)
+    with pytest.raises(ConflictError): cont.check_result(result,{**p,'ZZ':18},s.resources)
+    result['provenance']['input_sha256'] = cont.fingerprint(p)
+    with pytest.raises(ConflictError): cont.check_result(result,p,s.resources)
+
+
+def test_previous_continuation_fingerprint_can_extend_and_retry_without_changing_trajectory(setup):
+    s = setup; root = s.root(); child = s.run(cont.create(root['id'], extra(3))['id'])
+    document = child['request']
+    document['continuation']['continuation_sha256'] = 'ec2e294d6a240f2dbc09b29b607b03bdf0ab4720a2ba67bff5b85f7d8157df30'
+    with connect(s.database) as db:
+        db.execute('UPDATE optimization_jobs SET request=? WHERE id=?',(dumps(document),child['id']))
+    retry = jobs.retry(child['id'])
+    assert retry['request']['continuation']['continuation_sha256'] == cont.CONTINUATION_SHA256
+    assert retry['evaluated'] == root['evaluated'] and retry['budget'] == child['budget']
+    jobs.cancel(retry['id'])
+    following = cont.create(child['id'],extra(2))
+    assert following['evaluated'] == child['evaluated']
+    jobs.cancel(following['id'])
+    document['continuation']['continuation_sha256'] = 'unrecognized-replay-code'
+    with connect(s.database) as db:
+        db.execute('UPDATE optimization_jobs SET request=? WHERE id=?',(dumps(document),child['id']))
+    with pytest.raises(ConflictError): cont.create(child['id'],extra(2))
 
 
 def test_all_new_failures_and_retry_preserve_original_best_and_prefix(setup):
