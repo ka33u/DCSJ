@@ -23,7 +23,7 @@ ENGINE_NAME = "DCSJ Python 数值核心"
 _kernel_path = ROOT / "dcsj/generated/numeric_kernel.json.gz"
 KERNEL_SHA256 = hashlib.sha256(_kernel_path.read_bytes()).hexdigest() if _kernel_path.is_file() else None
 WRAPPER_SHA256 = hashlib.sha256(b"".join((ROOT / "dcsj" / name).read_bytes()
-    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py", "library.py", "curves.py", "semantics.py", "wire_selection.py", "torque_refinement.py", "continuous_saturation.py"))).hexdigest()
+    for name in ("engine.py", "numeric_vm.py", "parameters.py", "kernel_layout.py", "library.py", "curves.py", "semantics.py", "wire_selection.py", "torque_refinement.py", "continuous_saturation.py", "cost_compatibility.py"))).hexdigest()
 LIMITATIONS = [
     "由原 Fortran 程序的计算指令恢复；使用双精度中间运算和原单精度存储。",
     "已恢复三相异步电动机计算；历史型号保存值可能使用不同版本的材料表。",
@@ -254,6 +254,8 @@ def calculate_design(values, *, refine_torque=False, continuous_torque=False):
               f"转速折算因子 {entry['speed_scaling']['factor']:.7g}。"
               for key, entry in metadata['loss_semantics'].items()],
             f"执行 {result['steps']:,} 条恢复指令，耗时 {time.perf_counter() - started:.3f} 秒。",
+            *[f"成本计算：两组线径均为 {entry['diameter_mm']:.7g} mm；完成两组查表后进入原成本公式。"
+              for entry in result.get('compatibility_repairs', [])],
             "所有结果由本次输入重新计算，未使用型号库中的历史结果列。",
         ],
         "provenance": {
@@ -271,5 +273,6 @@ def calculate_design(values, *, refine_torque=False, continuous_torque=False):
             "user_material_source": material.get('user_source'),
             "elapsed_seconds": time.perf_counter() - started,
             "precision": result["precision"],
+            "compatibility_repairs": result.get('compatibility_repairs', []),
         },
     }

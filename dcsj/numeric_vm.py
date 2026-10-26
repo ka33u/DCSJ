@@ -14,6 +14,7 @@ import json
 import math
 from pathlib import Path
 import struct
+from .cost_compatibility import CostTraversal, EVENTS as COST_EVENTS
 
 
 class NumericKernelError(ValueError):
@@ -136,6 +137,7 @@ class _VM:
         self.calls = Counter()
         self.steps = 0
         self.done = False
+        self.cost_traversal = CostTraversal(program)
 
     def reg(self, name):
         if name in self.registers:
@@ -251,6 +253,8 @@ class _VM:
         }[mnemonic]
 
     def callback(self):
+        if self.pc in COST_EVENTS and self.cost_traversal.visit(self):
+            return True
         unary = {0x42CFFF: math.cos, 0x42D01A: math.sin, 0x42D035: math.tan,
                  0x42D050: math.sqrt, 0x42D06E: math.log, 0x42D0DA: math.asin,
                  0x42D110: math.atan, 0x42D1C1: math.exp}
@@ -443,6 +447,7 @@ def run(memory_overrides: dict[int, float | bytes], *, max_steps: int = 2000000,
         "outputs": vm.outputs, "memory": vm.memory, "steps": vm.steps,
         "calls": dict(vm.calls), "completed": True,
         "precision": "binary64 intermediates with binary32 source stores",
+        "compatibility_repairs": vm.cost_traversal.repairs,
     }
     if capture_at is not None:
         result['checkpoint'] = checkpoint
