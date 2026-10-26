@@ -1521,13 +1521,17 @@
     container.replaceChildren(el("h2", "", `${job.name} · ${jobStatus[job.status] || job.status}`));
     const methodId = job.request.algorithm || 'stratified_v1';
     const methodLabel = optimizationConfig?.algorithms?.find(item => item.id === methodId)?.label || ({stratified_v1:'分层采样 + 局部搜索',adaptive_poll_v1:'自适应邻域搜索',coupled_poll_v1:'联合变量搜索（邻点筛选）',ranked_poll_v1:'邻域预测排序（兼顾折中）',curvature_rescue_v1:'曲率补救排序（试验）',hybrid_de_v1:'混合差分进化'}[methodId] || '历史搜索方法');
-    const verification=job.request.verification,feedback=job.request.feedback;
+    const verification=job.request.verification,feedback=job.request.feedback,continuation=job.request.continuation;
     container.append(el('p', 'muted', verification?`补充采样复核 · 固定候选 #${verification.source_candidate_ordinal} · 新点种子 ${verification.seed}`:`本任务方法：${methodLabel} · 随机种子 ${job.request.seed ?? '—'}`));
     if(verification){
       container.append(el('p','source-box',`重新计算 ${verification.prior_samples} 个已有情景，增加 ${verification.interior_samples} 个未参与原搜索的分层点；共 ${job.budget} 次。原搜索记录与本次复核结论独立保留。有限采样不代表整个公差区间都满足约束。`),button('查看源任务','button',()=>{selectedJob=verification.source_job_id;watchJob(selectedJob);}),reportLink(verification.source_calculation_id));
     }
     if(feedback){
       container.append(el('p','source-box',`复核情景参与搜索：保留源复核的全部 ${feedback.retained_samples} 个相对偏差情景（其中 ${feedback.source_failed_samples} 个曾超限或计算失败）。每个新候选使用相同偏差；这些点已参与选择，选定结果后应另做补充采样复核。`),button('查看源复核','button',()=>{selectedJob=feedback.source_job_id;watchJob(selectedJob);}));
+    }
+    if(continuation){
+      container.append(el('p','source-box',`继承原任务 ${continuation.inherited_attempts} 个已记录候选（含失败记录），本次追加 ${continuation.additional_evaluations} 次预算。原目标、约束、材料价格和随机种子保持固定；仅计算新候选。`),button('查看续算源任务','button',()=>{selectedJob=continuation.source_job_id;watchJob(selectedJob);}));
+      if(continuation.inherited_best_id)container.append(el('p','muted',job.best_id===continuation.inherited_best_id?'当前第一目标最佳仍为继承方案。':'当前第一目标最佳已由新增候选更新。'));
     }
     const constraints = job.request.constraints || [];
     const robust=!!job.request.tolerances?.length;
@@ -1544,14 +1548,14 @@
     const explicit=job.request.variables.filter(v=>v.values?.length);
     if(explicit.length)container.append(el('p','muted',`指定规格：${explicit.map(v=>`${v.key} ∈ {${v.values.map(x=>fmt(x,9)).join(', ')}}`).join('；')}。基准不在清单中时仅供对照。`));
     if(job.request.rotor_gap_mode==='fixed_neck_bottom')container.append(el('p','muted','本任务保持转子槽颈底位置：hr0 = hr0基准 + g基准 − g；转子外径 D2 = Di1 − 2g。'));
-    const progress = el("progress"); progress.max = job.budget; progress.value = job.evaluated;
-    progress.setAttribute("aria-label", `已评估 ${job.evaluated}，预算 ${job.budget}`);
-    container.append(progress, el("p", "muted", `已评估 ${job.evaluated} / ${job.budget}${robust?' 次情景计算':''}；满足约束 ${job.feasible_count ?? job.candidates.filter(c => c.feasible).length} 个${robust?'完整候选组':''}；失败与基准计算均计入预算。`), el("p", "", job.message));
+    const progress = el("progress"); progress.max = continuation?continuation.additional_evaluations:job.budget; progress.value = continuation?Math.max(0,job.evaluated-continuation.inherited_attempts):job.evaluated;
+    progress.setAttribute("aria-label", continuation?`新增已评估 ${progress.value}，追加预算 ${progress.max}`:`已评估 ${job.evaluated}，预算 ${job.budget}`);
+    container.append(progress, el("p", "muted", `${continuation?`本次新增 ${progress.value} / ${progress.max}；继承 ${continuation.inherited_attempts}；累计`:'已评估'} ${job.evaluated} / ${job.budget}${robust?' 次情景计算':''}；满足约束 ${job.feasible_count ?? job.candidates.filter(c => c.feasible).length} 个${robust?'完整候选组':''}；失败与基准计算均计入预算。`), el("p", "", job.message));
     const actions = el("div", "feature-actions");
     if (!terminalJobs.has(job.status)) {
       const cancel = button(job.status === "cancelling" ? "当前计算结束后停止" : "取消任务", "button", async () => { try { showJob(await api(`/optimization/jobs/${job.id}/cancel`, { method: "POST" })); watchJob(job.id); } catch (error) { showToast(errorText(error), "error"); } });
       cancel.disabled = job.status === "cancelling"; actions.append(cancel);
-    } else actions.append(button("按原配置重新运行", "button", async () => { try { const next = await api(`/optimization/jobs/${job.id}/retry`, { method: "POST" }); selectedJob = next.id; watchJob(next.id); loadOptimizationJobs(); } catch (error) { showToast(errorText(error), "error"); } }));
+    } else actions.append(button(continuation?"从同一源任务重试追加预算":"按原配置重新运行", "button", async () => { try { const next = await api(`/optimization/jobs/${job.id}/retry`, { method: "POST" }); selectedJob = next.id; watchJob(next.id); loadOptimizationJobs(); } catch (error) { showToast(errorText(error), "error"); } }));
     if (job.best_id) {
       actions.append(button("打开最佳候选", "button button-primary", () => openSnapshot(job.best_id)), reportLink(job.best_id));
       const baseline = job.candidates.find(c => c.ordinal === 1)?.calculation_id;
@@ -1560,6 +1564,7 @@
     container.append(actions);
     if(terminalJobs.has(job.status)&&robust)verificationControls(container,job);
     if(verification&&['succeeded','failed'].includes(job.status))feedbackControls(container,job);
+    if(terminalJobs.has(job.status)&&!robust&&!verification&&!feedback&&job.evaluated>0)continuationControls(container,job);
     if(job.verifications?.length){
       const links=el('div','feature-actions');links.append(el('strong','','关联复核：'));
       for(const child of job.verifications)links.append(button(`${child.name} · ${jobStatus[child.status]||child.status} · ${child.evaluated}/${child.budget}`,'button button-small',()=>{selectedJob=child.id;watchJob(child.id);}));
@@ -1568,6 +1573,11 @@
     if(job.continuations?.length){
       const links=el('div','feature-actions');links.append(el('strong','','后续搜索：'));
       for(const child of job.continuations)links.append(button(`${child.name} · ${jobStatus[child.status]||child.status} · ${child.evaluated}/${child.budget}`,'button button-small',()=>{selectedJob=child.id;watchJob(child.id);}));
+      container.append(links);
+    }
+    if(job.extensions?.length){
+      const links=el('div','feature-actions');links.append(el('strong','','追加预算任务：'));
+      for(const child of job.extensions)links.append(button(`${child.name} · ${jobStatus[child.status]||child.status} · 累计 ${child.evaluated}/${child.budget}`,'button button-small',()=>{selectedJob=child.id;watchJob(child.id);}));
       container.append(links);
     }
     if (job.request.load_cycle?.length && job.best_id) {
@@ -1610,7 +1620,7 @@
     const scroll = el("div", "table-scroll"), table = el("table", "data-table"), head = el("thead"), heading = el("tr"), body = el("tbody");
     ["序号", "搜索变量", robust?'最不利采样目标值':'目标值', ...(job.request.load_cycle?.length ? [robust?'名义尺寸 · 负载周期':'负载周期结果'] : []), ...(constraints.length ? [robust?'约束采样范围':'约束计算值'] : []), "约束与诊断", "操作"].forEach(title => heading.append(el("th", "", title))); head.append(heading);
     job.candidates.forEach(candidate => {
-      const row = el("tr"); row.append(el("td", "", `${candidate.ordinal}${verification?' 固定方案':candidate.ordinal === 1 ? " 基准" : ""}${candidate.calculation_id && candidate.calculation_id === job.best_id ? " ★" : ""}`));
+      const row = el("tr"); row.append(el("td", "", `${candidate.ordinal}${verification?' 固定方案':candidate.ordinal === 1 ? " 基准" : ""}${continuation?(candidate.ordinal<=continuation.inherited_attempts?' · 继承':' · 新增'):''}${candidate.calculation_id && candidate.calculation_id === job.best_id ? " ★" : ""}`));
       const secondary = job.request.secondary_objective;
       const objectiveText = `${fmt(candidate.objective, 7)}${secondary ? '\n第二目标：' + fmt(candidate.objectives?.[secondary], 7) : ''}`;
       row.append(el("td", "", job.request.variables.map(v => `${v.key}=${fmt(candidate.parameters[v.key])}`).join("\n")), el("td", "", objectiveText));
@@ -1637,6 +1647,23 @@
     if(robust&&job.samples?.length) {
       const details=el('details','trace-details');details.append(el('summary','',`已保存的公差采样 · ${job.samples.length} 次（含未完成组）`),sampleTable(job.samples,job.request.tolerances,job.candidates.find(c=>c.robustness)?.robustness?.objective_specs));container.append(details);
     }
+  }
+
+  function continuationControls(container,job){
+    const form=el('form','feature-content verification-form');form.id='continuation-form';
+    form.append(el('h3','','追加预算继续寻优'),el('p','muted','保留已算候选、最佳方案及折中方案，从原搜索状态继续。每次可追加 1–128 次，累计最多 1024 次；新增计算失败也计入预算，未必得到更优方案。'));
+    const maximum=Math.min(128,1024-job.evaluated);
+    if(maximum<1){form.append(el('p','muted','已达到累计 1024 次上限。'));container.append(form);return;}
+    const label=el('label','','追加计算次数'),budget=el('input','text-input');budget.id='continuation-budget';label.htmlFor=budget.id;
+    budget.type='number';budget.step='1';budget.min='1';budget.max=String(maximum);budget.required=true;budget.value=String(Math.min(24,maximum));label.append(budget);
+    const cost=el('p','muted'),submit=el('button','button button-primary','追加预算并继续');submit.type='submit';
+    function update(){cost.textContent=`继承 ${job.evaluated} + 新增预算 ${budget.value||'—'} = 累计最多 ${job.evaluated+Number(budget.value)} 次。原任务与报告仍可独立查看。`;}
+    budget.oninput=update;update();form.append(label,cost,submit);let pending=false;
+    form.onsubmit=async event=>{event.preventDefault();if(pending||!form.reportValidity())return;pending=true;submit.disabled=true;budget.disabled=true;try{
+      const next=await api(`/optimization/jobs/${job.id}/extend`,{method:'POST',body:JSON.stringify({additional_evaluations:Number(budget.value)})});
+      selectedJob=next.id;showJob(next);watchJob(next.id);loadOptimizationJobs();
+    }catch(error){showToast(errorText(error),'error');}finally{pending=false;submit.disabled=false;budget.disabled=false;}};
+    container.append(form);
   }
 
   function verificationControls(container,job){

@@ -15,7 +15,7 @@ from .execution import BusyError, compute
 from .storage import ConflictError, NotFoundError, now
 from .parameters import ROOT, InputError, schema, validate, example_data, check_keys
 from .engine import CalculationUnavailableError
-from . import jobs, optimization, verification, feedback
+from . import jobs, optimization, verification, feedback, continuation
 from . import pdf_fonts
 from .pdf_report import PDFUnavailableError, PDFContentError
 from .saved_catalog import series_name
@@ -681,7 +681,9 @@ def geometry_preview(body: DesignInput):
 
 @app.get("/api/v1/optimization/config", tags=["自动寻优"])
 def optimization_config():
-    return optimization.config()
+    return {**optimization.config(), 'continuation': {'method': continuation.METHOD,
+        'max_additional_evaluations': continuation.MAX_ADDITIONAL,
+        'max_total_evaluations': continuation.MAX_TOTAL, 'nominal_only': True}}
 
 
 @app.get("/api/v1/optimization/jobs", tags=["自动寻优"])
@@ -713,6 +715,12 @@ def retry_optimization(identity: str):
 def verify_optimization(identity: str, body: verification.VerificationInput):
     """Freeze a feasible tolerance candidate and enqueue fresh supplemental checks."""
     return verification.create(identity, body)
+
+
+@app.post("/api/v1/optimization/jobs/{identity}/extend", status_code=202, tags=["自动寻优"])
+def extend_optimization(identity: str, body: continuation.ExtensionInput):
+    """Retain committed nominal candidates and spend only the additional budget."""
+    return continuation.create(identity, body)
 
 
 @app.post("/api/v1/optimization/jobs/{identity}/resume-search", status_code=202, tags=["自动寻优"])

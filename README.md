@@ -509,3 +509,15 @@ API `POST /api/v1/optimization/jobs` 新增可选的 `material_prices` 对象，
 在 `POST /api/v1/optimization/jobs` 请求中选择 `"algorithm":"curvature_rescue_v1"`，其余变量、目标、约束和报价字段与原接口相同。方法标识随任务保存，重试仍使用原选择。默认算法仍为 `stratified_v1`，已有 `ranked_poll_v1` 的搜索顺序不变。无需数据库迁移或更新私有资源包。
 
 研究参考[异步机局部代理优化与真实模型复核研究](https://acris.aalto.fi/ws/portalfiles/portal/67161564/ELEC_Balasubramanian_etal_Application_of_Surrogate_Optimization_Energies_2021_finalpublishedversion.pdf)以及[代理模型方向与约束分歧研究](https://arxiv.org/pdf/2107.04360)。本方法采用局部三点插值进行排序，未复现论文中的聚类、有限元优化或不确定性概率模型；文献的性能和收敛结论不作为本软件的保证。
+
+## 0.27.0：追加预算继续寻优
+
+已结束、取消或中断的名义寻优任务可以选择“追加预算继续寻优”。新任务继承原任务全部已记录候选、失败记录、计算报告、最佳方案和折中候选，再从原搜索状态计算新候选。界面分别显示继承数量、本次新增进度和累计数量；原任务与计算快照保持独立。每次追加 1–128 次，累计最多 1024 次，新计算失败同样计入预算。增加预算不保证得到更优方案。
+
+API：`POST /api/v1/optimization/jobs/{id}/extend`，请求体仅接受 `{"additional_evaluations":24}`，返回 `202` 和新任务。变量、目标、约束、材料价格、随机种子及联动配置均沿用原任务。任务详情中的 `request.continuation` 保存源任务、原始请求、预算变更节点及资源指纹；`new_evaluated`、`new_progress` 表示本次新增进度，`evaluated`、`budget` 表示累计数量。源任务的 `extensions` 列出关联续算任务。
+
+支持当前六种名义搜索算法。恢复时使用最初的初始化预算，依次重放已记录候选和历史预算变更，再追加预算，避免重新初始化改变采样顺序。所有复用成绩都从原始计算快照验证；计算核、求解器、资源包或材料指纹变化时停止续算，已有记录仍可查看。原任务全部计算失败且缺少可验证指纹、历史记录不完整、离散区域已无新候选时，不创建续算任务。服务中断前尚未提交为候选的计算不属于继承历史。
+
+续算任务的“从同一源任务重试追加预算”会重新使用同一个源任务前缀和追加量；若要保留本次新增候选，应再次选择“追加预算继续寻优”。公差搜索、补充复核及纳入复核情景寻优仍使用原有流程。首次任务的 128 次上限、默认算法和电磁计算模型保持不变，无需更新私有资源包。
+
+研究参考 [NOMAD 官方重启与结果缓存说明](https://nomad-4-user-guide.readthedocs.io/en/latest/AdvancedFunctionalities.html#restart-or-rerun)。这里实现本程序搜索状态的确定性重放，不依赖 NOMAD，也不据此声称同预算优势或全局最优。

@@ -1186,6 +1186,44 @@ test('post-search verification freezes a selected candidate, exposes its budget 
   assert.equal(source.best_id,'best');
 });
 
+test('nominal continuation sends only extra budget and distinguishes inherited and new work',async t=>{
+  const source={id:'original-search',name:'原搜索',status:'succeeded',evaluated:3,budget:3,best_id:'old-best',
+    request:{seed:19,objective:'efficiency',algorithm:'curvature_rescue_v1',variables:[{key:'L'}],parameters,constraints:[]},
+    candidates:[{ordinal:1,calculation_id:'old-best',parameters:{L:140},objective:.9,objectives:{efficiency:.9},feasible:true},
+      {ordinal:2,parameters:{L:150},feasible:false,error:'未收敛'},
+      {ordinal:3,calculation_id:'old-other',parameters:{L:160},objective:.89,objectives:{efficiency:.89},feasible:true}],extensions:[]};
+  const child={...source,id:'extended-search',name:'续算',status:'running',evaluated:4,budget:7,
+    request:{...source.request,continuation:{source_job_id:source.id,inherited_attempts:3,additional_evaluations:4,inherited_best_id:'old-best'}},
+    candidates:[...source.candidates,{ordinal:4,calculation_id:'new',parameters:{L:145},objective:.88,objectives:{efficiency:.88},feasible:true}]};
+  let posted,count=0;const pending=deferred();
+  const ui=await app(t,(path,req)=>{
+    if(path==='/optimization/config')return {method:'测试',variables:[{key:'L',label:'长度'}],objectives:[{id:'efficiency',label:'效率'}],materials:[],constraint_metrics:[]};
+    if(path==='/optimization/jobs')return {items:[source]};
+    if(path==='/optimization/jobs/original-search')return source;
+    if(path==='/optimization/jobs/original-search/extend'){posted=req.body;count++;source.extensions=[child];return pending.promise.then(()=>child);}
+    if(path==='/optimization/jobs/extended-search')return child;
+  });
+  ui.nav('optimization');await until(()=>ui.doc.querySelector('#optimization-jobs button'),'Jobs ready');
+  ui.find('#optimization-jobs button','查看任务').click();await until(()=>ui.doc.querySelector('#continuation-form'),'Continuation form ready');
+  const d=ui.doc,form=d.querySelector('#continuation-form'),budget=d.querySelector('#continuation-budget');
+  assert.equal(d.querySelector('#feedback-form'),null);assert.equal(d.querySelector('#verification-form'),null);
+  assert.equal(budget.min,'1');assert.equal(budget.max,'128');
+  budget.value='4';budget.dispatchEvent(new ui.w.Event('input'));
+  assert.match(form.textContent,/继承 3 \+ 新增预算 4 = 累计最多 7/);
+  form.dispatchEvent(new ui.w.Event('submit',{cancelable:true}));form.dispatchEvent(new ui.w.Event('submit',{cancelable:true}));
+  assert.equal(count,1);assert.deepEqual(posted,{additional_evaluations:4});assert.equal(budget.disabled,true);
+  pending.release();await until(()=>d.querySelector('#optimization-detail h2').textContent.includes('续算'),'Child rendered');
+  const detail=d.querySelector('#optimization-detail'),progress=detail.querySelector('progress');
+  assert.equal(progress.max,4);assert.equal(progress.value,1);
+  assert.match(detail.textContent,/本次新增 1 \/ 4；继承 3；累计 4 \/ 7/);
+  assert.match(detail.textContent,/1 基准 · 继承 ★/);assert.match(detail.textContent,/4 · 新增/);
+  assert.match(detail.textContent,/当前第一目标最佳仍为继承方案/);
+  assert.equal(d.querySelector('#continuation-form'),null);
+  ui.find('#optimization-detail button','查看续算源任务').click();
+  await until(()=>d.querySelector('#continuation-form'),'Source reopened');
+  assert.match(detail.textContent,/追加预算任务：/);
+});
+
 test('failed verification retains all scenarios for a new search with explicit budget',async t=>{
   const source={id:'failed-check',name:'复核失败',status:'failed',evaluated:11,budget:11,best_id:null,
     request:{seed:42,objective:'efficiency',variables:[{key:'L',values:[133,140]}],parameters:{...parameters,L:133},tolerances:[{key:'g',delta:.04}],constraints:[],
@@ -1206,6 +1244,7 @@ test('failed verification retains all scenarios for a new search with explicit b
   ui.find('#optimization-jobs button','查看任务').click();await until(()=>ui.doc.querySelector('#feedback-form'),'Feedback form ready');
   const d=ui.doc,form=d.querySelector('#feedback-form');
   assert.equal(d.querySelector('#verification-form'),null);
+  assert.equal(d.querySelector('#continuation-form'),null);
   assert.equal(d.querySelector('#feedback-budget').value,'22');assert.equal(d.querySelector('#feedback-seed').value,'44');
   d.querySelector('#feedback-budget').value='33';d.querySelector('#feedback-budget').dispatchEvent(new ui.w.Event('input'));
   assert.match(form.textContent,/3 个完整候选/);

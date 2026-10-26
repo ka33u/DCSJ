@@ -38,6 +38,9 @@ def get(identity, *, database=None, candidates=True):
         result['continuations'] = [dict(r) for r in db.execute(
             "SELECT id,name,status,evaluated,budget,best_id FROM optimization_jobs "
             "WHERE json_extract(request,'$.feedback.source_job_id')=? ORDER BY created_at,id", (identity,))]
+        result['extensions'] = [dict(r) for r in db.execute(
+            "SELECT id,name,status,evaluated,budget,best_id FROM optimization_jobs "
+            "WHERE json_extract(request,'$.continuation.source_job_id')=? ORDER BY created_at,id", (identity,))]
         if candidates:
             result['candidates'] = []
             for row in db.execute("SELECT c.*, COALESCE(a.record,json_extract(s.result,'$.optimization')) AS evaluation "
@@ -67,6 +70,11 @@ def get(identity, *, database=None, candidates=True):
             result['pareto_ids'] = [c['calculation_id'] for c in pareto_front(result['candidates'], keys)] if len(keys) > 1 else []
             result['feasible_count'] = sum(c['feasible'] for c in result['candidates'])
     result['progress'] = result['evaluated'] / result['budget']
+    continuation = result['request'].get('continuation')
+    if continuation:
+        inherited = continuation['inherited_attempts']
+        result['new_evaluated'] = max(0, result['evaluated'] - inherited)
+        result['new_progress'] = result['new_evaluated'] / continuation['additional_evaluations']
     return result
 
 
@@ -115,20 +123,29 @@ def cancel(identity, *, database=None):
 def saved_request(document):
     """Reopen old jobs without reviving the removed comparison-only inputs."""
     from .verification import VerificationSearch
-    model = VerificationSearch if document.get('verification') else SearchInput
-    document = {k:v for k,v in document.items() if k not in {'verification','feedback'}}
+    from .continuation import ContinuationSearch
+    model = VerificationSearch if document.get('verification') else ContinuationSearch if document.get('continuation') else SearchInput
+    document = {k:v for k,v in document.items() if k not in {'verification','feedback','continuation'}}
     return model.model_validate({'algorithm': 'stratified_v1', 'tolerance_sampling':'centered_lhs_v1',
                                       **document, 'parameters': {
         key: value for key, value in document['parameters'].items() if key not in RETIRED_INPUT_KEYS}})
 
 
-def retry(identity):
-    previous = get(identity)
+def retry(identity, *, database=None):
+    previous = get(identity, database=database)
     if previous['status'] not in TERMINAL:
         raise ConflictError('只能重新运行已结束的任务。')
+    if previous['request'].get('continuation'):
+        from . import continuation
+        metadata = previous['request']['continuation']
+        # Validate the retry's stored prefix before reopening its frozen parent.
+        continuation.state(continuation.read_history(identity, database=database))
+        return continuation.create(metadata['source_job_id'], continuation.ExtensionInput(
+            additional_evaluations=metadata['additional_evaluations']), database=database,
+            expected_metadata=metadata)
     request = saved_request(previous['request'])
     request.name = (request.name[:110] + ' · 重试')
-    return create(request, verification=previous['request'].get('verification'), feedback=previous['request'].get('feedback'))
+    return create(request, database=database, verification=previous['request'].get('verification'), feedback=previous['request'].get('feedback'))
 
 
 class Worker:
@@ -179,7 +196,16 @@ class Worker:
         search = Search(request)
         best_id, completed = None, 0
         resource_identity = None
-        for ordinal in range(1, request.max_evaluations + 1):
+        inherited, frozen_resources = 0, None
+        if job['request'].get('continuation'):
+            from . import continuation
+            try:
+                search, summary, frozen_resources = continuation.prepare(identity, database=self.database)
+            except ConflictError as exc:
+                self.finish(identity, 'interrupted', str(exc)); return
+            inherited, completed = summary['inherited_attempts'], summary['successful_attempts']
+            best_id = job['best_id']
+        for ordinal in range(inherited + 1, request.max_evaluations + 1):
             current = get(identity, database=self.database, candidates=False)
             if self.stop.is_set():
                 self.finish(identity, 'interrupted', '服务已停止，保留已完成候选；可重新运行任务。'); return
@@ -193,8 +219,13 @@ class Worker:
                             '搜索已结束：未生成新的不重复候选。' + ('已有满足约束的候选。' if best_id else '没有找到满足全部约束的候选。')); return
             error, objective, calculation_id, violations = None, None, None, []
             try:
+                if frozen_resources:
+                    continuation.check_resources(request, frozen_resources)
                 extra = torque_refinement.options(request)
                 result = compute(parameters, wait=True, stop_event=self.stop, **extra)
+                if frozen_resources:
+                    continuation.check_resources(request, frozen_resources)
+                    continuation.check_result(result, parameters, frozen_resources)
                 fingerprint = tuple(result['provenance'].get(key) for key in
                                     ('kernel_sha256', 'wrapper_sha256', 'resource_package'))
                 if resource_identity is not None and fingerprint != resource_identity:
@@ -224,6 +255,8 @@ class Worker:
                 completed += 1
                 if improved:
                     best_id = calculation_id
+            except ConflictError as exc:
+                self.finish(identity, 'interrupted', str(exc)); return
             except (InputError, CalculationError, BusyError) as exc:
                 error = str(exc)[:2000]
                 violations = ['输入无效或数值核未完成此候选。']
