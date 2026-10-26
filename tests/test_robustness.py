@@ -33,7 +33,7 @@ def execute(worker,body):
     return jobs.get(job['id'])
 
 
-@pytest.mark.parametrize('algorithm',['stratified_v1','adaptive_poll_v1','hybrid_de_v1','coupled_poll_v1'])
+@pytest.mark.parametrize('algorithm',['stratified_v1','adaptive_poll_v1','hybrid_de_v1','coupled_poll_v1','ranked_poll_v1'])
 def test_robust_ranking_uses_worst_samples_and_counts_every_attempt(robust_worker,robust_body,algorithm):
     worker,calls=robust_worker
     job=execute(worker,{**robust_body,'algorithm':algorithm})

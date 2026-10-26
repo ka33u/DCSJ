@@ -50,7 +50,7 @@ def test_budget_bounds_feasibility_and_snapshot_link(worker, request_body):
     assert best['values']['ATA1'] == .95
 
 
-@pytest.mark.parametrize('algorithm', ['stratified_v1','hybrid_de_v1','adaptive_poll_v1','coupled_poll_v1'])
+@pytest.mark.parametrize('algorithm', ['stratified_v1','hybrid_de_v1','adaptive_poll_v1','coupled_poll_v1','ranked_poll_v1'])
 def test_explicit_sizes_exhaust_real_nominal_grid_preserving_legacy_baseline(request_body, algorithm):
     p = {**request_body['parameters'], 'Djj':manufacturing.single(.8), 'hr0':.5}
     req = optimization.SearchInput.model_validate({**request_body,'parameters':p,'algorithm':algorithm,
@@ -76,7 +76,7 @@ def test_explicit_sizes_exhaust_real_nominal_grid_preserving_legacy_baseline(req
     assert runs[0]==runs[1]
 
 
-@pytest.mark.parametrize('algorithm', ['stratified_v1','hybrid_de_v1','adaptive_poll_v1','coupled_poll_v1'])
+@pytest.mark.parametrize('algorithm', ['stratified_v1','hybrid_de_v1','adaptive_poll_v1','coupled_poll_v1','ranked_poll_v1'])
 def test_specifications_with_continuous_dimension_and_outside_reference(request_body,algorithm):
     req=optimization.SearchInput.model_validate({**request_body,'algorithm':algorithm,'max_evaluations':32,
         'variables':[{'key':'L','minimum':140,'maximum':190}, {'key':'Djj','values':[.71,.8,1.06]}]})
@@ -134,7 +134,7 @@ def test_manufacturing_snapshot_is_preserved_in_jobs_and_reports(worker,request_
     assert '寻优规格与尺寸联动' in reports.render(best)
 
 
-@pytest.mark.parametrize('algorithm', ['stratified_v1','hybrid_de_v1','adaptive_poll_v1','coupled_poll_v1'])
+@pytest.mark.parametrize('algorithm', ['stratified_v1','hybrid_de_v1','adaptive_poll_v1','coupled_poll_v1','ranked_poll_v1'])
 def test_numeric_specs_integer_choices_and_material_categories_mix(request_body,monkeypatch,algorithm):
     monkeypatch.setattr(optimization,'allowed_material',lambda x:x in {'A','B'})
     req=optimization.SearchInput.model_validate({**request_body,'algorithm':algorithm,'max_evaluations':16,
@@ -402,7 +402,7 @@ def test_adaptive_poll_survives_failed_evaluations_and_preserves_mixed_domains(r
     assert len({tuple(p[v.key] for v in req.variables) for p in seen})==32
 
 
-@pytest.mark.parametrize('algorithm',['adaptive_poll_v1','coupled_poll_v1'])
+@pytest.mark.parametrize('algorithm',['adaptive_poll_v1','coupled_poll_v1','ranked_poll_v1'])
 def test_adaptive_poll_worker_budget_and_snapshot_integration(worker,request_body,algorithm):
     request=optimization.SearchInput.model_validate({**request_body,'algorithm':algorithm,'max_evaluations':4})
     job=jobs.create(request);worker.run_job(worker.claim());result=jobs.get(job['id'])

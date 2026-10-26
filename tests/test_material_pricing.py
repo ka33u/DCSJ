@@ -32,7 +32,7 @@ def test_baseline_and_unused_frozen_quote_entries_survive_revalidation(priced):
         opt.SearchInput.model_validate({**priced,'variables':[{'key':'L','minimum':150,'maximum':170}]})
 
 
-@pytest.mark.parametrize('algorithm',['stratified_v1','adaptive_poll_v1','coupled_poll_v1','hybrid_de_v1'])
+@pytest.mark.parametrize('algorithm',['stratified_v1','adaptive_poll_v1','coupled_poll_v1','hybrid_de_v1','ranked_poll_v1'])
 def test_each_algorithm_derives_only_the_selected_material_price(priced,algorithm):
     req=opt.SearchInput.model_validate({**priced,'algorithm':algorithm});s=opt.Search(req);seen=[]
     while (p:=s.candidate()) is not None:

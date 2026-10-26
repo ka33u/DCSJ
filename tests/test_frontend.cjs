@@ -886,7 +886,7 @@ test('multiobjective search submits independent goals and renders only feasible 
   assert.equal(ui.doc.querySelector('#current-design').textContent,'折中候选A');
 });
 
-for (const method of ['adaptive_poll_v1','coupled_poll_v1']) test(`${method} selected in the UI reaches the queued request`,async t=>{
+for (const method of ['adaptive_poll_v1','coupled_poll_v1','ranked_poll_v1']) test(`${method} selected in the UI reaches the queued request`,async t=>{
   let submitted;const job={id:'adaptive',name:'近邻验证',status:'succeeded',budget:24,evaluated:0,candidates:[],request:{objective:'efficiency',algorithm:method,variables:[],parameters}};
   const ui=await app(t,(path,request)=>{
     if(path==='/example')return {parameters:{...parameters,L:100},name:'基准'};
@@ -901,6 +901,7 @@ for (const method of ['adaptive_poll_v1','coupled_poll_v1']) test(`${method} sel
   ui.doc.querySelector('#optimization-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await settle();
   assert.equal(submitted.algorithm,method);assert.equal(submitted.parameters.L,100);
   assert.equal(submitted.max_evaluations,24);assert.equal(submitted.secondary_objective,null);
+  if(method==='ranked_poll_v1')assert.match(ui.doc.querySelector('#optimization-detail').textContent,/双目标优先探索可能改善折中的方案/);
 });
 
 test('material quotations preserve edits, require complete prices and freeze the displayed request',async t=>{
