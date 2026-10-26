@@ -499,3 +499,13 @@ API `POST /api/v1/optimization/jobs` 新增可选的 `material_prices` 对象，
 预测只改变候选顺序，不作为计算成绩，也不增加预算或发现改善后提前跳过余下候选。每次实际计算和失败都计入原预算。材料只使用对应牌号的已算邻点，不对类别或价格作数值插值；指定线径、整数、制造步长与气隙联动继续按原规则处理。设置公差时使用原自适应邻域方法，完整遍历的小型离散区域也保持原行为。默认仍为 `stratified_v1`，历史任务重跑保留其原方法。
 
 研究参考 [NOMAD 的候选排序说明](https://nomad-4-user-guide.readthedocs.io/en/latest/AdvancedFunctionalities.html)和[多目标黑箱搜索研究](https://optimization-online.org/wp-content/uploads/2025/04/Dmulti_MADS_search_strategies.pdf)。这里的局部加性预测与候选排序属于独立启发式，不是完整 NOMAD、DMulti-MADS 或贝叶斯优化实现，也不继承这些方法的性能或收敛保证。可用相同型号、约束、材料报价、预算及随机种子与其他方法比较。
+
+## 0.26.0：曲率补救排序（试验）
+
+自动寻优增加可选算法 `curvature_rescue_v1`。当原线性预测认为候选不满足约束时，尝试利用已经计算的中心与两个单变量邻点估计局部曲率；只有曲率预测满足全部约束时才据此调整顺序。原线性预测已经合格的候选保留原预测。它能探索约束边界附近可能被线性预测遗漏的方案，但额外探索也可能延后其他有价值的候选，因此不同预算下可能优于或逊于 `ranked_poll_v1`，不能视为普遍替代。
+
+每个数值方向仅在已测范围内使用三点插值，检查单精度下的重复坐标，并限制插值权重的放大量；该限制不是置信区间。材料仍按精确牌号匹配，缺少支撑点或数值无效时沿用原预测。预测只决定原有候选的先后次序，不增加计算预算，不替代实际结果，也不放宽最终约束。第一轮、公差情景与完整离散遍历沿用原行为。
+
+在 `POST /api/v1/optimization/jobs` 请求中选择 `"algorithm":"curvature_rescue_v1"`，其余变量、目标、约束和报价字段与原接口相同。方法标识随任务保存，重试仍使用原选择。默认算法仍为 `stratified_v1`，已有 `ranked_poll_v1` 的搜索顺序不变。无需数据库迁移或更新私有资源包。
+
+研究参考[异步机局部代理优化与真实模型复核研究](https://acris.aalto.fi/ws/portalfiles/portal/67161564/ELEC_Balasubramanian_etal_Application_of_Surrogate_Optimization_Energies_2021_finalpublishedversion.pdf)以及[代理模型方向与约束分歧研究](https://arxiv.org/pdf/2107.04360)。本方法采用局部三点插值进行排序，未复现论文中的聚类、有限元优化或不确定性概率模型；文献的性能和收敛结论不作为本软件的保证。

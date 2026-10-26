@@ -15,7 +15,8 @@ from .load_cycle import LoadStage
 SOLVER_SHA256 = hashlib.sha256(b''.join(Path(p).read_bytes() for p in
     (__file__, load_cycle.__file__, manufacturing.__file__, robustness.__file__,
      Path(__file__).with_name('robust_jobs.py'), Path(__file__).with_name('verification.py'),
-     Path(__file__).with_name('feedback.py'), Path(__file__).with_name('poll_ordering.py')))).hexdigest()
+     Path(__file__).with_name('feedback.py'), Path(__file__).with_name('poll_ordering.py'),
+     Path(__file__).with_name('curvature_ordering.py')))).hexdigest()
 
 
 def available_choices():
@@ -138,7 +139,7 @@ class SearchInput(BaseModel):
     tolerance_gap_mode: Literal['independent', 'fixed_neck_bottom'] = 'independent'
     tolerance_interior_samples: StrictInt = Field(default=0, ge=0, le=32)
     tolerance_sampling: Literal['centered_lhs_v1', 'nested_lhs_v1'] = 'nested_lhs_v1'
-    algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1', 'coupled_poll_v1', 'ranked_poll_v1'] = 'stratified_v1'
+    algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1', 'coupled_poll_v1', 'ranked_poll_v1', 'curvature_rescue_v1'] = 'stratified_v1'
     constraints: list[Constraint] = Field(default_factory=list, max_length=15)
     max_evaluations: int = Field(default=24, ge=2, le=128)
     seed: int = Field(default=42, ge=0, le=2**32-1)
@@ -224,8 +225,9 @@ def config():
                            {'id': 'adaptive_poll_v1', 'label': '自适应邻域搜索'},
                            {'id': 'coupled_poll_v1', 'label': '联合变量搜索（邻点筛选）'},
                            {'id': 'ranked_poll_v1', 'label': '邻域预测排序（兼顾折中）'},
+                           {'id': 'curvature_rescue_v1', 'label': '曲率补救排序（试验）'},
                            {'id': 'hybrid_de_v1', 'label': '混合差分进化（新方法）'}],
-            'method': '可选择分层采样、自适应邻域、联合变量搜索、邻域预测排序或混合差分进化。联合变量法在停滞后利用已算邻点筛选成对变化，再用真实计算确认；设置公差时沿用自适应邻域。预测排序利用已算邻点安排现有候选，双目标兼顾折中方案。各方法均保留可行折中方案，每个候选使用真实计算核。'}
+            'method': '可选择分层采样、自适应邻域、联合变量搜索、邻域预测排序、曲率补救排序或混合差分进化。联合变量法在停滞后利用已算邻点筛选成对变化，再用真实计算确认；设置公差时沿用自适应邻域。预测排序利用已算邻点安排现有候选，双目标兼顾折中方案。曲率补救是可选试验方法，探索约束边界附近可能被线性预测遗漏的候选，不保证在所有预算下更好。各方法均保留可行折中方案，每个候选使用真实计算核。'}
 
 
 def metrics(result, request=None, *, cycle=None):
@@ -565,6 +567,9 @@ class HybridSearch(StratifiedSearch):
 
 
 def Search(request):
+    if request.algorithm == 'curvature_rescue_v1':
+        from .curvature_ordering import CurvatureRescueSearch
+        return CurvatureRescueSearch(request)
     if request.algorithm == 'ranked_poll_v1':
         from .poll_ordering import RankedPollSearch
         return RankedPollSearch(request)
