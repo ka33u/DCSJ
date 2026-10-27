@@ -368,6 +368,13 @@ test('an optimization candidate reuses the saved snapshot for comparison and con
   assert.match(ui.doc.querySelector('#comparison-result').textContent, /Δ 0\.01/);
   assert.match(ui.doc.querySelector('#comparison-result').textContent, /长度/);
   assert.equal(ui.doc.querySelectorAll('#comparison-result a[href$="/report.pdf"]').length, 2);
+  for (const id of ['a','b']) {
+    const modern=ui.doc.querySelector(`#comparison-result a[href="/reports/${id}"]`);
+    const legacy=ui.doc.querySelector(`#comparison-result a[href="/reports/${id}?layout=legacy"]`);
+    assert.equal(modern.textContent,'新版打印 ↗');
+    assert.equal(legacy.textContent,'旧版打印 ↗');
+    assert.equal(legacy.target,'_blank');
+  }
   ui.nav('optimization'); await settle();
   ui.find('#optimization-detail button', '打开最佳候选').click();
   await until(() => ui.doc.querySelector('#current-design').textContent === '最佳候选', 'Candidate loads in workbench');
@@ -680,9 +687,13 @@ test('TX computes its own parameter contract and renders immutable results, harm
   assert.equal(a.doc.querySelectorAll('#harmonic-table tbody tr').length,6);
   assert.equal(a.doc.querySelectorAll('#coil-diagram svg').length,1);
   assert.equal(a.doc.querySelector('#report-link').getAttribute('href'),'/tx/reports/synthetic-snapshot');
+  assert.equal(a.doc.querySelector('#report-link').textContent,'新版打印 ↗');
+  assert.equal(a.doc.querySelector('#legacy-report-link').getAttribute('href'),'/tx/reports/synthetic-snapshot?layout=legacy');
+  assert.equal(a.doc.querySelector('#legacy-report-link').textContent,'旧版打印 ↗');
   const n=a.doc.querySelector('[name="NDXP(1)"]');n.value='9';n.dispatchEvent(new a.w.Event('input',{bubbles:true}));
   assert.match(a.doc.querySelector('#result-status').textContent,/参数已修改/);
   assert.equal(a.doc.querySelector('#report-link').getAttribute('href'),'/tx/reports/synthetic-snapshot');
+  assert.equal(a.doc.querySelector('#legacy-report-link').getAttribute('href'),'/tx/reports/synthetic-snapshot?layout=legacy');
 });
 
 test('TX saves revisions with optimistic guards and creates a separate copy',async t=>{

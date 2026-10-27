@@ -985,12 +985,18 @@
   }
   function reportLink(id, comparison = false) {
     const links = el("span", "report-links");
-    const link = el("a", "button button-small", "网页打印 ↗");
+    const link = el("a", "button button-small", comparison ? "网页打印 ↗" : "新版打印 ↗");
     link.href = `/${comparison ? "comparison-reports" : "reports"}/${encodeURIComponent(id)}`;
     link.target = "_blank"; link.rel = "noopener";
     links.append(link);
+    if (!comparison) {
+      const legacy = el("a", "button button-small", "旧版打印 ↗");
+      legacy.href = `/reports/${encodeURIComponent(id)}?layout=legacy`;
+      legacy.target = "_blank"; legacy.rel = "noopener";
+      links.append(legacy);
+    }
     if (state.status?.reports?.pdf?.available) {
-      const pdf = el("a", "button button-small", "下载 PDF");
+      const pdf = el("a", "button button-small", comparison ? "下载 PDF" : "新版 PDF");
       pdf.href = `/api/v1/${comparison ? "comparison-sets" : "calculations"}/${encodeURIComponent(id)}/report.pdf`;
       links.append(pdf);
     }

@@ -1,6 +1,6 @@
 """Versioned API and standalone frontend for TX concentric windings."""
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Literal
 from . import tx, slots, auth
@@ -89,7 +89,21 @@ def calculation(identity:str):return tx.calculation(identity)
 
 
 @router.get('/tx/reports/{identity}',response_class=HTMLResponse,include_in_schema=False)
-def calculation_report(identity:str):return report(tx.calculation(identity))
+def calculation_report(identity:str,layout:Literal['modern','legacy']='modern'):
+    saved=tx.calculation(identity)
+    if layout=='legacy':
+        from .legacy_report import render_html
+        html=render_html(saved,tx=True)
+    else:html=report(saved)
+    return HTMLResponse(html,headers={'Cache-Control':'no-store'})
+
+
+@router.get('/api/v1/tx/calculations/{identity}/report.pdf')
+def legacy_pdf(identity:str,layout:Literal['legacy']='legacy'):
+    from .legacy_report import render_pdf
+    saved=tx.calculation(identity)
+    return Response(render_pdf(saved,tx=True),media_type='application/pdf',headers={
+        'Cache-Control':'no-store','Content-Disposition':f'attachment; filename="TX-{saved["id"]}-legacy.pdf"'})
 
 
 @router.get('/api/v1/tx/designs')

@@ -293,6 +293,10 @@ async def pdf_unavailable_error(request, error):
     identity = request.path_params
     fallback = ('/reports/' + identity['calculation_id']) if 'calculation_id' in identity else (
         '/comparison-reports/' + identity['comparison_id'] if 'comparison_id' in identity else None)
+    if 'identity' in identity and request.url.path.startswith('/api/v1/tx/calculations/'):
+        fallback = '/tx/reports/' + identity['identity'] + '?layout=legacy'
+    elif fallback and request.query_params.get('layout') == 'legacy':
+        fallback += '?layout=legacy'
     return JSONResponse({'detail': str(error), 'code': 'PDF_FONT_UNAVAILABLE', 'retryable': False,
                          'setup': 'python scripts/install_pdf_font.py', 'html_report_url': fallback},
                         status_code=503, headers={'Content-Location': fallback} if fallback else {})
@@ -606,18 +610,22 @@ def delete_calculation(calculation_id: str):
 @app.get("/api/v1/calculations/{calculation_id}/report.pdf", response_class=Response,
          responses=PDF_RESPONSES,
          tags=["打印报告"])
-def download_report(calculation_id: str):
+def download_report(calculation_id: str, layout: Literal['modern', 'legacy'] = 'modern'):
     from .pdf_report import render
     snapshot = calculations.get(calculation_id)
+    if layout == 'legacy':
+        from .legacy_report import render_pdf as render
     return Response(render(snapshot), media_type="application/pdf", headers={
-        "Content-Disposition": f'attachment; filename="DCSJ-{snapshot["calculation_id"]}.pdf"',
+        "Content-Disposition": f'attachment; filename="DCSJ-{snapshot["calculation_id"]}{"-legacy" if layout == "legacy" else ""}.pdf"',
         "Cache-Control": "no-store",
     })
 
 
 @app.get("/reports/{calculation_id}", response_class=HTMLResponse, tags=["打印报告"])
-def calculation_report(calculation_id: str):
+def calculation_report(calculation_id: str, layout: Literal['modern', 'legacy'] = 'modern'):
     from .reports import render
+    if layout == 'legacy':
+        from .legacy_report import render_html as render
     return HTMLResponse(render(calculations.get(calculation_id)), headers={"Cache-Control": "no-store"})
 
 

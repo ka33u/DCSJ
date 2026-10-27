@@ -81,6 +81,7 @@ th,td{padding:6px;border:1px solid #d8e2e6;text-align:left;vertical-align:top;ov
 figure{margin:10px 0;break-inside:avoid}svg{width:100%;height:auto;font:10px sans-serif}figcaption{font-weight:600}
 .toolbar{position:sticky;top:0;background:#17323f;color:white;padding:12px;text-align:center;z-index:1}
 button{padding:8px 20px;border:0;border-radius:5px;cursor:pointer}code{overflow-wrap:anywhere;font-size:10px}
+.toolbar .print-choice{display:inline-block;padding:8px 20px;background:white;color:#17323f;border-radius:5px;text-decoration:none;margin-left:6px}
 .fingerprints{font-size:10px}.fingerprints p{margin:3px 0}.break{break-before:page}
 .summary header{padding-bottom:7px}.summary h1{font-size:22px;margin:3px 0}
 .summary .tag{font-size:9px}.summary p{margin:4px 0}.summary h2{font-size:13px;margin:10px 0 4px;padding-bottom:3px}
@@ -104,7 +105,7 @@ def render(snapshot):
     p, v = snapshot['inputs'], snapshot['values']
     title = snapshot['name']
     pdf_link = (f'<a href="/api/v1/calculations/{escape(snapshot["calculation_id"])}/report.pdf" '
-                'style="color:white;margin-left:18px">下载 PDF</a>') if pdf_status()['available'] else ''
+                'style="color:white;margin-left:18px">下载新版 PDF</a>') if pdf_status()['available'] else ''
     nominal = '（名义尺寸）' if snapshot.get('optimization', {}).get('robustness') else ''
     content = [f'<section class="summary"><header><span class="tag">DCSJ / 电磁设计计算报告{nominal}</span><h1>{text(title)}</h1>',
                f'<small>计算时间（北京时间）：{text(summary.local_time(snapshot["created_at"]))}　',
@@ -169,5 +170,6 @@ def render(snapshot):
     content.append('</div><p class="muted">本报告读取保存的输入和结果，不使用工作台中后来修改的参数。</p>')
     return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' + \
         '<title>' + text(title) + ' · DCSJ 报告</title><style>' + STYLE + '</style></head><body>' + \
-        '<div class="toolbar"><button type="button" onclick="window.print()">网页打印</button>' + pdf_link + '　A4 · 建议关闭浏览器默认页眉页脚</div>' + \
+        '<div class="toolbar"><button type="button" onclick="window.print()">新版打印</button> ' + \
+        f'<a class="print-choice" href="/reports/{escape(snapshot["calculation_id"], quote=True)}?layout=legacy">旧版打印</a>' + pdf_link + '　A4 · 建议关闭浏览器默认页眉页脚</div>' + \
         '<main>' + ''.join(content) + '</main></body></html>'
