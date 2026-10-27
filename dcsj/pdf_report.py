@@ -105,7 +105,10 @@ class Slot(Flowable):
         for item in panel['texts']:
             c.setFont(self.font, item.get('size', 6.5))
             draw = {'start': c.drawString, 'middle': c.drawCentredString, 'end': c.drawRightString}[item.get('anchor', 'start')]
-            draw(item['x'], self.height-item['y'], item['text'])
+            c.saveState()
+            c.translate(item['x'], self.height-item['y']); c.rotate(-item.get('rotate', 0))
+            draw(0, 0, item['text'])
+            c.restoreState()
         c.restoreState()
 
 

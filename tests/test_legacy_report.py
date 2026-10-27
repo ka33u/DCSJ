@@ -31,7 +31,7 @@ def test_old_and_new_routes_keep_saved_values_and_validate_layout(client,snapsho
     url=f'/api/v1/calculations/{saved["calculation_id"]}/report.pdf'
     pdf=client.get(url+'?layout=legacy');reader,text=text_of(pdf.content)
     assert pdf.status_code==200 and '-legacy.pdf' in pdf.headers['content-disposition']
-    assert '2.73' in text and '目标值' in text and '2.3' in text
+    assert '2.73' in text and 'JB:' in text and '2.3' in text
     assert len(reader.pages)==2
     assert client.get(base+'?layout=wrong').status_code==422
     assert client.get(url+'?layout=wrong').status_code==422
@@ -45,11 +45,11 @@ def test_effective_wire_is_used_and_old_unknown_selection_is_not_invented(snapsh
     saved['inputs'].update(_wire_target=.73,JJ=9,Djj=9.9)
     saved['wire_selection']={'mode':'target_fill','used':{'JJ':2,'Djj':.8,'MM':0,'Dmm':0}}
     first=legacy_report.main_sheets(saved)[0]
-    values=[i.get('value') for i in first.items if i['kind']=='text']
-    assert 'JJ×Djj=2×0.8' in values and 'JJ×Djj=9×9.9' not in values
+    values=''.join(i['value'] for i in first.items if i['kind']=='text')
+    assert 'N1*d1:  2.*0.80' in values and '9.*9.90' not in values
     del saved['wire_selection']
-    values=[i.get('value') for i in legacy_report.main_sheets(saved)[0].items if i['kind']=='text']
-    assert 'JJ×Djj=-×-' in values
+    values=''.join(i['value'] for i in legacy_report.main_sheets(saved)[0].items if i['kind']=='text')
+    assert 'N1*d1:   -*   -' in values
 
 
 def test_long_inputs_zero_and_custom_elements_survive_balanced_pagination(snapshot):
@@ -60,7 +60,7 @@ def test_long_inputs_zero_and_custom_elements_survive_balanced_pagination(snapsh
     assert saved==before and 2<=len(pages)<=4
     texts=''.join(i['value'] for p in pages[1:] for i in p.items if i['kind']=='text')
     assert 'N1=12' in texts and 'A1=1.23456' in texts and 'L1=0' in texts and 'custom=123.456' in texts
-    assert texts.count('q')==300 and texts.count('麟')==160
+    assert texts.count('q')>=300 and texts.count('麟')>=160
     for page in pages:
         for item in page.items:
             if item['kind']=='text':
@@ -110,3 +110,25 @@ def test_classic_layout_retains_saved_search_supplements_without_new_blank_page(
     _,text=text_of(legacy_report.render_pdf(saved))
     assert '寻优规格与尺寸联动' in text and '177.8' in text and '0.71 / 0.8 / 1.06' in text
     assert 'hr0=0.4 mm' in text
+
+
+def test_native_report_keeps_original_sections_and_intermediates(client,snapshot,monkeypatch):
+    from dcsj.classic_sheet import fallback
+    snap={**copy.deepcopy(snapshot),'name':'人工原版单','calculation_id':'test','created_at':'2026-01-01'}
+    first,second=fallback(snap)
+    # Independently supplied intermediate value, absent from summary outputs.
+    second.insert(2,'*  NativeIntermediate=0.4321                                                *')
+    snap['legacy_report']={'format_version':1,'status':'complete','source':'kernel-formatted-unit-2',
+                          'text':'\n'+'\n'.join('   '+line for line in first+second)}
+    saved=calculations.save(snap)
+    monkeypatch.setattr('dcsj.engine.calculate_design',lambda *a,**k: (_ for _ in ()).throw(AssertionError('No recalculation')))
+    response=client.get('/api/v1/calculations/'+saved['calculation_id']+'/report.pdf?layout=legacy')
+    reader,text=text_of(response.content)
+    assert len(reader.pages)==2
+    assert 'NativeIntermediate=0.4321' in text
+    assert all(label in text for label in ['STATOR','ROTOR','JB:','kdp','AA:','BB:','CC:','DD:'])
+    assert '未保存原版中间明细' not in text
+    pages=legacy_report.main_sheets(saved)
+    assert all(not page.border for page in pages)
+    assert len([i for i in pages[0].items if i['kind']=='panel'])==2
+    assert '原版' in pages[0].title

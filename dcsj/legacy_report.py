@@ -12,8 +12,7 @@ from itertools import groupby
 
 from . import report_summary as summary
 from .kernel_layout import OUTPUT_MAP
-from .parameters import GROUP_KEYS, ELEMENT_KEYS
-from .slot_diagrams import slot_drawings
+from .parameters import ELEMENT_KEYS
 from .wire_selection import recorded
 
 WIDTH, HEIGHT = 540, 790
@@ -48,6 +47,7 @@ def wrap(value, limit):
 class Sheet:
     def __init__(self, title):
         self.title, self.items = title, []
+        self.border = True
 
     def text(self, x, y, value, size=10, anchor='start', width=None):
         value = plain(value)
@@ -105,93 +105,6 @@ def field(data, key, label=None):
     return f'{label or key}={plain(data.get(key))}'
 
 
-def classic_first(snapshot):
-    p,v = snapshot['inputs'],snapshot['values']
-    used = recorded(snapshot)['used'] or {}
-    page = Sheet('电磁设计计算单')
-    title='电 磁 设 计 计 算 单'+('（名义尺寸）' if snapshot.get('optimization',{}).get('robustness') else '')
-    page.text(WIDTH/2,19,title,13,'middle')
-    page.text(WIDTH/2,37,p.get('SizeX',snapshot['name']),11,'middle',510)
-    page.rule(44)
-    for index,panel in enumerate(slot_drawings(p)):
-        page.panel(panel,33,48+155*index,.91)
-    page.panel(winding_panel(),273,51,.94)
-    page.rule(360)
-    d2=p['Di1']-2*p['g'] if summary.finite(p.get('Di1')) and summary.finite(p.get('g')) else None
-    geom={**p,'D2':d2}
-    # Four compact columns follow the original stator / rotor / winding layout.
-    columns=[
-        [field(geom,k) for k in ('Q1','D1','Di1','L','L01','b01','bs1','bs2','hs0','hs12','zs1','hw','Si','Wi','czn','kfe')],
-        [field(geom,k,l) for k,l in [('Q2','Q2'),('D2','D2'),('Di2','Di2'),('g','g'),('L02','L02'),('bc02','b02'),('br1','br1'),('br2','br2'),('br3','br3'),('br4','br4'),('hr0','hr0'),('hr12','hr12'),('hr3','hr3'),('hr4','hr4'),('zs2','zs2'),('zc','Zc')]],
-        [field(p,k) for k in ('Ufai','a','ZZ','Y1')] +
-        [f'JJ×Djj={plain(used.get("JJ"))}×{plain(used.get("Djj"))}',f'MM×Dmm={plain(used.get("MM"))}×{plain(used.get("Dmm"))}']+
-        [field(v,k) for k in ('S1','Lz','R1a','J1','Sf','Gcu','Gfe','Gal','CostFx','Ty')],
-        [field(v,k) for k in ('fd','Dr','hc1','hc2','bt1a','Bt1mi','bt2mi','btrmu','btrml','bsm','brm')]+
-        [field(p,k) for k in ('d','sk','Srr')]+[field(v,k) for k in ('J2','Jr')]]
-    page.text(12,374,'STATOR',9);page.text(142,374,'ROTOR',9)
-    page.text(272,374,'WINDING',9);page.text(402,374,'DIMENSIONS',9)
-    for col,items in enumerate(columns):
-        for row,value in enumerate(items):page.text(12+130*col,388+11.8*row,value,9.5,width=124)
-    page.rule(575)
-    page.text(12,589,'磁路',10)
-    for x,label in ((105,'定子齿'),(210,'定子轭'),(315,'转子齿'),(420,'转子轭')):page.text(x,589,label,9)
-    for x,k in ((105,'Bts'),(210,'Bys'),(315,'Btru'),(420,'Byr')):page.text(x,606,field(v,k),9.4,width=102)
-    page.text(12,606,'B / G',9)
-    for x,k in ((12,'Bg'),(142,'Btrl'),(272,'Im'),(402,'I1')):page.text(x,623,field(v,k),9.4,width=124)
-    page.rule(634)
-    headings=('Eff','Pf','Tm','Tst','Ist','AJ','Sn')
-    keys=('ATA1','PF1','TM1','TST1','IST1','Aj','Sn')
-    targets=('ATA','PF','TM','TST','IST',None,None)
-    for i,label in enumerate(headings):page.text(103+i*62,648,label,9.5,'middle')
-    page.text(12,665,'计算值',9.5);page.text(12,682,'目标值',9.5)
-    for i,key in enumerate(keys):page.text(103+i*62,665,plain(v.get(key)),9.5,'middle',59)
-    for i,key in enumerate(targets):page.text(103+i*62,682,plain(p.get(key)) if key else '-',9.5,'middle',59)
-    page.rule(692)
-    page.text(12,706,f'功率 {plain(p.get("kW"))} kW   极数 {plain(p.get("p"))}   接法 {plain(p.get("Jiefa"))}   相电压 {plain(p.get("Ufai"))} V   频率 {plain(p.get("f"))} Hz',9.5,width=516)
-    page.text(12,721,f'材料 {plain(p.get("Paihao"))}   绝缘 {plain(p.get("Jueyuan"))}   n={plain(v.get("n"))} r/min',9.5,width=516)
-    for i,side in enumerate(('stator','rotor')):
-        item=next((r for r in snapshot.get('slots',{}).get('entries',[]) if r['side']==side),None)
-        label='定子' if side=='stator' else '转子'
-        value=(f'{label}槽型 {item["name"]} / {item.get("drawing") or "-"}   面积 {plain(item["area"].get("value_mm2"))} mm²') if item else f'{label}槽型：按本次输入尺寸'
-        page.text(12,736+i*14,value,8.5,width=516)
-    displayed={'S1','Lz','R1a','J1','Sf','Gcu','Gfe','Gal','CostFx','Ty','fd','Dr','hc1','hc2','bt1a','Bt1mi','bt2mi','btrmu','btrml','bsm','brm','J2','Jr','Bts','Bys','Btru','Byr','Bg','Btrl','Im','I1','n',*keys}
-    return page,displayed
-
-
-def cell_rows(items, columns=4):
-    result=[];cell_width=516/columns;size=9.8
-    for start in range(0,len(items),columns):
-        wrapped=[wrap(item,(cell_width-9)/(.6*size)) for item in items[start:start+columns]]
-        for line in range(max(map(len,wrapped))):
-            result.append(('cells',[column[line] if line<len(column) else '' for column in wrapped]))
-    return result
-
-
-def detail_sheets(snapshot, displayed):
-    p,v=snapshot['inputs'],snapshot['values']
-    rows=[('heading','计算明细 · 电流、电阻、电抗与损耗')]
-    keys=[k for k in OUTPUT_MAP if k in v and k not in displayed]+[k for k in v if k not in OUTPUT_MAP]
-    rows+=cell_rows([field(v,k) for k in keys])
-    rows += [('heading','输入参数 · 保存时的原始数值')]
-    # Complete saved inputs, including custom slot elements when actually used.
-    consumed=set()
-    for group,label in [('rating','AA · 额定条件与目标'),('geometry','BB · 铁心尺寸'),('stator','CC · 定子槽'),('rotor','DD · 转子槽'),('winding','EE · 绕组输入'),('material','FF · 材料与损耗')]:
-        keys=[k for k in GROUP_KEYS[group].split() if k in p]
-        consumed.update(keys)
-        rows.append(('heading',label));rows+=cell_rows([field(p,k) for k in keys])
-    has_elements=any(p.get(k) not in (0,None) for k in ELEMENT_KEYS)
-    remaining=[k for k in p if k not in consumed and (k not in ELEMENT_KEYS or has_elements)]
-    if remaining:rows.append(('heading','GG · 槽形元素与计算选项'));rows+=cell_rows([field(p,k) for k in remaining])
-    if not has_elements:rows.append(('cells',['自定义槽形元素 N/A/B/L：全部为 0 或未设置']))
-    if recorded(snapshot)['mode']=='target_fill':
-        rows.append(('heading','线规：EE 保留输入值，首页 JJ×Djj / MM×Dmm 使用已记录的实际线规'))
-    if snapshot.get('slots',{}).get('entries'):
-        rows.append(('heading','槽型记录 · 本次单槽面积 / 图纸参考面积 mm²'))
-        for slot in summary.slot_rows(snapshot):
-            rows+=cell_rows([f'{slot[0]} {slot[1]}',f'图号 {slot[2]}',f'{slot[3]}',f'{slot[4]} / {slot[5]}'])
-    rows+=supplemental_rows(snapshot)
-    return paginate(rows,'电磁计算明细',snapshot['name'])
-
 
 def supplemental_rows(snapshot):
     """Retain newer saved search/verification semantics after the classic sheets."""
@@ -229,28 +142,89 @@ def supplemental_rows(snapshot):
     return rows
 
 
-def paginate(rows,title,name):
-    # Balance sheets instead of leaving a small tail on an almost empty page.
-    count=max(1,math.ceil(len(rows)/56));per_page=math.ceil(len(rows)/count)
-    sheets=[]
-    for start in range(0,len(rows),per_page):
-        chunk=rows[start:start+per_page];page=Sheet(title)
-        page.text(270,20,title,13,'middle');page.text(270,38,name,9.8,'middle',510);page.rule(45)
-        step=700/max(1,len(chunk))
-        for index,(kind,value) in enumerate(chunk):
-            y=60+index*step
-            if kind=='heading':
-                page.rule(y-10);page.text(12,y+2,value,9.8,width=516)
-            else:
-                for col,cell in enumerate(value):page.text(12+129*col,y+2,cell,9.8,width=123 if len(value)>1 else 516)
-        sheets.append(page)
-    return sheets
+def _classic_text(page, text, y, size):
+    from .classic_sheet import byte_width
+    # Chinese occupies two original report cells, ASCII one. Separate runs keep
+    # all numeric columns aligned in both SVG and embedded-font PDF output.
+    cell=size*.6;x=(WIDTH-76*cell)/2
+    for ascii_run,chars in groupby(text,key=lambda ch:ord(ch)<128):
+        run=''.join(chars);page.text(x,y,run,size)
+        item=page.items[-1];item['width']=byte_width(run)*cell
+        item['advance_scale']=1 if ascii_run else 1.2
+        x+=item['width']
+
+
+def _classic_wrap(text, width=74):
+    from .classic_sheet import byte_width
+    lines=[];current=''
+    for ch in plain(text).expandtabs(4):
+        if ch=='\n':
+            lines.append(current);current='';continue
+        if byte_width(current+ch)>width:
+            lines.append(current);current=''
+        current+=ch
+    return lines+[current]
 
 
 def main_sheets(snapshot):
-    first,displayed=classic_first(snapshot)
-    pages=[first,*detail_sheets(snapshot,displayed)]
-    for index,page in enumerate(pages,1):page.footer(snapshot['calculation_id'],index,len(pages))
+    from .classic_sheet import native_pages, material_line, byte_width, frame
+    from .classic_drawing import combined_slots
+    (first,second),complete=native_pages(snapshot)
+    extra=[]
+    for side in snapshot.get('slots',{}).get('entries',[]):
+        extra.extend(_classic_wrap(f'{"定子" if side["side"]=="stator" else "转子"}槽型：{side["name"]} / {side.get("drawing") or "-"}；槽面积 {plain(side["area"].get("value_mm2"))} mm2'))
+    if not complete:extra.append('历史记录未保存原版中间明细，未记录项以 - 表示；重新计算可补齐。')
+    for key in ('SizeX','Paihao'):
+        if byte_width(str(snapshot['inputs'].get(key,'')))>(12 if key=='SizeX' else 9):
+            extra.extend(_classic_wrap(key+'='+str(snapshot['inputs'][key])))
+    if any(snapshot['inputs'].get(key) not in (0,None) for key in ELEMENT_KEYS):
+        extra.append('自定义槽形元素（本次输入）')
+        extra.extend('  '.join(field(snapshot['inputs'],key) for key in ELEMENT_KEYS[i:i+4]) for i in range(0,len(ELEMENT_KEYS),4))
+    if recorded(snapshot)['mode']=='target_fill':
+        extra.extend(_classic_wrap('自动选线目标 Sf='+plain(snapshot['inputs'].get('_wire_target'))+'；原输入线规 '+
+            ' / '.join(f'{plain(snapshot["inputs"].get(a))}×{plain(snapshot["inputs"].get(b))}' for a,b in [('JJ','Djj'),('MM','Dmm')])+'；CC 为实际采用线规。'))
+    for key,resolved in snapshot.get('loss_semantics',{}).items():
+        if resolved.get('mode')!='legacy' or resolved.get('speed_scaling',{}).get('enabled'):
+            extra.extend(_classic_wrap(f'原输入 {key}={plain(resolved.get("input"))} {resolved.get("resolved_unit","")}；BB 核内比例={plain(resolved.get("kernel_pu"))}'))
+    for key in snapshot['values']:
+        if key not in OUTPUT_MAP:extra.extend(_classic_wrap(field(snapshot['values'],key)))
+    for kind,row in supplemental_rows(snapshot):
+        extra.extend(_classic_wrap(row if kind=='heading' else '  '.join(row)))
+    second=second+['']+extra if extra else second
+    pages=[]
+    # Keep the original second sheet intact; balance only additional sheets.
+    remaining=[second[:60]]
+    tail=second[60:]
+    if tail:
+        count=math.ceil(len(tail)/60);length=math.ceil(len(tail)/count)
+        remaining.extend(tail[i:i+length] for i in range(0,len(tail),length))
+    for number,lines in enumerate([first,*remaining]):
+        page=Sheet('电磁计算单 · 原版'+('（名义尺寸）' if snapshot.get('optimization',{}).get('robustness') else ''))
+        page.border=False
+        # Native first sheet has 21 drawing rows and 34 compact numeric rows.
+        # Fill each A4 page vertically; font width is stable across both pages.
+        size=11.2;step=min(15.2,742/max(1,len(lines)-1))
+        for index,line in enumerate(lines):
+            line=material_line(line,snapshot)
+            if line.startswith('*') and line.endswith('*') and line.strip('* .'):
+                inside=line[1:-1].rstrip()
+                # Long user identifiers are preserved in the continuation below.
+                if byte_width(inside)>74:inside=_classic_wrap(inside,71)[0]+'...'
+                line='*'+inside+' '*max(0,74-byte_width(inside))+'*'
+            _classic_text(page,line,18+index*step,size)
+        if number==0:
+            graphic_height=step*20.6
+            page.panel(combined_slots(snapshot['inputs']),15,24,graphic_height/300)
+            coils=winding_panel()
+            for item in coils['texts']:
+                if item['text']=='L':item['text']='LB'
+                if item['text']=='fd':item['text']='Fd'
+                if item['text']=='转子导条与端环':item['text']='转子线圈'
+            page.panel(coils,287,24,graphic_height/300)
+        pages.append(page)
+    for index,page in enumerate(pages,1):
+        page.text(12,781,'DCSJ · '+snapshot['calculation_id'],6.5,width=430)
+        page.text(528,781,f'{index} / {len(pages)}',8,'end')
     return pages
 
 
@@ -281,7 +255,7 @@ def panel_svg(panel):
 
 def sheet_svg(page):
     out=[f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-label="{escape(page.title,quote=True)}">',
-         '<rect x="4" y="4" width="532" height="782" fill="white" stroke="black" stroke-width=".55" stroke-dasharray="1 3"/>']
+         '<rect x="4" y="4" width="532" height="782" fill="white" stroke="'+('black' if page.border else 'none')+'" stroke-width=".55" stroke-dasharray="1 3"/>']
     for item in page.items:
         if item['kind']=='text':
             out.append(f'<text x="{item["x"]}" y="{item["y"]}" font-size="{item["size"]}" text-anchor="{item["anchor"]}"'+
@@ -300,6 +274,7 @@ def render_html(record, *, tx=False):
     base=('/tx/reports/' if tx else '/reports/')+identity
     pdf=('/api/v1/tx/calculations/' if tx else '/api/v1/calculations/')+identity+'/report.pdf?layout=legacy'
     pages=tx_sheets(record) if tx else main_sheets(record)
+    old_note='' if tx or record.get('legacy_report',{}).get('status')=='complete' else ' · 此历史记录未保存原版明细，重新计算可补齐'
     download=f'<a href="{escape(pdf,quote=True)}">下载旧版 PDF</a>' if status()['available'] else ''
     return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+\
         '<title>'+escape(record['name'])+' · 旧版打印</title><style>'+\
@@ -307,7 +282,7 @@ def render_html(record, *, tx=False):
         '@page{size:A4 portrait;margin:12mm}@media print{body{background:white}.toolbar{display:none}.sheet{margin:0 auto;break-after:page;break-inside:avoid}.sheet:last-child{break-after:auto}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}'+\
         '@media screen and (max-width:740px){.sheet{width:100%;height:auto;aspect-ratio:186/272}}'+\
         '</style></head><body><nav class="toolbar"><a href="'+escape(base,quote=True)+'">新版打印</a><button type="button" onclick="window.print()">旧版打印</button>'+download+\
-        '<small>A4 纵向 · 100% 比例 · 关闭浏览器页眉页脚</small></nav><main>'+''.join('<section class="sheet">'+sheet_svg(p)+'</section>' for p in pages)+'</main></body></html>'
+        '<small>A4 纵向 · 100% 比例 · 关闭浏览器页眉页脚'+old_note+'</small></nav><main>'+''.join('<section class="sheet">'+sheet_svg(p)+'</section>' for p in pages)+'</main></body></html>'
 
 
 def render_pdf(record, *, tx=False):
@@ -326,7 +301,8 @@ def render_pdf(record, *, tx=False):
         left=(A4[0]-WIDTH*scale)/2;bottom=(A4[1]-HEIGHT*scale)/2
         for page in pages:
             c.saveState();c.translate(left,bottom);c.scale(scale,scale)
-            c.setLineWidth(.55);c.setDash([1,3]);c.rect(4,4,532,782);c.setDash([])
+            if page.border:
+                c.setLineWidth(.55);c.setDash([1,3]);c.rect(4,4,532,782);c.setDash([])
             for item in page.items:
                 if item['kind']=='text':
                     x=item['x']-({'start':0,'middle':.5,'end':1}[item['anchor']])*item['width']
@@ -336,7 +312,7 @@ def render_pdf(record, *, tx=False):
                         for ch in run:
                             if not ascii_run and not ch.isspace() and not cmap.get(ord(ch)):
                                 raise PDFContentError(f'PDF 字体不支持字符 U+{ord(ch):04X}')
-                        advance=item['size']*len(run)*(.6 if ascii_run else 1)
+                        advance=item['size']*len(run)*(.6 if ascii_run else 1)*item.get('advance_scale',1)
                         actual=stringWidth(run,face,item['size'])
                         text.setTextOrigin(x,HEIGHT-item['y']);text.setFont(face,item['size'])
                         text.setHorizScale(100*advance/actual if actual else 100)

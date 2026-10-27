@@ -315,7 +315,8 @@ def svg(panel):
         if anchor not in ('start','middle','end'):
             raise ValueError('Invalid text anchor')
         parts.append('<text x="'+_coordinate(item['x'])+'" y="'+_coordinate(item['y'])+
-                     '" font-size="'+_coordinate(item.get('size',6.5))+'" text-anchor="'+anchor+'">'+
+                     '" font-size="'+_coordinate(item.get('size',6.5))+'" text-anchor="'+anchor+'"'+
+                     (' transform="rotate('+_coordinate(item['rotate'])+' '+_coordinate(item['x'])+' '+_coordinate(item['y'])+')"' if item.get('rotate') else '')+'>'+
                      escape(str(item['text']))+'</text>')
     parts.append('</g></svg>')
     return ''.join(parts)

@@ -15,6 +15,7 @@ import math
 from pathlib import Path
 import struct
 from .cost_compatibility import CostTraversal, EVENTS as COST_EVENTS
+from .legacy_output import Collector
 
 
 class NumericKernelError(ValueError):
@@ -133,6 +134,7 @@ class _VM:
         self.fpu_compare = 0
         self.cf = self.zf = self.sf = self.of = self.pf = False
         self.outputs = {}
+        self.report_output = Collector()
         self.unit = None
         self.calls = Counter()
         self.steps = 0
@@ -285,8 +287,10 @@ class _VM:
                 raise NumericKernelError(f"Nonfinite output in unit {self.unit}")
             self.outputs.setdefault(str(self.unit), []).append(value)
             self.ret()
-        elif self.pc in (0x42FBC0, 0x430220, 0x435660, 0x432650, 0x432740, 0x4369D0):
-            # Formatted report writes and runtime bookkeeping have no numeric effect.
+        elif self.pc in (0x42FBC0, 0x430220):
+            self.report_output.observe(self)
+            self.ret()
+        elif self.pc in (0x435660, 0x432650, 0x432740, 0x4369D0):
             self.ret()
         elif self.pc == 0x4358E0 or self.pc == 0xFFFF000:
             self.done = True
@@ -445,6 +449,7 @@ def run(memory_overrides: dict[int, float | bytes], *, max_steps: int = 2000000,
         raise NumericKernelLimitError(f"Numeric instruction budget ({max_steps}) exceeded at {vm.pc:#x}")
     result = {
         "outputs": vm.outputs, "memory": vm.memory, "steps": vm.steps,
+        "legacy_report": vm.report_output.result(),
         "calls": dict(vm.calls), "completed": True,
         "precision": "binary64 intermediates with binary32 source stores",
         "compatibility_repairs": vm.cost_traversal.repairs,
