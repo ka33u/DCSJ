@@ -4,17 +4,40 @@ These records check declared choices, not the full winding connection topology.
 """
 import math
 import struct
+from functools import lru_cache
 
 
 def single(value):
     return struct.unpack('<f', struct.pack('<f', value))[0]
 
 
+@lru_cache(maxsize=512)
+def _stock_lookup(values, negative_zeros):
+    # Preserve the first matching specification, even when an exact value and
+    # another specification's float32 encoding coincide. Key by immutable
+    # contents so editing a list cannot leave an obsolete lookup behind.
+    lookup = {}
+    for index, value in enumerate(values):
+        if value == 0:
+            value = -0.0 if index in negative_zeros else 0.0
+        lookup.setdefault(value, value)
+        lookup.setdefault(single(value), value)
+    return lookup
+
+
 def nominal(variable, value):
     """Accept exact values or their legacy float32 encoding, without a loose epsilon."""
     if not variable.values:
         return None
-    return next((x for x in variable.values if value == x or value == single(x)), None)
+    try:
+        sizes = tuple(variable.values)
+        # Python considers -0.0 and +0.0 equal as dictionary/cache keys, but
+        # returning the actual declared specification must retain its sign.
+        negative_zeros = tuple(i for i, x in enumerate(sizes) if x == 0 and math.copysign(1., x) < 0)
+        return _stock_lookup(sizes, negative_zeros).get(value)
+    except TypeError:
+        # A malformed nonnumeric candidate is not a declared specification.
+        return None
 
 
 def linked_parameters(request, parameters):

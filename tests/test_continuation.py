@@ -353,3 +353,24 @@ def test_api_authentication_body_isolation_and_no_calculations_when_queued(setup
         assert response.status_code == 202, response.text
         assert response.json()['new_evaluated'] == 0 and len(s.calls) == calls
         assert client.post('/api/v1/optimization/jobs',json={**s.body,'continuation':{}}).status_code == 422
+
+
+@pytest.mark.parametrize('algorithm', ALGORITHMS)
+def test_0280_stock_search_snapshots_extend_without_recalculation(setup, monkeypatch, algorithm):
+    s = setup
+    previous = '67bf550870423be48a422574381de429e2c4c2125fd130a1ad0b4dcedd3ba2c4'
+    with monkeypatch.context() as context:
+        context.setattr(opt, 'SOLVER_SHA256', previous)
+        root = s.root(algorithm=algorithm, max_evaluations=6,
+            variables=[{'key':'L','values':[150.,155.,160.,165.,170.]},
+                       {'key':'Djj','values':[.8,1.,1.06]}])
+    original = cont.read_history(root['id'])
+    calls = len(s.calls)
+    child = cont.create(root['id'], extra(4))
+    assert len(s.calls) == calls
+    assert cont.read_history(root['id']) == original
+    completed = s.run(child['id'])
+    assert completed['evaluated'] == 10 and completed['new_evaluated'] == 4
+    assert len(s.calls) == calls + 4
+    assert [c['calculation_id'] for c in completed['candidates'][:6]] == [c['calculation_id'] for c in root['candidates']]
+    assert any(c['error'] for c in completed['candidates'])

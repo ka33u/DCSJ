@@ -57,7 +57,10 @@ CONSTRAINTS.update(MAGNETIC_CONSTRAINTS)
 
 
 def compatible_solver(request, fingerprint):
-    if fingerprint == SOLVER_SHA256: return True
+    # 0.28.0 used identical stock matching and candidate ordering. Bounded
+    # lookup reuse only avoids repeating float32 conversion and linear scans.
+    if fingerprint in {SOLVER_SHA256, '67bf550870423be48a422574381de429e2c4c2125fd130a1ad0b4dcedd3ba2c4'}:
+        return True
     # Version0.27.3 search trajectories are unchanged when the new features are absent.
     return (fingerprint == 'f5aabb02e0b09821d06ba8920e53a4813f72f7408f961b1f6a72cfac4c9e63f2'
             and not slot_search_geometry.active(request)
@@ -696,8 +699,15 @@ class CoupledPollSearch(AdaptivePollSearch):
         self.enrichments = []
 
     def _identity(self, p):
-        return tuple((v.key,manufacturing.nominal(v,p[v.key]) if v.values and
-                      manufacturing.nominal(v,p[v.key]) is not None else p[v.key]) for v in self.request.variables)
+        coordinates = []
+        for variable in self.request.variables:
+            value = p[variable.key]
+            if variable.values:
+                nominal = manufacturing.nominal(variable, value)
+                if nominal is not None:
+                    value = nominal
+            coordinates.append((variable.key, value))
+        return tuple(coordinates)
 
     def consider(self, parameters, values, feasible, *, violation=None):
         result = super().consider(parameters,values,feasible,violation=violation)
