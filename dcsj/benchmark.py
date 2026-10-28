@@ -11,7 +11,7 @@ import time
 
 from .engine import calculate_design, CalculationError
 from .parameters import InputError
-from . import benchmark_quality, load_cycle, manufacturing, robustness, torque_refinement
+from . import benchmark_quality, load_cycle, manufacturing, robustness, torque_refinement, slot_search_geometry
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_values,
                            objective_keys, pareto_front, material_pricing, OBJECTIVES, SOLVER_SHA256)
 
@@ -50,11 +50,12 @@ def compare(suite, compute=calculate_design):
 
         def evaluate(p):
             nonlocal identity, new_calls, cached, rejected
-            if request.tolerances:
-                try: robustness.validate_scenario(p)
-                except InputError as error:
-                    rejected += 1
-                    return {'error':str(error)}
+            try:
+                if request.tolerances: robustness.validate_scenario(p)
+                slot_search_geometry.validate_candidate(request, p)
+            except InputError as error:
+                rejected += 1
+                return {'error':str(error)}
             extra = torque_refinement.options(request)
             encoded = json.dumps([p, extra], sort_keys=True, ensure_ascii=False, allow_nan=False)
             if encoded in cache:

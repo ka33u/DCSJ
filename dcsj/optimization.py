@@ -9,14 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, model
 from .parameters import INTEGER_KEYS, validate
 from .engine import available_materials
 from .curves import sampled_torque_peak
-from . import load_cycle, manufacturing, robustness
+from . import load_cycle, manufacturing, robustness, slot_search_geometry
 from .load_cycle import LoadStage
 
 SOLVER_SHA256 = hashlib.sha256(b''.join(Path(p).read_bytes() for p in
     (__file__, load_cycle.__file__, manufacturing.__file__, robustness.__file__,
      Path(__file__).with_name('robust_jobs.py'), Path(__file__).with_name('verification.py'),
      Path(__file__).with_name('feedback.py'), Path(__file__).with_name('poll_ordering.py'),
-     Path(__file__).with_name('curvature_ordering.py')))).hexdigest()
+     Path(__file__).with_name('curvature_ordering.py'), slot_search_geometry.__file__))).hexdigest()
 
 
 def available_choices():
@@ -38,6 +38,7 @@ VARIABLES = {
     'L': '铁心长度 mm', 'g': '气隙 mm', 'ZZ': '每槽导体数',
     'a': '并联支路数', 'JJ': '第一组并绕根数', 'Djj': '第一组线径 mm',
     'MM': '第二组并绕根数', 'Dmm': '第二组线径 mm', 'Paihao': '材料牌号',
+    **slot_search_geometry.VARIABLES,
 }
 DISCRETE = INTEGER_KEYS | {'ZZ'}
 OBJECTIVES = {'efficiency': ('ATA1', 'max', '效率最高'),
@@ -50,6 +51,17 @@ OBJECTIVES = {'efficiency': ('ATA1', 'max', '效率最高'),
 CONSTRAINTS = {'ATA1', 'PF1', 'IST1', 'TST1', 'TM1', 'TM_curve', 'TM_refined', 'TM_continuous', 'Sf', 'Sn', 'J1', 'Bg',
                'Gcu', 'Gfe', 'Gal', 'CostFx', 'total_loss', 'cycle_energy', 'cycle_efficiency'}
 CYCLE_METRICS = {'cycle_energy', 'cycle_efficiency'}
+MAGNETIC_CONSTRAINTS = {'Bts':'定子齿磁密 G', 'Btru':'转子上齿磁密 G', 'Btrl':'转子下齿磁密 G',
+                        'Bys':'定子轭磁密 G', 'Byr':'转子轭磁密 G'}
+CONSTRAINTS.update(MAGNETIC_CONSTRAINTS)
+
+
+def compatible_solver(request, fingerprint):
+    if fingerprint == SOLVER_SHA256: return True
+    # Version0.27.3 search trajectories are unchanged when the new features are absent.
+    return (fingerprint == 'f5aabb02e0b09821d06ba8920e53a4813f72f7408f961b1f6a72cfac4c9e63f2'
+            and not slot_search_geometry.active(request)
+            and not set(MAGNETIC_CONSTRAINTS) & {c.metric for c in request.constraints})
 
 
 class Variable(BaseModel):
@@ -201,6 +213,7 @@ class SearchInput(BaseModel):
             self.parameters['_curve'] = 1
         if self.load_cycle:
             self.parameters['_load_curve'] = 1
+        slot_search_geometry.validate_request(self)
         return self
 
 
@@ -209,12 +222,14 @@ def config():
             'objectives': [{'id': k, 'metric': v[0], 'direction': v[1], 'label': v[2]} for k, v in OBJECTIVES.items()],
             'constraint_metrics': sorted(CONSTRAINTS),
             'constraint_labels': {'TM_continuous': '转矩峰值（连续饱和插值，试验，倍）', 'TM_curve': '转矩曲线采样峰值（倍）', 'TM_refined': '加密转矩峰值（收紧迭代，倍）', 'TM1': '最大转矩（原公式估计，倍）',
-                                  'cycle_energy': '负载周期耗电（kWh）', 'cycle_efficiency': '负载周期效率（比例）'},
+                                  'cycle_energy': '负载周期耗电（kWh）', 'cycle_efficiency': '负载周期效率（比例）', **MAGNETIC_CONSTRAINTS},
+            'slot_geometry': {'variables':list(slot_search_geometry.VARIABLES), 'method':slot_search_geometry.METHOD,
+                              'note':'槽宽、槽深搜索支持常规开口转子槽 zc=1、2；每个候选及公差情景校核槽间和径向余量。'},
             'load_cycle': {'minimum_load': .3, 'maximum_load': 1.2, 'max_stages': 32,
                            'sample_loads': list(reversed(load_cycle.SAMPLE_LOADS)), 'note': load_cycle.NOTE},
             'materials': sorted(available_choices()),
             'manufacturing': {'max_values': 64, 'rotor_gap_modes': ['independent', 'fixed_neck_bottom']},
-            'tolerances': {'keys':['L','g','Djj','Dmm'], 'max_variables':3, 'note':robustness.NOTE,
+            'tolerances': {'keys':['L','g','Djj','Dmm',*slot_search_geometry.VARIABLES], 'max_variables':3, 'note':robustness.NOTE,
                            'interior_sample_counts':list(robustness.INTERIOR_COUNTS),
                            'sampling_methods':['nested_lhs_v1','centered_lhs_v1'],
                            'default_sampling_method':'nested_lhs_v1'},

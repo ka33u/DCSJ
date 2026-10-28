@@ -1,5 +1,5 @@
 """Checkpoint every tolerance sample; publish a candidate only after assessment."""
-from . import robustness, manufacturing, calculations, torque_refinement
+from . import robustness, manufacturing, calculations, torque_refinement, slot_search_geometry
 from .optimization import Search, SOLVER_SHA256, material_pricing
 from .parameters import InputError
 from .engine import CalculationError
@@ -49,6 +49,7 @@ def run(worker, identity, request, compute, *, verification=None, feedback=None)
             if reason: break
             try:
                 p = robustness.validate_scenario(scenario['parameters'])
+                geometry = slot_search_geometry.validate_candidate(request, p)
                 extra = torque_refinement.options(request)
                 result = compute(p, wait=True, stop_event=worker.stop, **extra)
                 current = tuple(result['provenance'].get(k) for k in resource_keys)
@@ -63,6 +64,7 @@ def run(worker, identity, request, compute, *, verification=None, feedback=None)
                         raise CalculationError('材料版本与已记录资源不一致，停止纳入情景寻优。')
                     materials[p['Paihao']] = material
                 sample = robustness.measured(request, scenario, result)
+                if geometry is not None: sample['slot_geometry'] = geometry
                 if status() == 'lost': return
                 result['provenance'].update(optimization_job_id=identity, optimization_candidate=ordinal,
                                             optimization_sample_index=scenario['index'])
@@ -102,6 +104,8 @@ def run(worker, identity, request, compute, *, verification=None, feedback=None)
                       'refined_torque_peak':torque_refinement.compact(nominal_result or {}),
                       'continuous_torque_peak':torque_refinement.compact(nominal_result or {}, 'continuous_torque_peak'),
                       'torque_peak':sampled_torque_peak((nominal_result or {}).get('curves',[]))}
+        if baseline_sample.get('slot_geometry') is not None:
+            evaluation['slot_geometry'] = baseline_sample['slot_geometry']
         calculation_id = None
         if nominal_result is not None:
             result = {**nominal_result, 'optimization':evaluation,

@@ -28,6 +28,8 @@ CURVE_NOTE = '平滑曲线用于观察趋势；默认校核使用 IST1、TST1、
 
 CYCLE_HEADERS = ['负载 %', '小时', '输入 kW', '输出 kW', '耗电 kWh', '取值']
 MANUFACTURING_HEADERS = ['变量', '允许规格', '本次输入', '规格匹配']
+SLOT_SEARCH_HEADERS = ['侧别', '几何面积 mm²', '槽总深 mm', '槽间余量 mm', '径向余量 mm', '几何校核']
+SEARCH_CONSTRAINT_HEADERS = ['指标', '下限', '上限', '保存的计算值 / 采样范围', '约束校核']
 TOLERANCE_HEADERS = ['情景', '输入尺寸 mm', '采样目标指标', '校核结果', '原始快照 ID']
 TOLERANCE_NOTE = '常规指标、性能曲线和负载周期为名义尺寸结果；公差寻优目标取最不利采样。'
 
@@ -69,6 +71,56 @@ def manufacturing_summary(snapshot):
         + gap['formula'] + ('；联动符合。' if gap['passed'] else '；联动不符合。'))
     return {'rows': rows, 'text': text,
             'note': '规格清单由任务指定；匹配原库单精度存储值时保留原始输入。'}
+
+
+def slot_search_summary(snapshot):
+    optimization = snapshot.get('optimization', {})
+    record = optimization.get('slot_geometry')
+    if not record:
+        return None
+    label = lambda side: '定子' if side == 'stator' else '转子'
+    rows = [[label(slot['side']), number(slot.get('area_mm2'), 8), number(slot.get('total_depth_mm'), 8),
+             number(slot.get('sector_clearance_mm'), 8), number(slot.get('radial_reserve_mm'), 8),
+             '通过' if slot.get('passed') else '未通过'] for slot in record.get('slots', [])]
+    robust = optimization.get('robustness')
+    sampled=[]
+    if robust:
+        for side in ('stator', 'rotor'):
+            slots = [slot for sample in robust.get('samples', [])
+                     for slot in (sample.get('slot_geometry') or {}).get('slots', []) if slot['side'] == side]
+            if slots:
+                sampled.append([label(side), f"{len(slots)}/{robust['expected_samples']}",
+                    number(min(s['sector_clearance_mm'] for s in slots), 8),
+                    number(min(s['radial_reserve_mm'] for s in slots), 8)])
+    return {'title': '名义尺寸 · 槽型几何校核' if robust else '槽型几何校核', 'rows':rows,
+            'note':'含槽口的单槽几何面积，不扣绝缘，圆底按圆弧计算。余量大于零表示槽型未相交；制造尺寸和磁密按任务约束另行校核。',
+            'sampled_rows':sampled,
+            'sampled_headers':['侧别','保存的几何情景数','最小槽间余量 mm','最小径向余量 mm']}
+
+
+def search_constraints_summary(snapshot):
+    optimization = snapshot.get('optimization', {})
+    constraints = optimization.get('constraints', [])
+    if not constraints:
+        return None
+    labels = {'Bts':'Bts 定子齿磁密 G','Btru':'Btru 转子上齿磁密 G','Btrl':'Btrl 转子下齿磁密 G',
+              'Bys':'Bys 定子轭磁密 G','Byr':'Byr 转子轭磁密 G',
+              'ATA1':'ATA1 效率（比例）','PF1':'PF1 功率因数','Sf':'Sf 槽满率（比例）'}
+    robust = optimization.get('robustness');rows=[]
+    for c in constraints:
+        metric=c['metric'];low=c.get('minimum');high=c.get('maximum')
+        if robust:
+            item=robust.get('metric_ranges',{}).get(metric,{})
+            lo,hi=item.get('minimum'),item.get('maximum')
+            complete=bool(item.get('complete')) and finite(lo) and finite(hi)
+            value=f"{number(lo,8)} - {number(hi,8)}"
+        else:
+            lo=hi=optimization.get('constraint_values',{}).get(metric)
+            complete=finite(lo);value=number(lo,8)
+        passed=complete and (low is None or lo>=low) and (high is None or hi<=high)
+        rows.append([labels.get(metric,metric),number(low,8),number(high,8),value,
+                     '通过' if passed else '未通过' if complete else '记录不完整'])
+    return {'rows':rows, 'note':'按本次任务保存的约束和计算记录列示；单项约束通过不代表整个方案可行。'}
 
 
 def material_price_summary(snapshot):

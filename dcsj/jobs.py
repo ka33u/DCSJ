@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 
-from . import calculations, load_cycle, manufacturing, torque_refinement
+from . import calculations, load_cycle, manufacturing, torque_refinement, slot_search_geometry
 from .engine import CalculationError, CalculationUnavailableError, engine_status
 from .execution import BusyError, compute
 from .optimization import (SearchInput, Search, assess, in_region, metrics, objective_keys,
@@ -60,6 +60,7 @@ def get(identity, *, database=None, candidates=True):
                 item['continuous_torque_peak'] = evaluation.get('continuous_torque_peak')
                 item['load_cycle'] = evaluation.get('load_cycle')
                 item['manufacturing'] = evaluation.get('manufacturing')
+                item['slot_geometry'] = evaluation.get('slot_geometry')
                 item['material_pricing'] = evaluation.get('material_pricing')
                 item['robustness'] = evaluation.get('robustness')
                 result['candidates'].append(item)
@@ -222,6 +223,7 @@ class Worker:
                 if frozen_resources:
                     continuation.check_resources(request, frozen_resources)
                 extra = torque_refinement.options(request)
+                slot_geometry = slot_search_geometry.validate_candidate(request, parameters)
                 result = compute(parameters, wait=True, stop_event=self.stop, **extra)
                 if frozen_resources:
                     continuation.check_resources(request, frozen_resources)
@@ -250,6 +252,8 @@ class Worker:
                                          'load_cycle': cycle,
                                          'material_pricing': material_pricing(request, parameters),
                                          'manufacturing': manufacturing.audit(request, parameters)}
+                if slot_geometry is not None:
+                    result['optimization']['slot_geometry'] = slot_geometry
                 saved = calculations.save(result, f'{request.name} / {ordinal}', database=self.database)
                 calculation_id = saved['calculation_id']
                 completed += 1

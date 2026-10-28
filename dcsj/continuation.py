@@ -11,7 +11,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from . import engine, optimization as opt
+from . import engine, optimization as opt, slot_search_geometry
 from .parameters import validate
 from .storage import ConflictError, NotFoundError, audit, connect, dumps, now
 
@@ -22,7 +22,8 @@ CONTINUATION_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 # 0.27.0 used the same replay and budget rules. Its raw int/float fingerprint
 # check rejected some valid discrete inputs; accepting normalized inputs does
 # not invalidate histories that already passed that stricter check.
-COMPATIBLE_SHA256 = {CONTINUATION_SHA256, 'ec2e294d6a240f2dbc09b29b607b03bdf0ab4720a2ba67bff5b85f7d8157df30'}
+COMPATIBLE_SHA256 = {CONTINUATION_SHA256, 'ec2e294d6a240f2dbc09b29b607b03bdf0ab4720a2ba67bff5b85f7d8157df30',
+                     '77102155f8bc392c42eed9779be856bd9bdbb519889fe61e45fae4f02a3d268c'}
 RESOURCE_KEYS = ('kernel_sha256', 'wrapper_sha256', 'resource_package', 'resource_version')
 
 
@@ -85,9 +86,9 @@ def check_result(result, parameters, resources):
 
 def restore(root_request, candidates, transitions, *, solver_sha256):
     """Restore deterministic search state from authenticated actual observations."""
-    if solver_sha256 != opt.SOLVER_SHA256:
-        raise ConflictError('寻优算法版本已变化，请按当前配置重新运行。')
     request = opt.SearchInput.model_validate(root_request)
+    if not opt.compatible_solver(request, solver_sha256):
+        raise ConflictError('寻优算法版本已变化，请按当前配置重新运行。')
     if request.tolerances or not candidates or len(candidates) > MAX_TOTAL:
         raise ConflictError('续算需要完整的名义候选记录。')
     timeline, previous = {}, 0
@@ -116,6 +117,9 @@ def restore(root_request, candidates, transitions, *, solver_sha256):
             best_after.append(best_ordinal)
             continue
         values = candidate['values']
+        geometry = slot_search_geometry.validate_candidate(search.request, expected)
+        if geometry is not None and candidate.get('slot_geometry') != geometry:
+            raise ConflictError('候选槽型几何校核记录与输入不一致。')
         violations = opt.assess(search.request, values)
         if not opt.in_region(search.request, expected):
             violations.append('方案不满足指定范围、步长、规格或尺寸联动；基准仅作为参考。')
@@ -177,7 +181,7 @@ def _state(history):
         inherited = integer(metadata['inherited_attempts'], 1, count)
         additional = integer(metadata['additional_evaluations'], 1, MAX_ADDITIONAL)
         if (metadata['method'] != METHOD or metadata['continuation_sha256'] not in COMPATIBLE_SHA256
-                or metadata['solver_sha256'] != opt.SOLVER_SHA256 or metadata['resources'] != resources
+                or not opt.compatible_solver(request, metadata['solver_sha256']) or metadata['resources'] != resources
                 or metadata['prefix_sha256'] != prefix_hash(history, inherited)
                 or not transitions or transitions[-1] != {'after': inherited, 'budget': job['budget']}
                 or job['budget'] != inherited+additional
@@ -199,7 +203,9 @@ def _state(history):
             check_result(result, candidate['parameters'], resources)
             evaluation = result.get('optimization', {})
             values = opt.metrics(result, request)
-            if (evaluation.get('solver_sha256') != opt.SOLVER_SHA256
+            geometry = slot_search_geometry.validate_candidate(request, candidate['parameters'])
+            if (not opt.compatible_solver(request, evaluation.get('solver_sha256'))
+                    or (geometry is not None and evaluation.get('slot_geometry') != geometry)
                     or evaluation.get('algorithm') != request.algorithm
                     or evaluation.get('constraints') != [c.model_dump() for c in request.constraints]
                     or evaluation.get('objectives') != opt.objective_values(request, values)
@@ -209,6 +215,7 @@ def _state(history):
                     or (raw['ordinal'] in assessments and assessments[raw['ordinal']] != evaluation)):
                 raise ConflictError('历史快照与寻优配置或算法版本不一致。')
             candidate.update(values=values, objectives=evaluation['objectives'])
+            if geometry is not None: candidate['slot_geometry'] = geometry
         elif raw['error'] is None or raw['ordinal'] in assessments:
             raise ConflictError('候选缺少原始计算快照。')
         candidates.append(candidate)

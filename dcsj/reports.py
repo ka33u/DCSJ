@@ -142,6 +142,16 @@ def render(snapshot):
                     table(['指标', '采样最小值', '采样最大值', '完整'], robust['ranges']),
                     table(summary.TOLERANCE_HEADERS, robust['rows'])]
     manufacturing = summary.manufacturing_summary(snapshot)
+    geometry = summary.slot_search_summary(snapshot)
+    constraints = summary.search_constraints_summary(snapshot)
+    if geometry:
+        content += ['<h2 class="break">' + text(geometry['title']) + '</h2>',
+                    table(summary.SLOT_SEARCH_HEADERS, geometry['rows']), '<p>' + text(geometry['note']) + '</p>']
+        if geometry['sampled_rows']:
+            content += ['<h3>已保存情景的几何余量</h3>', table(geometry['sampled_headers'],geometry['sampled_rows'])]
+    if constraints:
+        content += [('<h2>' if geometry else '<h2 class="break">') + '寻优约束校核</h2>',
+                    table(summary.SEARCH_CONSTRAINT_HEADERS,constraints['rows']), '<p>' + text(constraints['note']) + '</p>']
     if manufacturing:
         content += ['<h2 class="break">寻优规格与尺寸联动</h2><p>' + text(manufacturing['text']) + '</p>',
                     '<p>' + text(manufacturing['note']) + '</p>',

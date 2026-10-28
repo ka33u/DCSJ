@@ -12,6 +12,32 @@ const script = readFileSync(process.env.DCSJ_FRONTEND_TEST_SCRIPT || resolve(roo
 const parameters = { SizeX: '人工设计', kW: 12 };
 const created = '2020-01-02T03:04:05Z';
 
+test('slot search exposes tolerance keys, stored areas and infeasible diagnostics',async t=>{
+  const geometry={passed:true,slots:[{side:'stator',area_mm2:111.78,sector_clearance_mm:3.5,radial_reserve_mm:12.05},
+    {side:'rotor',area_mm2:87.704,sector_clearance_mm:4.85,radial_reserve_mm:12.45}]};
+  const job={id:'slot-search',name:'槽尺寸检查',status:'succeeded',evaluated:2,budget:2,best_id:null,message:'未找到可行方案',
+    request:{parameters:{br1:6.5},variables:[{key:'br1',minimum:6,maximum:50}],constraints:[{metric:'Btru',maximum:16000}],objective:'efficiency',seed:29},
+    candidates:[{ordinal:1,parameters:{br1:6.5},objective:.88,feasible:false,violations:['Btru 超限'],violation_score:.01,
+      error:null,calculation_id:'nearest',constraint_values:{Btru:16160},slot_geometry:geometry},
+      {ordinal:2,parameters:{br1:50},objective:null,feasible:false,violations:['几何无效'],error:'转子相邻槽相交',calculation_id:null}]};
+  const ui=await app(t,(path)=>{
+    if(path==='/optimization/config')return {method:'测试',variables:[{key:'L',label:'长度'},{key:'br1',label:'转子槽上宽 mm'}],
+      objectives:[{id:'efficiency',label:'效率'}],materials:[],constraint_metrics:['Btru'],constraint_labels:{Btru:'转子上齿磁密 G'},
+      tolerances:{keys:['L','g','br1']},slot_geometry:{note:'每个候选校核几何余量。'}};
+    if(path==='/optimization/jobs')return {items:[job]};
+    if(path==='/optimization/jobs/slot-search')return job;
+  });
+  ui.nav('optimization');await until(()=>ui.doc.querySelector('#optimization-jobs button'),'Slot task available');
+  assert.ok([...ui.doc.querySelectorAll('#optimization-tolerance-rows select option')].some(o=>o.value==='br1'));
+  ui.find('#optimization-jobs button','查看任务').click();
+  await until(()=>ui.doc.querySelector('.slot-search-geometry'),'Geometry rendered');
+  const text=ui.doc.querySelector('.slot-search-geometry').textContent;
+  assert.match(text,/111\.78/);assert.match(text,/87\.704/);assert.match(text,/径向余量/);
+  assert.match(ui.doc.querySelector('.optimization-nearest').textContent,/仍未达标：Btru 超限/);
+  assert.match(ui.doc.querySelector('#optimization-detail').textContent,/转子相邻槽相交/);
+  assert.ok(![...ui.doc.querySelectorAll('#optimization-detail button')].some(b=>b.textContent==='打开最佳候选'));
+});
+
 function deferred() {
   let release;
   const promise = new Promise(resolve => { release = resolve; });

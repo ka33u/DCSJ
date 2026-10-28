@@ -12,7 +12,7 @@ INTERIOR_COUNTS = (0, 4, 8, 16, 32)
 
 class Tolerance(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
-    key: Literal['L', 'g', 'Djj', 'Dmm']
+    key: Literal['L', 'g', 'Djj', 'Dmm', 'bs1', 'bs2', 'hs12', 'br1', 'br2', 'hr12']
     delta: StrictFloat = Field(gt=0, le=1000000)
 
 

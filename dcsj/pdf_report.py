@@ -279,6 +279,19 @@ def _render(snapshot):
                   table(['指标', '采样最小值', '采样最大值', '完整'], robust['ranges'], [WIDTH/4]*4),
                   table(summary.TOLERANCE_HEADERS, robust['rows'], [WIDTH*f for f in (.15,.21,.20,.24,.20)], compact=True)]
     manufacturing = summary.manufacturing_summary(snapshot)
+    geometry = summary.slot_search_summary(snapshot)
+    constraints = summary.search_constraints_summary(snapshot)
+    if geometry:
+        story += [PageBreak(), paragraph(geometry['title'],'h2'),
+                  table(summary.SLOT_SEARCH_HEADERS,geometry['rows'],[WIDTH*f for f in (.08,.20,.18,.20,.20,.14)]),
+                  paragraph(geometry['note'],'small')]
+        if geometry['sampled_rows']:
+            story += [paragraph('已保存情景的几何余量','caption'),
+                      table(geometry['sampled_headers'],geometry['sampled_rows'],[WIDTH*f for f in (.1,.26,.32,.32)])]
+    if constraints:
+        story += ([] if geometry else [PageBreak()]) + [paragraph('寻优约束校核','h2'),
+                  table(summary.SEARCH_CONSTRAINT_HEADERS,constraints['rows'],[WIDTH*f for f in (.28,.14,.14,.30,.14)]),
+                  paragraph(constraints['note'],'small')]
     if manufacturing:
         story += [PageBreak(), paragraph('寻优规格与尺寸联动', 'h2'), paragraph(manufacturing['text']), paragraph(manufacturing['note'], 'small')]
         if manufacturing['rows']:

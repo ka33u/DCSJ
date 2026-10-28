@@ -110,10 +110,17 @@ def supplemental_rows(snapshot):
     """Retain newer saved search/verification semantics after the classic sheets."""
     rows=[]
     def paragraph(value):
-        if value:rows.extend(('cells',[line]) for line in wrap(value,85))
+        if value:rows.extend(('cells',[line]) for line in _classic_wrap(value))
     def table(headers,values):
+        from .classic_sheet import byte_width
         for values_row in values:
-            paragraph('；'.join(f'{header}={plain(value)}' for header,value in zip(headers,values_row)))
+            line=''
+            for header,value in zip(headers,values_row):
+                cell=f'{header}={plain(value)}'
+                if line and byte_width(line+'；'+cell)>74:
+                    paragraph(line);line=''
+                line+=(('；' if line else '')+cell)
+            paragraph(line)
     for key,_,_ in summary.TORQUE_MODES:
         result=summary.torque_summary(snapshot,key)
         if not result:continue
@@ -127,6 +134,17 @@ def supplemental_rows(snapshot):
         table(['目标','最不利采样值','情景编号'],robust['objectives'])
         table(['指标','采样最小值','采样最大值','完整'],robust['ranges'])
         table(summary.TOLERANCE_HEADERS,robust['rows'])
+    geometry=summary.slot_search_summary(snapshot)
+    if geometry:
+        rows.append(('heading',geometry['title']));paragraph(geometry['note'])
+        table(summary.SLOT_SEARCH_HEADERS,geometry['rows'])
+        if geometry['sampled_rows']:
+            paragraph('已保存情景的几何余量')
+            table(geometry['sampled_headers'],geometry['sampled_rows'])
+    constraints=summary.search_constraints_summary(snapshot)
+    if constraints:
+        rows.append(('heading','寻优约束校核'));paragraph(constraints['note'])
+        table(summary.SEARCH_CONSTRAINT_HEADERS,constraints['rows'])
     manufacturing=summary.manufacturing_summary(snapshot)
     if manufacturing:
         rows.append(('heading','寻优规格与尺寸联动'));paragraph(manufacturing['text']);paragraph(manufacturing['note'])
