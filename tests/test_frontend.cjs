@@ -44,6 +44,25 @@ function deferred() {
   return { promise, release };
 }
 
+test('coordinated search is optional and explains required inputs without changing the draft',async t=>{
+  const note='六变量指定规格，基准在清单内，最多 4096 个组合，不设置公差。';
+  const ui=await app(t,path=>{
+    if(path==='/optimization/config')return {method:'测试',variables:[{key:'L',label:'长度'},{key:'ZZ',label:'导体数'},{key:'g',label:'气隙'}],
+      objectives:[{id:'efficiency',label:'效率'}],materials:[],constraint_metrics:[],
+      algorithms:[{id:'stratified_v1',label:'分层采样'},{id:'coordinated_pair_poll_v1',label:'槽型与绕组协调搜索（试验）'}],coordinated_search:{note}};
+    if(path==='/optimization/jobs')return {items:[]};
+  });
+  ui.nav('optimization');await until(()=>ui.doc.querySelector('#optimization-algorithm-note'),'Method note available');
+  const select=ui.doc.querySelector('#optimization-algorithm'),message=ui.doc.querySelector('#optimization-algorithm-note');
+  assert.equal(select.value,'stratified_v1');assert.ok(message.hidden&&message.classList.contains('hidden'));
+  const inputs=()=>[...ui.doc.querySelectorAll('#optimization-variables input,#optimization-variables select')].map(e=>e.value);
+  const before=inputs();select.value='coordinated_pair_poll_v1';select.dispatchEvent(new ui.w.Event('change'));
+  assert.equal(message.textContent,note);assert.equal(message.hidden,false);assert.ok(!message.classList.contains('hidden'));
+  assert.deepEqual(inputs(),before);assert.equal(ui.doc.querySelector('#optimization-tolerance-enabled').checked,false);
+  select.value='stratified_v1';select.dispatchEvent(new ui.w.Event('change'));
+  assert.equal(message.textContent,'');assert.ok(message.hidden&&message.classList.contains('hidden'));
+});
+
 for(const full of [true,false])test(`constraint diagnosis distinguishes ${full?'complete finite grid':'observed points only'}`,async t=>{
   const diagnosis={status:'constraint_conflict',complete_grid:full,scope:full?'declared_finite_grid':'observed_points',
     grid_points:3,resolved_points:full?3:2,unresolved_points:full?0:1,conflict_count:1,
