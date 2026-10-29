@@ -1564,6 +1564,7 @@
       const nearest=job.candidates.filter(c=>!c.feasible&&!c.error&&c.calculation_id&&Number.isFinite(c.violation_score)&&c.violation_score<1e6)
         .sort((a,b)=>a.violation_score-b.violation_score||a.ordinal-b.ordinal)[0];
       if(nearest){const box=el('div','source-box optimization-nearest');box.append(el('p','',`本轮未找到满足全部约束的方案。按超限量排序，最接近约束的是 #${nearest.ordinal}，仍未达标：${nearest.violations.join('；')}`),button('查看未达标候选','text-button',()=>openSnapshot(nearest.calculation_id)));container.append(box);}
+      const diagnosis=constraintDiagnosis(job.constraint_diagnosis);if(diagnosis)container.append(diagnosis);
     }
     const actions = el("div", "feature-actions");
     if (!terminalJobs.has(job.status)) {
@@ -1672,6 +1673,30 @@
     if(robust&&job.samples?.length) {
       const details=el('details','trace-details');details.append(el('summary','',`已保存的公差采样 · ${job.samples.length} 次（含未完成组）`),sampleTable(job.samples,job.request.tolerances,job.candidates.find(c=>c.robustness)?.robustness?.objective_specs));container.append(details);
     }
+  }
+
+  function constraintDiagnosis(data){
+    if(!data||data.status==='unavailable')return null;
+    const section=el('section','source-box constraint-diagnosis');section.append(el('h3','','约束组合检查'));
+    const full=data.complete_grid&&data.scope==='declared_finite_grid';
+    const coverage=data.grid_points!=null?`本次离散组合 ${data.grid_points} 个，取得完整约束结果 ${data.resolved_points} 个，尚未确定 ${data.unresolved_points} 个。`:`取得完整约束结果 ${data.resolved_points} 个。`;
+    section.append(el('p','',coverage));
+    if(data.status==='no_evidence'){section.append(el('p','muted','尚无足够的有效结果解释约束组合；计算失败或缺失结果不能视为约束冲突。'));return section;}
+    if(!data.conflicts?.length){section.append(el('p','muted','已算结果中未发现所填约束之间的冲突。候选仍可能因物理检查或其他计算问题未达标，请查看候选明细。'));return section;}
+    section.append(el('p','',full?'以下约束无法在本次指定离散组合中同时满足；此结论不包含清单以外的尺寸、材料或其他参数。':'以下约束尚未在已算方案中同时满足；未覆盖的组合仍可能可行，不能判定整个范围无解。'));
+    const metricValue=(key,value)=>key==='ATA1'||key==='cycle_efficiency'?`${fmt(value*100,8)}%`:fmt(value,8);
+    const boundText=c=>`${c.metric}${c.minimum!=null?` ≥ ${metricValue(c.metric,c.minimum)}`:''}${c.maximum!=null?` ≤ ${metricValue(c.metric,c.maximum)}`:''}`;
+    const details=el('details','constraint-conflicts');details.append(el('summary','',`查看约束组合 · ${data.conflict_count} 组${data.conflict_count>data.conflicts.length?`（显示前 ${data.conflicts.length} 组）`:''}`));
+    for(const conflict of data.conflicts){
+      const item=el('div','constraint-conflict');item.append(el('p','',conflict.constraints.map(boundText).join('；')));
+      for(const witness of conflict.witnesses){
+        const text=el('p','small',`满足本组其余约束的 ${witness.other_bounds_satisfied} 个已算方案中，${witness.metric} 最接近要求的值为 ${metricValue(witness.metric,witness.nearest_value)}（#${witness.ordinal}）。`);
+        if(witness.calculation_id)text.append(button('查看方案','text-button',()=>openSnapshot(witness.calculation_id)));
+        item.append(text);
+      }
+      details.append(item);
+    }
+    section.append(details);return section;
   }
 
   function optimizationObjectiveSpec(key){

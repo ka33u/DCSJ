@@ -76,6 +76,9 @@ def get(identity, *, database=None, candidates=True):
         inherited = continuation['inherited_attempts']
         result['new_evaluated'] = max(0, result['evaluated'] - inherited)
         result['new_progress'] = result['new_evaluated'] / continuation['additional_evaluations']
+    if candidates:
+        from .search_diagnosis import explain
+        result['constraint_diagnosis'] = explain(result)
     return result
 
 

@@ -39,3 +39,9 @@
 
 /* Slot search detail keeps dimensions readable without a nested wide table. */
 .optimization-candidates>thead>tr>th,.optimization-candidates>tbody>tr>td{padding:12px;vertical-align:top}.optimization-candidates>tbody>tr>td{overflow-wrap:normal;white-space:pre-line}.optimization-candidates>tbody>tr>td:first-child{min-width:70px}.slot-search-geometry{min-width:195px;margin-top:8px;white-space:normal}.slot-search-geometry summary{cursor:pointer;margin-bottom:10px}.slot-search-geometry strong{display:block;font-size:12px}.slot-search-values{display:grid;grid-template-columns:1fr auto;gap:3px 12px;margin:4px 0 12px;font-size:11px}.slot-search-values dd{margin:0;white-space:nowrap}
+/* Saved constraint evidence follows the normal reading order on small screens. */
+.source-box.constraint-diagnosis{display:flex;flex-direction:column;gap:10px;font-size:13px;color:var(--ink)}
+.constraint-conflicts summary{cursor:pointer;font-weight:600}
+.constraint-conflict{padding:12px 0;border-top:1px solid var(--line,#e2e9e6)}
+.constraint-conflict>p+p{margin-top:6px}
+.constraint-conflict .text-button{margin-left:8px;white-space:nowrap}

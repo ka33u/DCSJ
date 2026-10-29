@@ -44,6 +44,34 @@ function deferred() {
   return { promise, release };
 }
 
+for(const full of [true,false])test(`constraint diagnosis distinguishes ${full?'complete finite grid':'observed points only'}`,async t=>{
+  const diagnosis={status:'constraint_conflict',complete_grid:full,scope:full?'declared_finite_grid':'observed_points',
+    grid_points:3,resolved_points:full?3:2,unresolved_points:full?0:1,conflict_count:1,
+    conflicts:[{constraints:[{metric:'ATA1',minimum:.9},{metric:'PF1',minimum:.8}],
+      witnesses:[{metric:'ATA1',nearest_value:.85,other_bounds_satisfied:1,ordinal:2,calculation_id:'test-result'},
+        {metric:'PF1',nearest_value:.7,other_bounds_satisfied:1,ordinal:1,calculation_id:'test-result'}]}]};
+  const job={id:'diagnosis',name:'人工冲突',status:'succeeded',evaluated:2,budget:2,best_id:null,message:'',
+    request:{parameters:{L:160},variables:[{key:'L',values:[150,160,170]}],constraints:[],objective:'efficiency'},
+    candidates:[],constraint_diagnosis:diagnosis};
+  const ui=await app(t,path=>{
+    if(path==='/optimization/config')return {method:'测试',variables:[{key:'L',label:'长度'}],
+      objectives:[{id:'efficiency',label:'效率'}],materials:[],constraint_metrics:[]};
+    if(path==='/optimization/jobs')return {items:[job]};
+    if(path==='/optimization/jobs/diagnosis')return job;
+  });
+  ui.nav('optimization');await until(()=>ui.doc.querySelector('#optimization-jobs button'),'Task available');
+  ui.find('#optimization-jobs button','查看任务').click();
+  await until(()=>ui.doc.querySelector('.constraint-diagnosis'),'Diagnosis available');
+  const box=ui.doc.querySelector('.constraint-diagnosis');
+  assert.match(box.textContent,/ATA1 ≥ 90%/);assert.match(box.textContent,/PF1 ≥ 0\.8/);
+  assert.match(box.textContent,/最接近要求的值为 85%/);
+  assert.match(box.textContent,/最接近要求的值为 0\.7/);
+  assert.equal(box.querySelectorAll('button').length,2);
+  if(full){assert.match(box.textContent,/本次指定离散组合中同时满足/);assert.match(box.textContent,/清单以外/);}
+  else{assert.match(box.textContent,/未覆盖的组合仍可能可行/);assert.doesNotMatch(box.textContent,/无法在本次指定离散组合/);}
+  assert.ok(!box.querySelector('input'),'No automatic bound edits');
+});
+
 async function until(check, message) {
   for (let attempt = 0; attempt < 80; attempt++) {
     if (check()) return;
