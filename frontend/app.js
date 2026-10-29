@@ -1529,7 +1529,7 @@
     const container = $("#optimization-detail"); container.classList.remove("hidden");
     container.replaceChildren(el("h2", "", `${job.name} · ${jobStatus[job.status] || job.status}`));
     const methodId = job.request.algorithm || 'stratified_v1';
-    const methodLabel = optimizationConfig?.algorithms?.find(item => item.id === methodId)?.label || ({stratified_v1:'分层采样 + 局部搜索',adaptive_poll_v1:'自适应邻域搜索',coupled_poll_v1:'联合变量搜索（邻点筛选）',ranked_poll_v1:'邻域预测排序（兼顾折中）',curvature_rescue_v1:'曲率补救排序（试验）',coordinated_pair_poll_v1:'槽型与绕组协调搜索（试验）',hybrid_de_v1:'混合差分进化'}[methodId] || '历史搜索方法');
+    const methodLabel = optimizationConfig?.algorithms?.find(item => item.id === methodId)?.label || ({stratified_v1:'分层采样 + 局部搜索',adaptive_poll_v1:'自适应邻域搜索',coupled_poll_v1:'联合变量搜索（邻点筛选）',ranked_poll_v1:'邻域预测排序（兼顾折中）',curvature_rescue_v1:'曲率补救排序（试验）',coordinated_pair_poll_v1:'槽型与绕组协调搜索（试验）',balanced_quadratic_infill_v1:'效率与成本模型搜索（试验）',hybrid_de_v1:'混合差分进化'}[methodId] || '历史搜索方法');
     const verification=job.request.verification,feedback=job.request.feedback,continuation=job.request.continuation;
     container.append(el('p', 'muted', verification?`补充采样复核 · 固定候选 #${verification.source_candidate_ordinal} · 新点种子 ${verification.seed}`:`本任务方法：${methodLabel} · 随机种子 ${job.request.seed ?? '—'}`));
     if(verification){
@@ -1545,6 +1545,7 @@
     const robust=!!job.request.tolerances?.length;
     if(job.request.variables.some(v=>v.key==='Paihao'))container.append(el('p','source-box',job.request.material_prices?`硅钢分别定价（每 kg，同一币种）：${Object.entries(job.request.material_prices).map(([material,price])=>`${material} = ${fmt(price,8)}`).join('；')}。单价按任务保存。`:`本任务所有候选牌号统一使用硅钢单价 Cfe = ${fmt(job.request.parameters.Cfe,8)} /kg。`));
     if(methodId==='ranked_poll_v1'&&!verification)container.append(el('p','muted',robust?'本任务设置了公差，使用自适应邻域；不对跨情景的最不利值作邻点预测排序。':'利用已算邻点安排现有候选的计算顺序；双目标优先探索可能改善折中的方案。所有成绩和约束仍由真实计算确认。'));
+    if(methodId==='balanced_quadratic_infill_v1')container.append(el('p','muted','保留槽型与绕组协调调整，利用已计算的实际结果推荐候选，轮流探索最高效率、最低成本和折中方案。所有候选计入总预算，是否达标由实际电磁计算确认。'));
     if(methodId==='coordinated_pair_poll_v1')container.append(el('p','muted','首轮邻域搜索后，交替尝试铁心长度与导体数、槽面积与线径的协调调整；每个试探都计入总预算，性能与约束由实际计算确认。适用于六变量指定规格的名义搜索，试验方法未必在每个型号或预算下更好。'));
     if(methodId==='curvature_rescue_v1'&&!verification)container.append(el('p','muted',robust?'本任务设置了公差，使用自适应邻域；不对跨情景的最不利值作曲率预测。':'在约束边界附近探索可能被线性预测遗漏的候选；所有成绩和约束仍由真实计算确认。试验方法在不同预算下可能优于或逊于邻域预测排序。'));
     if(methodId==='coupled_poll_v1'&&!verification)container.append(el('p','muted',robust?'本任务设置了公差，使用自适应邻域；不对跨情景的最不利值作邻点预测筛选。':'在邻域停滞时，利用已算邻点筛选成对变量调整；预测只用于安排试探顺序，候选结果均由真实计算确认。'));
@@ -1704,10 +1705,12 @@
   function updateAlgorithmRequirements(){
     let note=$('#optimization-algorithm-note');
     if(!note){note=el('p','source-box');note.id='optimization-algorithm-note';note.setAttribute('aria-live','polite');$('#optimization-algorithm').closest('.quick-form').after(note);}
-    const enabled=$('#optimization-algorithm').value==='coordinated_pair_poll_v1';
+    const method=$('#optimization-algorithm').value;
+    const enabled=['coordinated_pair_poll_v1','balanced_quadratic_infill_v1'].includes(method);
     note.hidden=!enabled;
     note.classList.toggle('hidden',!enabled);
-    note.textContent=enabled?(optimizationConfig?.coordinated_search?.note||'同时选择 bs1、hs12、br1、L、ZZ、Djj，全部使用指定规格，基准在清单内，最多 4096 个组合，不设置公差。'):'';
+    note.textContent=method==='balanced_quadratic_infill_v1'?(optimizationConfig?.balanced_search?.note||'同时选择 bs1、hs12、br1、L、ZZ、Djj，每项至少两种指定规格；主目标为效率，第二目标为材料成本，最多 4096 个组合，不设置公差。'):
+      enabled?(optimizationConfig?.coordinated_search?.note||'同时选择 bs1、hs12、br1、L、ZZ、Djj，全部使用指定规格，基准在清单内，最多 4096 个组合，不设置公差。'):'';
   }
 
   function optimizationObjectiveSpec(key){
