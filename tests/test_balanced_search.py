@@ -6,18 +6,23 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from dcsj import optimization as opt, balanced_search as coordinated, continuation, jobs
+from dcsj import optimization as opt, balanced_search as coordinated, separate_quota_search, continuation, jobs
 from dcsj.api import app
 from dcsj.parameters import validate
 from dcsj.storage import ConflictError
 from dcsj.coordinated_search import CoordinatedPairSearch
 
 
+@pytest.fixture(params=[coordinated, separate_quota_search], ids=["balanced", "separate-quota"])
+def search_method(request):
+    return request.param
+
+
 @pytest.fixture
-def body(parameters):
+def body(parameters, search_method):
     p = {**parameters, 'b01':2., 'hs0':.5, 'zs1':30., 'bs1':5., 'bs2':7., 'hs12':20.,
          'zc':2., 'bc02':1., 'hr0':.5, 'zs2':20., 'br1':6., 'br2':2., 'hr12':16.}
-    return {'name':'Synthetic coordination', 'parameters':p, 'algorithm':coordinated.METHOD,
+    return {'name':'Synthetic coordination', 'parameters':p, 'algorithm':search_method.METHOD,
             'variables':[{'key':k,'values':[float(p[k]+d) for d in (-2,0,2)] if k=='ZZ'
                           else [float(p[k]*f) for f in (.95,1.,1.05)]} for k in coordinated.KEYS],
             'objective':'efficiency', 'secondary_objective':'material_cost',
@@ -100,7 +105,7 @@ def test_old_fingerprints_apply_only_to_old_algorithm_identifiers(body):
 @pytest.mark.parametrize('budget,cancel_after,extensions', [
     (48,None,(24,32)), (48,17,(24,32)), (96,35,(1,8)), (96,85,(1,8)),
 ])
-def test_public_api_queue_failure_budget_and_repeated_extensions(body,snapshot,tmp_path,monkeypatch,budget,cancel_after,extensions):
+def test_public_api_queue_failure_budget_and_repeated_extensions(body,search_method,snapshot,tmp_path,monkeypatch,budget,cancel_after,extensions):
     body['max_evaluations']=budget
     database=tmp_path/'public-coordination.sqlite';monkeypatch.setenv('DCSJ_PROJECTS_DB',str(database))
     monkeypatch.setattr(jobs,'engine_status',lambda:{'status':'recovered'})
@@ -121,9 +126,9 @@ def test_public_api_queue_failure_budget_and_repeated_extensions(body,snapshot,t
     with TestClient(app,headers={'X-DCSJ-Request':'1'}) as client:
         assert client.post('/api/v1/auth/login',json={'username':'synthetic-author','password':'1234'}).status_code==200
         config=client.get('/api/v1/optimization/config').json()
-        assert any(a['id']==coordinated.METHOD for a in config['algorithms'])
+        assert any(a['id']==search_method.METHOD for a in config['algorithms'])
         schema=client.get('/openapi.json').json()
-        assert coordinated.METHOD in schema['components']['schemas']['SearchInput']['properties']['algorithm']['enum']
+        assert search_method.METHOD in schema['components']['schemas']['SearchInput']['properties']['algorithm']['enum']
         invalid={**body,'variables':body['variables'][:-1]}
         assert client.post('/api/v1/optimization/jobs',json=invalid).status_code==422 and not calls
         response=client.post('/api/v1/optimization/jobs',json=body)
@@ -142,7 +147,7 @@ def test_public_api_queue_failure_budget_and_repeated_extensions(body,snapshot,t
             for row in job['candidates']:
                 if row['calculation_id']:
                     saved=client.get('/api/v1/calculations/'+row['calculation_id']).json()
-                    assert saved['optimization']['algorithm']==coordinated.METHOD
+                    assert saved['optimization']['algorithm']==search_method.METHOD
             if extra is None:break
             prior=copy.deepcopy(job);before=len(calls)
             response=client.post('/api/v1/optimization/jobs/'+job['id']+'/extend',json={'additional_evaluations':extra})
@@ -153,12 +158,17 @@ def test_public_api_queue_failure_budget_and_repeated_extensions(body,snapshot,t
             assert worker.claim()==child['id'];worker.run_job(child['id'])
             job=client.get('/api/v1/optimization/jobs/'+child['id']).json()
             assert len(calls)-before==extra and job['evaluated']==prior['evaluated']+extra
-            assert job['request']['algorithm']==coordinated.METHOD
+            assert job['request']['algorithm']==search_method.METHOD
             original=client.get('/api/v1/optimization/jobs/'+prior['id']).json()
             assert original['candidates']==prior['candidates']
         history=continuation.read_history(job['id'],database=database)
         state,summary,*_=continuation.state(history)
         assert state.coordination_trace==control.coordination_trace
+        assert state.infill_trace==control.infill_trace
+        if search_method is separate_quota_search:
+            assert state.local_trace==control.local_trace
+            assert state.pending_local==control.pending_local
+            assert state.local_attempts==control.local_attempts
         assert summary['inherited_attempts']==job['evaluated']
         damaged=copy.deepcopy(history)
         damaged['rows'][0]['parameters']='{}'
@@ -175,14 +185,14 @@ def test_model_requirements_rejected_before_execution(body, change):
         opt.SearchInput.model_validate(body)
 
 
-def test_optional_fit_failure_preserves_parent_search(body,monkeypatch):
+def test_optional_fit_failure_preserves_parent_search(body,search_method,monkeypatch):
     req=opt.SearchInput.model_validate({**body,'max_evaluations':96})
     search=opt.Search(req);parent=CoordinatedPairSearch(req)
     calls=[]
     def unavailable(*args):
         calls.append(True)
         raise ValueError('Synthetic fit failure')
-    monkeypatch.setattr(coordinated,'QuadraticModel',unavailable)
+    monkeypatch.setattr(search_method,'QuadraticModel',unavailable)
     for _ in range(96):
         p=search.candidate();assert parent.candidate()==p
         values=metrics(p)
@@ -218,3 +228,65 @@ def test_old_version_cannot_claim_new_model_search(body):
     assert not opt.compatible_solver(req,version029)
     for method in ('coordinated_pair_poll_v1','curvature_rescue_v1','stratified_v1'):
         assert opt.compatible_solver(req.model_copy(update={'algorithm':method}),version029)
+
+
+def test_version030_history_only_allows_methods_that_existed(body):
+    req=opt.SearchInput.model_validate(body)
+    previous='96ed30667962857d408f8cebf68b0ef4b8cac9f98a6d08831dbd6b2da1df21b6'
+    assert opt.compatible_solver(req,previous)==(req.algorithm!=separate_quota_search.METHOD)
+    assert opt.compatible_solver(req.model_copy(update={'algorithm':'stratified_v1'}),previous)
+    assert opt.SearchInput.model_validate({k:v for k,v in body.items() if k!='algorithm'}).algorithm=='stratified_v1'
+
+
+def test_separate_global_local_limits_and_adverse_measurements(parameters, monkeypatch):
+    raw = body.__wrapped__(parameters, separate_quota_search)
+    req = opt.SearchInput.model_validate({**raw, 'max_evaluations': 128})
+
+    class OptimisticModel:
+        """Deliberately optimistic forecasts test acceptance, not motor quality."""
+        def __init__(self, request, observations):
+            self.rows = list(observations)
+            self.rank = self.columns = 7
+
+        def coordinates(self, point):
+            return [(point[v.key]-v.lower)/(v.upper-v.lower) for v in req.variables]
+
+        def predict(self, point):
+            return {**metrics(point), 'ATA1': .95, 'CostFx': 90.}
+
+    monkeypatch.setattr(separate_quota_search, 'QuadraticModel', OptimisticModel)
+    search = opt.Search(req)
+    attempted = []
+    rejected_local = []
+    for ordinal in range(128):
+        point = search.candidate()
+        attempted.append(point)
+        global_trial = search.infill_trace and search.infill_trace[-1]['after'] == ordinal
+        local_trial = search.local_trace and search.local_trace[-1]['after'] == ordinal
+        assert not (global_trial and local_trial)
+        values = {**metrics(point), 'ATA1': .85, 'CostFx': 100.}
+        if global_trial:
+            # Measured improvements, rather than forecasts, enable a local trial.
+            values.update(ATA1=.86+len(search.infill_trace)*.001,
+                          CostFx=99.-len(search.infill_trace)*.1)
+        if local_trial:
+            values['PF1'] = .2
+            rejected_local.append(point)
+        previous_best = search.best
+        search.consider(point, values, not opt.assess(req, values))
+        if local_trial:
+            assert search.best == previous_best and not search.records[-1]['feasible']
+            assert search.pending_local is None  # Rejected local trials cannot recurse.
+    assert len(attempted) == len(search.visited) == 128
+    assert 0 < len(search.infill_trace) <= 128//8
+    assert 0 < len(search.local_trace) <= 128//16
+    assert len(rejected_local) == len(search.local_trace)
+    for trial in search.local_trace:
+        trigger = attempted[trial['trigger_ordinal']-1]
+        point = attempted[trial['after']]
+        changed = [v for v in req.variables if point[v.key] != trigger[v.key]]
+        assert len(changed) == 1 and changed[0].key == trial['changed_axis']
+        variable = changed[0]
+        assert abs(variable.values.index(point[variable.key])-variable.values.index(trigger[variable.key])) == 1
+        assert trial['prediction_is_not_observation']
+        assert trial['actual_improved_extremes']

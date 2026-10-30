@@ -44,12 +44,12 @@ function deferred() {
   return { promise, release };
 }
 
-for(const method of ['coordinated_pair_poll_v1','balanced_quadratic_infill_v1'])test(`${method} explains required inputs without changing the draft`,async t=>{
+for(const method of ['coordinated_pair_poll_v1','balanced_quadratic_infill_v1','separate_quota_infill_v1'])test(`${method} explains required inputs without changing the draft`,async t=>{
   const note='六变量指定规格，基准在清单内，最多 4096 个组合，不设置公差。';
   const ui=await app(t,path=>{
     if(path==='/optimization/config')return {method:'测试',variables:[{key:'L',label:'长度'},{key:'ZZ',label:'导体数'},{key:'g',label:'气隙'}],
       objectives:[{id:'efficiency',label:'效率'}],materials:[],constraint_metrics:[],
-      algorithms:[{id:'stratified_v1',label:'分层采样'},{id:method,label:'可选试验搜索'}],[method==='balanced_quadratic_infill_v1'?'balanced_search':'coordinated_search']:{note}};
+      algorithms:[{id:'stratified_v1',label:'分层采样'},{id:method,label:'可选试验搜索'}],[method==='separate_quota_infill_v1'?'separate_quota_search':method==='balanced_quadratic_infill_v1'?'balanced_search':'coordinated_search']:{note}};
     if(path==='/optimization/jobs')return {items:[]};
   });
   ui.nav('optimization');await until(()=>ui.doc.querySelector('#optimization-algorithm-note'),'Method note available');

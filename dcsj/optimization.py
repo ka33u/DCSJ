@@ -18,7 +18,8 @@ SOLVER_SHA256 = hashlib.sha256(b''.join(Path(p).read_bytes() for p in
      Path(__file__).with_name('feedback.py'), Path(__file__).with_name('poll_ordering.py'),
      Path(__file__).with_name('curvature_ordering.py'), slot_search_geometry.__file__,
      Path(__file__).with_name('coordinated_search.py'),
-     Path(__file__).with_name('balanced_search.py'), Path(__file__).with_name('quadratic_model.py')))).hexdigest()
+     Path(__file__).with_name('balanced_search.py'), Path(__file__).with_name('separate_quota_search.py'),
+     Path(__file__).with_name('quadratic_model.py')))).hexdigest()
 
 
 def available_choices():
@@ -60,6 +61,11 @@ CONSTRAINTS.update(MAGNETIC_CONSTRAINTS)
 
 def compatible_solver(request, fingerprint):
     if fingerprint == SOLVER_SHA256:
+        return True
+    if request.algorithm == 'separate_quota_infill_v1':
+        return False
+    # 0.30.0 methods retain their candidate and continuation semantics.
+    if fingerprint == '96ed30667962857d408f8cebf68b0ef4b8cac9f98a6d08831dbd6b2da1df21b6':
         return True
     if request.algorithm == 'balanced_quadratic_infill_v1':
         return False
@@ -166,7 +172,7 @@ class SearchInput(BaseModel):
     tolerance_gap_mode: Literal['independent', 'fixed_neck_bottom'] = 'independent'
     tolerance_interior_samples: StrictInt = Field(default=0, ge=0, le=32)
     tolerance_sampling: Literal['centered_lhs_v1', 'nested_lhs_v1'] = 'nested_lhs_v1'
-    algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1', 'coupled_poll_v1', 'ranked_poll_v1', 'curvature_rescue_v1', 'coordinated_pair_poll_v1', 'balanced_quadratic_infill_v1'] = 'stratified_v1'
+    algorithm: Literal['hybrid_de_v1', 'stratified_v1', 'adaptive_poll_v1', 'coupled_poll_v1', 'ranked_poll_v1', 'curvature_rescue_v1', 'coordinated_pair_poll_v1', 'balanced_quadratic_infill_v1', 'separate_quota_infill_v1'] = 'stratified_v1'
     constraints: list[Constraint] = Field(default_factory=list, max_length=15)
     max_evaluations: int = Field(default=24, ge=2, le=128)
     seed: int = Field(default=42, ge=0, le=2**32-1)
@@ -235,12 +241,16 @@ class SearchInput(BaseModel):
         if self.algorithm == 'balanced_quadratic_infill_v1':
             from .balanced_search import validate_request
             validate_request(self)
+        if self.algorithm == 'separate_quota_infill_v1':
+            from .separate_quota_search import validate_request
+            validate_request(self)
         return self
 
 
 def config():
     from .coordinated_search import KEYS as coordinated_keys, NOTE as coordinated_note
     from .balanced_search import NOTE as balanced_note
+    from .separate_quota_search import NOTE as separate_note
     return {'variables': [{'key': k, 'label': v, 'integer': k in DISCRETE} for k, v in VARIABLES.items()],
             'objectives': [{'id': k, 'metric': v[0], 'direction': v[1], 'label': v[2]} for k, v in OBJECTIVES.items()],
             'constraint_metrics': sorted(CONSTRAINTS),
@@ -259,6 +269,7 @@ def config():
             'verification': {'interior_sample_counts':[4,8,16,32], 'max_evaluations':128,
                              'method':'post-selection-jittered-lhs-v1'},
             'max_evaluations': 128,
+            'separate_quota_search': {'variables':list(coordinated_keys), 'max_combinations':4096, 'note':separate_note},
             'balanced_search': {'variables':list(coordinated_keys), 'max_combinations':4096, 'note':balanced_note},
             'coordinated_search': {'variables':list(coordinated_keys), 'max_combinations':4096, 'note':coordinated_note},
             'algorithms': [{'id': 'stratified_v1', 'label': '分层采样 + 局部搜索'},
@@ -268,8 +279,9 @@ def config():
                            {'id': 'curvature_rescue_v1', 'label': '曲率补救排序（试验）'},
                            {'id': 'coordinated_pair_poll_v1', 'label': '槽型与绕组协调搜索（试验）'},
                            {'id': 'balanced_quadratic_infill_v1', 'label': '效率与成本模型搜索（试验）'},
+                           {'id': 'separate_quota_infill_v1', 'label': '模型搜索与邻点细化（试验）'},
                            {'id': 'hybrid_de_v1', 'label': '混合差分进化（新方法）'}],
-            'method': '可选择分层采样、自适应邻域、联合变量搜索、邻域预测排序、曲率补救排序、槽型与绕组协调搜索、效率与成本模型搜索或混合差分进化。联合变量法在停滞后利用已算邻点筛选成对变化，再用真实计算确认；设置公差时沿用自适应邻域。预测排序利用已算邻点安排现有候选，双目标兼顾折中方案。曲率补救是可选试验方法，探索约束边界附近可能被线性预测遗漏的候选，不保证在所有预算下更好。各方法均保留可行折中方案，每个候选使用真实计算核。'}
+            'method': '可选择分层采样、自适应邻域、联合变量搜索、邻域预测排序、曲率补救排序、槽型与绕组协调搜索、效率与成本模型搜索、模型搜索与邻点细化或混合差分进化。联合变量法在停滞后利用已算邻点筛选成对变化，再用真实计算确认；设置公差时沿用自适应邻域。预测排序利用已算邻点安排现有候选，双目标兼顾折中方案。曲率补救是可选试验方法，探索约束边界附近可能被线性预测遗漏的候选，不保证在所有预算下更好。各方法均保留可行折中方案，每个候选使用真实计算核。'}
 
 
 def metrics(result, request=None, *, cycle=None):
@@ -609,6 +621,9 @@ class HybridSearch(StratifiedSearch):
 
 
 def Search(request):
+    if request.algorithm == 'separate_quota_infill_v1':
+        from .separate_quota_search import SeparateQuotaSearch
+        return SeparateQuotaSearch(request)
     if request.algorithm == 'balanced_quadratic_infill_v1':
         from .balanced_search import BalancedModelSearch
         return BalancedModelSearch(request)
