@@ -106,3 +106,34 @@ def test_selected_wire_first_page_html_and_pdf(snapshot):
     assert '<td>采用线径 Djj</td><td>1.25 mm</td>' in first_html
     assert '<td>槽满率</td><td>80</td><td>77.5</td><td>-2.5</td>' in first_html
     assert snapshot == before
+
+
+def test_interactive_reuse_keeps_independent_snapshots_and_invalidates_inputs(client,parameters,monkeypatch):
+    from dcsj import engine
+    context={'kernel_sha256':'k','package_id':'package-a','package_version':'1'}
+    material={'name':'synthetic','revision':1}
+    calls=[]
+    monkeypatch.setattr(engine,'engine_status',lambda ctx:{'missing_assets':[]})
+    monkeypatch.setattr(engine,'resource_context',lambda:context)
+    monkeypatch.setattr(engine,'prepare_memory',lambda p,ctx:({},material))
+    def solve(p,*args):
+        calls.append(p)
+        return {'inputs':p,'metrics':[],'warnings':[],'values':{},'curves':[],
+                'trace':['首次求解'],'engine':{},'provenance':{'input_sha256':'test','elapsed_seconds':1}}
+    monkeypatch.setattr(engine,'_solve',solve)
+    def calc(name,p):
+        response=client.post('/api/v1/calculate',json={'parameters':p,'name':name})
+        assert response.status_code==200,response.text
+        return response.json()
+    a,b=calc('首次',parameters),calc('复算',parameters)
+    assert not a['provenance']['cache_hit'] and b['provenance']['cache_hit']
+    assert a['calculation_id']!=b['calculation_id'] and a['name']!=b['name']
+    assert client.get('/api/v1/calculations/'+a['calculation_id']).json()['trace']==['首次求解']
+    assert len(calls)==1
+    assert not calc('改参数',{**parameters,'g':0.67})['provenance']['cache_hit']
+    assert not calc('开曲线',{**parameters,'_curve':1})['provenance']['cache_hit']
+    material['revision']=2
+    assert not calc('新材料',parameters)['provenance']['cache_hit']
+    context['package_id']='package-b'
+    assert not calc('新资源',parameters)['provenance']['cache_hit']
+    assert len(calls)==5

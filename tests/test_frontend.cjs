@@ -105,7 +105,7 @@ async function settle() {
 
 test('series selector keeps custom input during refresh and retains unknown saved series',async t=>{
   const dom=new JSDOM('<div id="series"></div>',{runScripts:'outside-only'}),w=dom.window,d=w.document;t.after(()=>w.close());
-  w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));
+  w.eval(readFileSync(resolve(root,'frontend/design-versions.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));
   const picker=w.SeriesPicker.mount(d.querySelector('#series'));picker.options(['YE3','YE4']);picker.set('历史自定义');
   assert.equal(picker.value(),'历史自定义');
   const select=d.querySelector('select'),input=d.querySelector('input');select.value='new';select.dispatchEvent(new w.Event('change'));
@@ -184,7 +184,7 @@ async function app(t, route, extraFields = []) {
     return { ok: true, status: 200, json: async()=>data, text: async () => JSON.stringify(data) };
   };
   w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));
-  w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));
+  w.eval(readFileSync(resolve(root,'frontend/design-versions.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));
   w.eval(script);
   await until(() => doc.querySelector('#connection-text').textContent === '服务已连接', 'App boot completed');
   await settle();
@@ -320,7 +320,7 @@ test('a nonempty model catalog renders and loads a design without project action
 });
 
 test('saved projects expose history, archive and restore using the current revision', async t => {
-  const project = { id: 'project-1', name: '人工项目', revision: 3, archived: 0, updated_at: created, parameters, notes: '' };
+  const project = { id: 'project-1', owner:'张工', name: '人工项目', revision: 3, archived: 0, updated_at: created, parameters, notes: '' };
   const ui = await app(t, (path, request) => {
     if (path === '/projects') return { items: !project.archived || request.url.searchParams.get('include_archived') === 'true' ? [project] : [] };
     if (path === '/projects/project-1') return project;
@@ -740,7 +740,7 @@ async function txApp(t, route = () => undefined) {
     }
     assert.notEqual(data,undefined,request.path);return {ok:true,json:async()=>data};
   };
-  t.after(()=>{w.close();assert.deepEqual(errors,[]);});w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/tx.js'),'utf8'));
+  t.after(()=>{w.close();assert.deepEqual(errors,[]);});w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/design-versions.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/tx.js'),'utf8'));
   await until(()=>doc.querySelector('#design-title').textContent===p.TYP&&!doc.querySelector('#calculate').disabled,'TX starts');
   return {w,doc,calls,p,result};
 }
@@ -770,7 +770,7 @@ test('TX computes its own parameter contract and renders immutable results, harm
 });
 
 test('TX saves revisions with optimistic guards and creates a separate copy',async t=>{
-  const a=await txApp(t,(req,{p})=>req.path.startsWith('/designs')?{id:'user-tx',name:p.TYP,revision:req.method==='PUT'?2:1}:undefined);
+  const a=await txApp(t,(req,{p})=>req.path.startsWith('/designs')?{id:'user-tx',name:p.TYP,owner:'张工',revision:req.method==='PUT'?2:1}:undefined);
   a.doc.querySelector('#save-design').click();await until(()=>a.doc.querySelector('#revision').textContent.includes('v1'),'saved first revision');
   a.doc.querySelector('#save-design').click();await until(()=>a.doc.querySelector('#revision').textContent.includes('v2'),'saved second revision');
   const update=a.calls.find(c=>c.method==='PUT');assert.equal(update.body.expected_revision,1);assert.equal(update.path,'/designs/user-tx');
@@ -821,7 +821,7 @@ test('saving a signed design refreshes catalog and loading it updates the same d
   const ui = await app(t, (path, request) => {
     if (path === '/models') return {total:project?1:0,items:project?[{id:reference,kind:'saved_design',model:project.name,revision:project.revision,author:project.author}]:[]};
     if (path === '/example') return {name:'署名测试',parameters};
-    if (path === '/projects' && request.method === 'POST') return project={...request.body,id:'project-author',revision:1,lineage:{},archived:0};
+    if (path === '/projects' && request.method === 'POST') return project={...request.body,id:'project-author',owner:'张工',revision:1,lineage:{},archived:0};
     if (path === '/models/'+encodeURIComponent(reference)) return {kind:'saved_design',model:project.name,project};
     if (path === '/projects/project-author' && request.method === 'PUT') return project={...project,...request.body,revision:2};
   });
@@ -863,7 +863,7 @@ test('TX author is revision metadata and a saved library record resumes its orig
   let design;
   const reference='saved-design:tx-author@1';
   const a=await txApp(t,(req,{p})=>{
-    if(req.path==='/designs'&&req.method==='POST')return design={id:'tx-author',name:p.TYP,revision:1,...req.body,source:{resource_version:'synthetic.2',model_id:'synthetic'}};
+    if(req.path==='/designs'&&req.method==='POST')return design={id:'tx-author',owner:'张工',name:p.TYP,revision:1,...req.body,source:{resource_version:'synthetic.2',model_id:'synthetic'}};
     if(req.path==='/models'&&design)return {total:1,items:[{id:reference,name:design.name,kind:'saved_design',power_kw:p.P2,poles:4,revision:1,author:design.author,source:{}}]};
     if(req.path==='/models/'+encodeURIComponent(reference))return {kind:'saved_design',design};
     if(req.path==='/designs/tx-author'&&req.method==='PUT')return design={...design,...req.body,revision:2};
@@ -1542,4 +1542,38 @@ test('failed verification retains all scenarios for a new search with explicit b
   assert.doesNotMatch(d.querySelector('#optimization-detail').textContent,/区间内部采样：每组增加/);
   ui.find('#optimization-detail button','查看源复核').click();await until(()=>d.querySelector('#feedback-form'),'Source restored');
   assert.match(d.querySelector('#optimization-detail').textContent,/后续搜索/);
+});
+
+test('foreign designs are copy-only and retain the loaded revision',async t=>{
+  const source={id:'other',revision:3,owner:'李工',author:'李工',name:'共享方案',parameters};
+  const ui=await app(t,(path,req)=>{
+    if(path==='/projects' && req.method==='POST')return {...req.body,id:'mine',owner:'张工',revision:1};
+    if(path==='/projects')return {items:[source]};
+    if(path==='/projects/other')return source;
+  });
+  ui.nav('projects');await until(()=>ui.doc.querySelector('#project-table-body button'),'Listed');
+  assert.ok(!ui.doc.querySelector('#project-table-body').textContent.includes('归档'));
+  ui.find('#project-table-body button','打开设计 →').click();await settle();
+  ui.doc.querySelector('#save-design').click();
+  assert.ok(ui.doc.querySelector('#save-as-new').disabled && ui.doc.querySelector('#save-as-new').checked);
+  ui.doc.querySelector('#save-form').dispatchEvent(new ui.w.Event('submit',{cancelable:true}));await settle();
+  const copy=ui.calls.find(c=>c.method==='POST' && c.url.pathname==='/api/v1/projects');
+  assert.equal(copy.body.copied_from,'saved-design:other@3');assert.equal(copy.body.author,'张工');
+  assert.ok(!ui.calls.some(c=>c.method==='PUT'));
+});
+
+test('TX foreign revision shows the changed values and can only be copied',async t=>{
+  const source={id:'other',revision:2,latest_revision:3,owner:'李工',author:'李工',previous_revision:1,
+    changes:[{field:'parameters.P2',before:1,after:2}],source:{},name:'共享 TX'};
+  const a=await txApp(t,(req,{p})=>{
+    if(req.path==='/designs' && req.method==='GET')return {items:[{...source,revision:3}]};
+    if(req.path==='/designs/other')return {...source,parameters:p};
+    if(req.path==='/designs' && req.method==='POST')return {...source,id:'mine',revision:1,owner:'张工',author:'张工'};
+  });
+  a.doc.querySelector('#designs-open').click();await settle();
+  a.doc.querySelector('#records-list select').value='2';a.doc.querySelector('#records-list button').click();await settle();
+  assert.ok(a.doc.querySelector('#save-design').disabled);
+  assert.match(a.doc.querySelector('#version-details').textContent,/1 → 2/);
+  a.doc.querySelector('#save-copy').click();await settle();
+  assert.equal(a.calls.find(c=>c.method==='POST' && c.path==='/designs').body.copied_from,'saved-design:other@2');
 });

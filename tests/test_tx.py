@@ -176,17 +176,20 @@ def test_author_and_saved_catalog_without_private_resources(client, tx_parameter
     update.update(expected_revision=2,author='李工')
     assert client.put(url+'/designs/'+d['id'],json=update).status_code==403
     assert client.post('/api/v1/auth/login',json={'username':'李工','password':'1234'}).status_code==200
-    assert client.put(url+'/designs/'+d['id'],json=update).json()['author']=='李工'
+    assert client.put(url+'/designs/'+d['id'],json=update).status_code==403
     old=client.get(url+'/models/'+reference).json()['design']
     assert old['author']=='张工' and old['name']==tx_parameters['TYP'] and old['revision']==1
-    assert client.get(url+'/models?source=saved&q=张工').json()['total']==0
+    latest=client.get(url+'/designs/'+d['id']).json()
+    assert latest['changes']==[{'field':'parameters.TYP','before':tx_parameters['TYP'],'after':'New name'}]
+    fork=client.post(url+'/designs',json={'parameters':tx_parameters,'copied_from':reference}).json()
+    assert fork['id']!=d['id'] and fork['owner']=='李工' and fork['revision']==1
+    assert fork['copied_from']=={'id':d['id'],'revision':1,'author':'张工','name':old['name']}
+    assert client.get(url+'/models?source=saved&q=张工').json()['total']==1
     assert client.get(url+'/models?source=saved&q=李工').json()['total']==1
-    update.update(expected_revision=3,author='')
-    assert client.put(url+'/designs/'+d['id'],json=update).status_code==403
-    update.update(expected_revision=2,author='李工')
-    assert client.put(url+'/designs/'+d['id'],json=update).status_code==409
+    assert client.put(url+'/designs/'+fork['id'],json={**update,'expected_revision':1}).json()['revision']==2
+    assert client.put(url+'/designs/'+fork['id'],json={**update,'expected_revision':1}).status_code==409
     assert client.get(url+'/models?source=saved&q=%25').json()['total']==0
-    assert client.get(url+'/models?source=saved&offset=1').json()['items']==[]
+    assert client.get(url+'/models?source=saved&offset=2').json()['items']==[]
 
 
 def test_series_saved_and_filtered_without_private_tx_resources(client,tx_parameters,monkeypatch):

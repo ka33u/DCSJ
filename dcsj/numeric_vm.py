@@ -110,6 +110,15 @@ for _root in ("esi", "edi", "ebp", "esp"):
     ALIASES[_root[1:]] = (_root, 0, 16)
 
 
+_UNARY = {0x42CFFF: math.cos, 0x42D01A: math.sin, 0x42D035: math.tan,
+          0x42D050: math.sqrt, 0x42D06E: math.log, 0x42D0DA: math.asin,
+          0x42D110: math.atan, 0x42D1C1: math.exp}
+_CALLBACK_PCS = COST_EVENTS | _UNARY.keys() | {
+    0x459060, 0x42D28B, 0x42D264, 0x42D780, 0x42DDD0, 0x42FBC0, 0x430220,
+    0x435660, 0x432650, 0x432740, 0x4369D0, 0x4358E0, 0xFFFF000, 0x436A50,
+}
+
+
 class _VM:
     def __init__(self, program, memory_overrides):
         self.program = program
@@ -245,24 +254,26 @@ class _VM:
             self.cf = self.of = False
 
     def branch(self, mnemonic):
-        return {
-            "je": self.zf, "jne": not self.zf,
-            "jp": self.pf, "jnp": not self.pf,
-            "jl": self.sf != self.of, "jle": self.zf or self.sf != self.of,
-            "jg": not self.zf and self.sf == self.of, "jge": self.sf == self.of,
-            "jb": self.cf, "jbe": self.cf or self.zf,
-            "ja": not self.cf and not self.zf, "jae": not self.cf,
-        }[mnemonic]
+        if mnemonic == "je": return self.zf
+        if mnemonic == "jne": return not self.zf
+        if mnemonic == "jle": return self.zf or self.sf != self.of
+        if mnemonic == "jl": return self.sf != self.of
+        if mnemonic == "jge": return self.sf == self.of
+        if mnemonic == "jg": return not self.zf and self.sf == self.of
+        if mnemonic == "jb": return self.cf
+        if mnemonic == "jae": return not self.cf
+        if mnemonic == "jbe": return self.cf or self.zf
+        if mnemonic == "ja": return not self.cf and not self.zf
+        if mnemonic == "jp": return self.pf
+        if mnemonic == "jnp": return not self.pf
+        raise KeyError(mnemonic)
 
     def callback(self):
         if self.pc in COST_EVENTS and self.cost_traversal.visit(self):
             return True
-        unary = {0x42CFFF: math.cos, 0x42D01A: math.sin, 0x42D035: math.tan,
-                 0x42D050: math.sqrt, 0x42D06E: math.log, 0x42D0DA: math.asin,
-                 0x42D110: math.atan, 0x42D1C1: math.exp}
-        if self.pc in unary:
-            self.calls[unary[self.pc].__name__] += 1
-            self.set_st(0, unary[self.pc](self.st()))
+        if self.pc in _UNARY:
+            self.calls[_UNARY[self.pc].__name__] += 1
+            self.set_st(0, _UNARY[self.pc](self.st()))
             self.ret()
         elif self.pc == 0x459060:
             self.calls["pow"] += 1
@@ -435,7 +446,7 @@ def run(memory_overrides: dict[int, float | bytes], *, max_steps: int = 2000000,
             vm.steps += 1
             if vm.pc in names:
                 vm.calls[names[vm.pc]] += 1
-            if vm.callback():
+            if vm.pc in _CALLBACK_PCS and vm.callback():
                 continue
             instruction = code.get(vm.pc)
             if instruction is None:

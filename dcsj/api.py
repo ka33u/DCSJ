@@ -6,19 +6,21 @@ from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import __version__, catalog, projects, calculations, comparisons, modeling, resources, library, slots, auth
-from .execution import BusyError, compute
+from .execution import BusyError, compute_interactive as compute
 from .storage import ConflictError, NotFoundError, now
 from .parameters import ROOT, InputError, schema, validate, example_data, check_keys
 from .engine import CalculationUnavailableError
 from . import jobs, optimization, verification, feedback, continuation
 from . import pdf_fonts
 from .pdf_report import PDFUnavailableError, PDFContentError
-from .saved_catalog import series_name
+from .saved_catalog import series_name, parse_reference
+from .design_history import OwnershipError, copy_origin
 
 
 @asynccontextmanager
@@ -36,6 +38,9 @@ app = FastAPI(
     docs_url=None, redoc_url=None,
     lifespan=lifespan,
 )
+# Curve responses and local workbench assets benefit on slower LAN links.
+app.add_middleware(GZipMiddleware, minimum_size=4096, compresslevel=3)
+
 from .tx_api import router as tx_router
 from .tx_parameters import TXInputError
 from .tx import TXUnavailableError
@@ -94,6 +99,11 @@ class ProjectInput(DesignInput):
         if not value.strip():
             raise ValueError("设计名称不能为空")
         return value.strip()
+
+
+class ProjectCreate(ProjectInput):
+    copied_from: str | None = Field(default=None, pattern=r'^saved-design:.+@[1-9][0-9]*$', max_length=160,
+                                    description='另存为时引用的原设计和版本')
 
 
 class ProjectUpdate(ProjectInput):
@@ -305,6 +315,11 @@ async def pdf_unavailable_error(request, error):
 @app.exception_handler(PDFContentError)
 async def pdf_content_error(request, error):
     return JSONResponse({"detail": str(error)}, status_code=422)
+
+
+@app.exception_handler(OwnershipError)
+async def ownership_error(request, error):
+    return JSONResponse({'detail': str(error)}, status_code=403)
 
 
 @app.exception_handler(ConflictError)
@@ -531,9 +546,14 @@ def get_projects(include_archived: bool = False):
 
 
 @app.post("/api/v1/projects", status_code=201, tags=["保存的设计"])
-def save_project(body: ProjectInput, request: Request):
+def save_project(body: ProjectCreate, request: Request):
     author = auth.author(request, body.author)
-    origin = catalog.lineage(body.base_model_id) if body.base_model_id else {}
+    if body.copied_from:
+        identity, version = parse_reference(body.copied_from)
+        parent = projects.get_revision(identity, version)
+        origin = copy_origin(parent['lineage'], identity, parent)
+    else:
+        origin = catalog.lineage(body.base_model_id) if body.base_model_id else {}
     bindings = body.slot_bindings.model_dump(exclude_none=True)
     slots.resolve(bindings)
     return projects.save_project(body.name, body.parameters, body.notes, origin, author, bindings, body.series)
@@ -563,8 +583,8 @@ def update_project(project_id: str, body: ProjectUpdate, request: Request):
 
 
 @app.post("/api/v1/projects/{project_id}/archive", tags=["保存的设计"])
-def archive_project(project_id: str, body: ArchiveInput):
-    return projects.set_archived(project_id, body.archived, body.expected_revision)
+def archive_project(project_id: str, body: ArchiveInput, request: Request):
+    return projects.set_archived(project_id, body.archived, body.expected_revision, auth.author(request))
 
 
 @app.get("/api/v1/projects/{project_id}/revisions", tags=["保存的设计"])
@@ -750,6 +770,11 @@ def styles():
 @app.get("/app.js", include_in_schema=False)
 def javascript():
     return FileResponse(ROOT / "frontend/app.js")
+
+
+@app.get('/design-versions.js', include_in_schema=False)
+def version_script():
+    return FileResponse(ROOT/'frontend/design-versions.js', media_type='application/javascript')
 
 
 @app.get('/series-picker.js', include_in_schema=False)

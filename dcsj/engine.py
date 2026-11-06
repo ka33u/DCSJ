@@ -3,6 +3,8 @@
 The program runs from fresh memory for every request. Original database result
 columns are never read by this computation.
 """
+from collections import OrderedDict
+from threading import Lock
 import hashlib
 import json
 import math
@@ -178,13 +180,53 @@ def extract_curves(result, parameters, warnings):
     return curves
 
 
-def calculate_design(values, *, refine_torque=False, continuous_torque=False):
+# Only completed interactive results enter this per-process cache. Serialized entries
+# cannot be mutated by later requests attaching their own project, source or slots.
+_interactive_results = OrderedDict()
+_result_lock = Lock()
+
+
+def _fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def calculate_design(values, *, refine_torque=False, continuous_torque=False, reuse=False):
     context = resource_context()
     if engine_status(context)["missing_assets"]:
         raise CalculationUnavailableError("计算资源尚未安装，请在资源管理中导入授权的私有资源包。")
     p = validate(values)
     memory, material = prepare_memory(p, context)
     started = time.perf_counter()
+    input_hash, material_hash = _fingerprint(p), _fingerprint(material)
+    reusable = reuse and not refine_torque and not continuous_torque
+    if reusable:
+        key = (input_hash, material_hash, context['package_id'], context['package_version'],
+               context['kernel_sha256'], WRAPPER_SHA256)
+        with _result_lock:
+            entry = _interactive_results.get(key)
+            if entry is not None:
+                _interactive_results.move_to_end(key)
+        if entry is not None:
+            result = json.loads(entry)
+            result['trace'].insert(0, '输入、材料与计算版本相同，复用完整数值结果。以下为首次求解记录。')
+            result['provenance']['original_elapsed_seconds'] = result['provenance']['elapsed_seconds']
+            result['provenance']['cache_hit'] = True
+            result['provenance']['elapsed_seconds'] = time.perf_counter() - started
+            return result
+
+    result = _solve(p, memory, material, context, started, input_hash, material_hash, refine_torque, continuous_torque)
+    if reusable:
+        result['provenance']['cache_hit'] = False
+        entry = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+        with _result_lock:
+            _interactive_results[key] = entry
+            _interactive_results.move_to_end(key)
+            if len(_interactive_results) > 16:
+                _interactive_results.popitem(last=False)
+    return result
+
+
+def _solve(p, memory, material, context, started, input_hash, material_hash, refine_torque, continuous_torque):
     try:
         from . import torque_refinement
         capture = {'capture_at': torque_refinement.CHECKPOINT} if refine_torque or continuous_torque else {}
@@ -263,8 +305,8 @@ def calculate_design(values, *, refine_torque=False, continuous_torque=False):
             "engine_version": __version__,
             "kernel_sha256": context['kernel_sha256'], "wrapper_sha256": WRAPPER_SHA256,
             "resource_package": context['package_id'], "resource_version": context['package_version'],
-            "material_sha256": hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest(),
-            "input_sha256": hashlib.sha256(json.dumps(p, sort_keys=True).encode()).hexdigest(),
+            "material_sha256": material_hash,
+            "input_sha256": input_hash,
             **metadata['input_fingerprints'],
             'loss_semantics': metadata['loss_semantics'],
             'material_semantics': metadata['material_semantics'],

@@ -113,7 +113,7 @@ def model(record_id):
         identity, revision = saved_catalog.parse_reference(record_id)
         project = projects.get_revision(identity, revision)
         current = projects.get_project(identity)
-        project.update(id=identity, archived=current['archived'])
+        project.update(id=identity, archived=current['archived'], owner=current['owner'], latest_revision=current['revision'])
         return {'id': record_id, 'model': project['name'], 'parameters': project['parameters'],
                 'inputs': project['parameters'], 'electrical': electrical(project['parameters']),
                 'kind': 'saved_design', 'project': project, 'author': project['author'], 'series': project['series'],

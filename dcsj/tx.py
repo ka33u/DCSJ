@@ -14,7 +14,8 @@ from .storage import connect, dumps, now, audit, ConflictError, NotFoundError
 from .tx_parameters import validate, TXInputError
 from .tx_vm import load_program, TXVM
 from .execution import BusyError
-from .saved_catalog import series_name
+from .saved_catalog import series_name, parse_reference
+from .design_history import TX_OWNER, copy_origin, require_owner, describe
 
 _slots=threading.BoundedSemaphore(2)
 
@@ -204,44 +205,54 @@ def calculations(limit=60):
 
 
 def designs():
-    with connect() as db:return [dict(r) for r in db.execute('SELECT * FROM tx_designs ORDER BY updated_at DESC LIMIT 500')]
+    with connect() as db:return [dict(r) for r in db.execute(f'SELECT *,{TX_OWNER} AS owner FROM tx_designs ORDER BY updated_at DESC LIMIT 500')]
 
 
 def design(identity,revision=None):
     with connect() as db:
-        row=db.execute('SELECT * FROM tx_designs WHERE id=?',(identity,)).fetchone()
+        row=db.execute(f'SELECT *,{TX_OWNER} AS owner FROM tx_designs WHERE id=?',(identity,)).fetchone()
         if not row:raise NotFoundError('TX 设计不存在')
         version=db.execute('SELECT * FROM tx_revisions WHERE design_id=? AND revision=?',(identity,revision or row['revision'])).fetchone()
         if not version:raise NotFoundError('TX 设计版本不存在')
+        previous = db.execute('SELECT * FROM tx_revisions WHERE design_id=? AND revision=?',
+                              (identity, version['revision'] - 1)).fetchone()
         versions=[r[0] for r in db.execute('SELECT revision FROM tx_revisions WHERE design_id=? ORDER BY revision DESC',(identity,))]
-        return {**dict(row),'name':json.loads(version['parameters'])['TYP'],'author':version['author'],'series':version['series'],
+        return {**dict(row),**describe(version,previous),'name':json.loads(version['parameters'])['TYP'],'author':version['author'],'series':version['series'],
                 'revision':version['revision'],'latest_revision':row['revision'],'parameters':json.loads(version['parameters']),
                 'source':json.loads(version['source']),'revisions':versions,
                 'slot_bindings':json.loads(version['slot_bindings'])}
 
 
-def save_design(parameters,identity=None,expected_revision=None,base_model_id=None,author=None,slot_bindings=None,series=None):
+def save_design(parameters,identity=None,expected_revision=None,base_model_id=None,author=None,slot_bindings=None,series=None,*,copied_from=None):
     series=series_name(series)
     from . import slots
     if slot_bindings is not None:
         slots.resolve(slot_bindings, 'tx')
-    parameters=validate(parameters);source=lineage(base_model_id,context()) if base_model_id else {'kind':'manual'}
+    parameters=validate(parameters)
+    if copied_from:
+        parent_id, version = parse_reference(copied_from)
+        parent = design(parent_id, version)
+        source = copy_origin(parent['source'], parent_id, parent)
+    else:
+        source = lineage(base_model_id,context()) if base_model_id else {'kind':'manual'}
     stamp=now()
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
         if identity:
-            row=db.execute('SELECT revision,author,series FROM tx_designs WHERE id=?',(identity,)).fetchone()
+            row=db.execute(f'SELECT revision,series,{TX_OWNER} AS owner FROM tx_designs WHERE id=?',(identity,)).fetchone()
             if not row:raise NotFoundError('TX 设计不存在')
+            require_owner(row['owner'], author)
             if row['revision']!=expected_revision:raise ConflictError('TX 设计已被更新，请重新打开最新版本')
+            previous = db.execute('SELECT source,slot_bindings FROM tx_revisions WHERE design_id=? AND revision=?',
+                                  (identity,expected_revision)).fetchone()
+            previous_source = json.loads(previous['source'])
             if not base_model_id:
-                previous=db.execute('SELECT source FROM tx_revisions WHERE design_id=? AND revision=?',
-                                    (identity,expected_revision)).fetchone()
-                source=json.loads(previous['source'])
+                source = previous_source
+            elif 'copied_from' in previous_source:
+                source['copied_from'] = previous_source['copied_from']
             revision=expected_revision+1
             if slot_bindings is None:
-                slot_bindings=json.loads(db.execute('SELECT slot_bindings FROM tx_revisions WHERE design_id=? AND revision=?',
-                                                    (identity,expected_revision)).fetchone()[0])
-            author=row['author'] if author is None else author
+                slot_bindings=json.loads(previous['slot_bindings'])
             series=row['series'] if series is None else series
             db.execute('UPDATE tx_designs SET name=?,revision=?,updated_at=?,author=? WHERE id=?',(parameters['TYP'],revision,stamp,author,identity))
         else:

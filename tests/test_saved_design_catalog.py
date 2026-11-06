@@ -24,20 +24,26 @@ def test_author_revisions_legacy_updates_and_catalog_loading(client, parameters)
     loaded = client.get('/api/v1/models/' + reference).json()
     assert loaded['project']['id'] == d['id'] and loaded['project']['revision'] == 1
     assert loaded['parameters'] == parameters and loaded['project']['lineage'] == {}
-    # Omitted author is filled from the session; a new user signs only the new revision.
-    body = {'name': '重新命名', 'parameters': parameters, 'expected_revision': 1}
+    # Only the original owner may append revisions. Others can fork a pinned version.
+    body = {'name': '重新命名', 'parameters': {**parameters, 'g':0.65}, 'expected_revision': 1}
     updated = client.put('/api/v1/projects/' + d['id'], json=body).json()
     assert updated['author'] == '张工'
     assert client.post('/api/v1/auth/login',json={'username':'李工','password':'1234'}).status_code == 200
     body.update(expected_revision=2, author='李工')
-    assert client.put('/api/v1/projects/' + d['id'], json=body).json()['author'] == '李工'
+    assert client.put('/api/v1/projects/' + d['id'], json=body).status_code == 403
+    assert client.post(f"/api/v1/projects/{d['id']}/archive",json={'archived':True,'expected_revision':2}).status_code == 403
     assert client.get('/api/v1/models/' + reference).json()['project']['author'] == '张工'
     versions = client.get(f"/api/v1/projects/{d['id']}/revisions").json()['items']
-    assert [v['author'] for v in versions] == ['李工', '张工', '张工']
-    body.update(expected_revision=3, author='')
-    assert client.put('/api/v1/projects/' + d['id'], json=body).status_code == 403
-    body.update(expected_revision=2, author='李工')
-    assert client.put('/api/v1/projects/' + d['id'], json=body).status_code == 409
+    assert [v['author'] for v in versions] == ['张工', '张工']
+    assert versions[0]['previous_revision'] == 1
+    assert versions[0]['changes'] == [
+        {'field':'name','before':d['name'],'after':'重新命名'},
+        {'field':'parameters.g','before':parameters['g'],'after':0.65}]
+    fork = client.post('/api/v1/projects', json={'name':'副本','parameters':parameters,'copied_from':reference}).json()
+    assert fork['id'] != d['id'] and fork['owner'] == '李工' and fork['revision'] == 1
+    assert fork['lineage']['copied_from'] == {'id':d['id'],'name':d['name'],'revision':1,'author':'张工'}
+    assert client.put('/api/v1/projects/'+fork['id'],json={**body,'expected_revision':1}).json()['revision']==2
+    assert client.put('/api/v1/projects/'+fork['id'],json={**body,'expected_revision':1}).status_code==409
     assert client.post('/api/v1/projects', json={**body, 'author': 'x' * 121}).status_code == 422
 
 
@@ -64,6 +70,7 @@ def test_saved_search_duplicates_literal_queries_filters_pagination_and_archive(
     union = client.get('/api/v1/models?source=all&limit=3&offset=1').json()
     assert union['total'] == 4 and [r['id'] for r in union['items']] == [pages[1], 'original-a', 'original-b']
     assert client.get('/api/v1/models').json()['items'] == originals  # legacy default retained
+    assert client.post('/api/v1/auth/login',json={'username':first['author'],'password':'1234'}).status_code == 200
     client.post(f"/api/v1/projects/{first['id']}/archive", json={'archived': True, 'expected_revision': 1})
     assert search(q='同名')['total'] == 1
     client.post(f"/api/v1/projects/{first['id']}/archive", json={'archived': False, 'expected_revision': 1})
@@ -120,3 +127,23 @@ def test_series_input_validation_is_separate_from_numeric_parameters(client,para
     for value in ('x'*81,'line\nline',[],42):
         assert client.post('/api/v1/projects',json={'name':'Test','parameters':parameters,'series':value}).status_code==422
     assert client.post('/api/v1/projects',json={'name':'Test','parameters':parameters}).json()['series']==''
+
+
+def test_old_multi_author_record_belongs_to_first_author(client,parameters):
+    first = create(client,parameters)
+    project_url = '/api/v1/projects/'+first['id']
+    update = {'name':'旧版迭代','parameters':parameters,'expected_revision':1}
+    assert client.put(project_url,json=update).status_code == 200
+    # Emulate a history written before ownership enforcement.
+    with storage.connect() as db:
+        db.execute("UPDATE projects SET author='李工' WHERE id=?", (first['id'],))
+        db.execute("UPDATE project_revisions SET author='李工' WHERE project_id=? AND revision=2", (first['id'],))
+    assert client.get(project_url).json()['owner'] == '张工'
+    client.post('/api/v1/auth/login',json={'username':'李工','password':'1234'}).raise_for_status()
+    assert client.put(project_url,json={**update,'expected_revision':2}).status_code == 403
+    client.post('/api/v1/auth/login',json={'username':'张工','password':'1234'}).raise_for_status()
+    changed={**parameters,'kW':str(parameters['kW']),'g':0.66}
+    assert client.put(project_url,json={**update,'expected_revision':2,'parameters':changed}).status_code == 200
+    versions=client.get(project_url+'/revisions').json()['items']
+    assert versions[0]['changes'] == [{'field':'parameters.g','before':parameters['g'],'after':0.66}]
+    assert versions[1]['author'] == '李工'

@@ -104,7 +104,8 @@ def test_auth_survives_reopening_database_without_changing_history(client,parame
     assert client.get('/api/v1/auth/me').json()['username']=='张工'
     assert auth.session(cookie)['username']=='张工'
     updated=client.put('/api/v1/projects/'+old['id'],json={'name':'Old','parameters':parameters,'expected_revision':1})
-    assert updated.json()['author']=='张工'
+    assert updated.status_code==403
+    assert projects.get_project(old['id'])['revision']==1
     assert projects.get_revision(old['id'],1)['author']=='旧署名'
 
 

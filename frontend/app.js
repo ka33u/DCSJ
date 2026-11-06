@@ -900,20 +900,30 @@
           } catch (error) { showToast(errorText(error), "error"); }
           finally { archive.disabled = false; }
         });
-        action.append(archive);
+        if (DesignVersions.owned(project)) action.append(archive);
         row.append(action);
         $("#project-table-body").append(row);
       });
     } catch (error) { if (request === projectsRequest) $("#projects-feedback").textContent = `读取失败：${errorText(error)}`; }
   }
+  function saveMode() {
+    const project = state.project, create = $("#save-as-new").checked;
+    $("#confirm-save").textContent = !project ? "保存设计" : create ? "另存为我的方案" : "保存为 v" + (project.revision + 1);
+    $("#save-mode").textContent = !project ? "建立首版 v1。" : create ?
+      "新方案从 v1 开始，保留来源设计及版本，原方案不变。" :
+      "保留 v" + project.revision + "，本次变更可在「版本」中查看。";
+  }
+  $("#save-as-new").addEventListener("change", saveMode);
   function openSaveDialog() {
     if (!populated()) return showToast("请先载入设计参数。", "warning");
     $("#design-name").value = state.name;
     seriesPicker.set(state.series);
     $("#design-author").value = window.DCSJAuth.username();
     $("#design-notes").value = state.project?.notes || "";
-    $("#save-as-new").checked = !state.project || !!state.project.archived;
-    $("#save-as-new").disabled = !state.project;
+    const mustCopy = !DesignVersions.editable(state.project);
+    $("#save-as-new").checked = mustCopy;
+    $("#save-as-new").disabled = mustCopy;
+    saveMode();
     $("#save-error").classList.add("hidden");
     $("#save-dialog").showModal();
     $("#design-name").focus();
@@ -927,8 +937,8 @@
     $("#confirm-save").textContent = "保存中…";
     const revision = state.revision;
     try {
-      const updating = state.project && !$("#save-as-new").checked;
-      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, series: seriesPicker.value(), author: window.DCSJAuth.username(), parameters: state.parameters, slot_bindings: state.slotBindings, base_model_id: state.baseModelId, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : {}) }) });
+      const updating = DesignVersions.editable(state.project) && !$("#save-as-new").checked;
+      const saved = await api(updating ? `/projects/${state.project.id}` : "/projects", { method: updating ? "PUT" : "POST", body: JSON.stringify({ name, series: seriesPicker.value(), author: window.DCSJAuth.username(), parameters: state.parameters, slot_bindings: state.slotBindings, base_model_id: state.baseModelId, notes: $("#design-notes").value, ...(updating ? { expected_revision: state.project.revision } : state.project ? { copied_from: DesignVersions.copyReference(state.project) } : {}) }) });
       if (!saved.id) throw new Error("服务未返回设计 ID，无法确认是否保存成功。");
       state.catalog.loaded = false; ++state.catalog.request;
       if (revision === state.revision) {
@@ -946,7 +956,7 @@
     } catch (error) {
       $("#save-error").textContent = errorText(error);
       $("#save-error").classList.remove("hidden");
-    } finally { seriesPicker.disable(false); $("#confirm-save").disabled = false; $("#confirm-save").textContent = "保存设计"; }
+    } finally { seriesPicker.disable(false); $("#confirm-save").disabled = false; saveMode(); }
   }
   function exportDesign() {
     if (!populated()) return showToast("请先载入设计参数。", "warning");
@@ -1020,10 +1030,12 @@
             if (request !== modelRequest) return;
             applying = true;
             acceptDesign(revision.parameters, `${revision.name} · v${item.revision} 副本`, `版本 ${project.id} / ${item.revision}`, "", revision.lineage?.id || null, revision.author, revision.slot_bindings, revision.series);
+            state.project = { ...revision, id: project.id, revision: item.revision, copyOnly: true };
             state.dirty = true;
             $("#history-dialog").close();
           } catch (error) { if (applying || request === undefined || request === modelRequest) showToast(errorText(error), "error"); }
         }));
+        row.append(DesignVersions.describe(item, state.schema.fields));
         container.append(row);
       });
     } catch (error) { container.replaceChildren(el("p", "inline-error", errorText(error))); }

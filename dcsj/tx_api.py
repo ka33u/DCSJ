@@ -34,6 +34,11 @@ class TXDesignInput(TXInput):
         return value.strip() if value is not None else None
 
 
+class TXDesignCreate(TXDesignInput):
+    copied_from: str | None = Field(default=None, pattern=r'^saved-design:.+@[1-9][0-9]*$', max_length=160,
+                                    description='另存为时引用的 TX 设计和版本')
+
+
 class TXDesignUpdate(TXDesignInput):
     expected_revision: int=Field(ge=1)
 
@@ -111,8 +116,8 @@ def designs():return {'items':tx.designs()}
 
 
 @router.post('/api/v1/tx/designs',status_code=201)
-def create(body:TXDesignInput,request:Request):
-    return tx.save_design(body.parameters,base_model_id=body.base_model_id,author=auth.author(request,body.author),slot_bindings=body.slot_bindings.model_dump(exclude_none=True),series=body.series)
+def create(body:TXDesignCreate,request:Request):
+    return tx.save_design(body.parameters,base_model_id=body.base_model_id,author=auth.author(request,body.author),slot_bindings=body.slot_bindings.model_dump(exclude_none=True),series=body.series,copied_from=body.copied_from)
 
 
 @router.get('/api/v1/tx/designs/{identity}')

@@ -7,6 +7,10 @@ from dcsj.parameters import INPUT_KEYS
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    # Each client fixture simulates its own service (and often a different mock kernel).
+    from collections import OrderedDict
+    from dcsj import engine
+    monkeypatch.setattr(engine, '_interactive_results', OrderedDict())
     monkeypatch.setenv('DCSJ_PROJECTS_DB', str(tmp_path / 'designs.sqlite'))
     with TestClient(app, headers={'X-DCSJ-Request':'1'}) as c:
         response = c.post('/api/v1/auth/login', json={'username':'张工','password':'1234'})

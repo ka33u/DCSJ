@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from dcsj import projects
+from dcsj.design_history import OwnershipError
 from dcsj.backup import backup, restore
 from dcsj.storage import ConflictError, connect
 
@@ -18,15 +19,16 @@ def test_existing_database_migration_preserves_designs(tmp_path, monkeypatch):
     current = projects.get_project('existing')
     assert current['parameters'] == {'kW': 12} and current['revision'] == 1
     assert projects.get_revision('existing', 1)['name'] == 'Draft'
-    projects.update_project('existing', 1, 'Updated', {'kW': 14})
+    with pytest.raises(OwnershipError):
+        projects.update_project('existing', 1, 'Updated', {'kW': 14}, author='张工')
     assert projects.get_revision('existing', 1)['parameters']['kW'] == 12
 
 
 def test_concurrent_edits_do_not_silently_overwrite(client):
-    item = projects.save_project('base', {'kW': 12})
+    item = projects.save_project('base', {'kW': 12}, author='张工')
     def update(name):
         try:
-            return projects.update_project(item['id'], 1, name, {'kW': 14})['revision']
+            return projects.update_project(item['id'], 1, name, {'kW': 14}, author='张工')['revision']
         except ConflictError:
             return 'conflict'
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -38,12 +40,12 @@ def test_concurrent_edits_do_not_silently_overwrite(client):
 def test_live_wal_backup_restore_and_overwrite_protection(tmp_path, monkeypatch):
     source, destination = tmp_path / 'live.sqlite', tmp_path / 'backup.sqlite'
     monkeypatch.setenv('DCSJ_PROJECTS_DB', str(source))
-    item = projects.save_project('backup test', {'kW': 12})
+    item = projects.save_project('backup test', {'kW': 12}, author='张工')
     with connect() as live:
         assert live.execute('PRAGMA journal_mode').fetchone()[0] == 'wal'
         info = backup(source, destination)
     assert info['quick_check'] == 'ok'
-    projects.update_project(item['id'], 1, 'changed', {'kW': 14})
+    projects.update_project(item['id'], 1, 'changed', {'kW': 14}, author='张工')
     restored = tmp_path / 'restored.sqlite'
     restore(destination, restored, info['sha256'])
     with closing(sqlite3.connect(restored)) as db:
