@@ -215,7 +215,7 @@ def _classic_wrap(text, width=74):
 
 
 def main_sheets(snapshot):
-    from .classic_sheet import native_pages, material_line, byte_width, frame
+    from .classic_sheet import native_pages, display_band_line, byte_width
     from .classic_drawing import combined_slots
     (first,second),complete=native_pages(snapshot)
     extra=[]
@@ -260,7 +260,7 @@ def main_sheets(snapshot):
             page.items.append(dict(kind='image', picture=art['paper'], title='',
                                    x=left, y=6, width=frame_width, height=56 * step + 10))
         for index,line in enumerate(lines):
-            line=material_line(line,snapshot)
+            line=display_band_line(line,snapshot)
             if line.startswith('*') and line.endswith('*') and line.strip('* .'):
                 inside=line[1:-1].rstrip()
                 # Long user identifiers are preserved in the continuation below.

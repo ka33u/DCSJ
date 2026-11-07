@@ -4,6 +4,7 @@ from .legacy_output import fixed
 from .wire_selection import recorded
 
 COLUMNS = 76
+CONNECTION_SYMBOLS = {'$': '△', 'Δ': '△', 'D': '△', 'y': 'Y'}
 
 
 def byte_width(text):
@@ -14,12 +15,24 @@ def frame(text=''):
     return '* ' + text + ' ' * max(0, COLUMNS-3-byte_width(text)) + '*'
 
 
+def close_first_sheet(lines):
+    """Keep the original sign-off when present; supply the blank form for older sheets."""
+    while lines and not lines[-1].strip(' *'):
+        lines.pop()
+    last = lines[-1].lstrip('* ') if lines else ''
+    if not (last.startswith('计算:') and '校核:' in last and '日期:' in last):
+        lines.extend([frame(), frame(' ' * 23 + '计算:          校核:          日期:')])
+    lines.append('*' * COLUMNS)
+
+
 def band(snapshot):
     p = snapshot['inputs']
+    connection = p.get('Jiefa', '-')
+    connection = CONNECTION_SYMBOLS.get(connection, connection)
     def n(key, digits=0):
         value = p.get(key)
         return '-' if value is None else f'{value:.{digits}f}'
-    return [frame(f'型号:{p.get("SizeX", snapshot["name"])} 功率:{n("kW",2)}kW 极数:{n("p")} 接法:{p.get("Jiefa","-")} 电压:{n("Ufai")} 频率:{n("f")}'),
+    return [frame(f'型号:{p.get("SizeX", snapshot["name"])} 功率:{n("kW",2)}kW 极数:{n("p")} 接法:{connection} 电压:{n("Ufai")} 频率:{n("f")}'),
             frame(f'硅钢片:{p.get("Paihao","-")}  绝缘:{p.get("Jueyuan","-")}')]
 
 
@@ -61,7 +74,8 @@ def fallback(snapshot):
               frame('       Eff       Pf        Tm       Tst      Ist        AJ       Sn'),
               frame(f'    {V("ATA1",6,4)}    {V("PF1",6,4)}      {V("TM1",4,2)}      {V("TST1",4,2)}     {V("IST1",4,2)}    {V("Aj",8,1)} {V("Sn",7,4)}'),
               frame(f' JB:{P("ATA",6,4)}    {P("PF",6,4)}      {P("TM",4,2)}      {P("TST",4,2)}     {P("IST",4,2)}   n={V("n",7,1)}'),rule,*band(snapshot)]
-    second=[frame('          kd        kp       kdp      zfk       kc  Eff0=      -'),
+    close_first_sheet(first)
+    second=[rule,frame('          kd        kp       kdp      zfk       kc  Eff0=      -'),
             frame(' stator:     -         -         -        -        -   ip=      -'),
             frame(' rotor:                                           -   im=      -'),
             frame(' Tp =     -    Fs =     -    Ft =     -             -   ix=      -'),
@@ -105,16 +119,26 @@ def native_pages(snapshot):
     end=next((i for i,line in enumerate(lines) if line.strip()=='DD:'),None)
     if start is None or split is None or end is None or not start<split<end:
         return fallback(snapshot),False
-    # Original RCO sheet reserves its first 21 blank lines for the slot drawing.
+    # The dotted rule above the winding coefficients belongs to page two.
+    if lines[split-1] == '*' + '.' * (COLUMNS-2) + '*':
+        split -= 1
     first=lines[1:split]
-    material=next((i for i,line in enumerate(first) if '硅钢片:' in line),len(first)-1)
-    first=first[:material+1]
+    close_first_sheet(first)
     second=lines[split:]
     while second and not second[-1].strip():second.pop()
     return (first,second),True
 
 
-def material_line(line,snapshot):
+def display_band_line(line,snapshot):
+    # The kernel prints a one-byte '$' for delta. Change just the connection
+    # field on the two rating bands, keeping the following voltage column fixed.
+    match = re.fullmatch(r'(\* 型号:.* 接法:)( *[$DΔy] +)(电压:.*)', line)
+    if match:
+        prefix, field, suffix = match.groups()
+        symbol = CONNECTION_SYMBOLS[field.strip()]
+        spaces = byte_width(field) - byte_width(symbol)
+        left = min(len(field) - len(field.lstrip()), max(0, spaces - 1))
+        return prefix + ' ' * left + symbol + ' ' * max(0, spaces - left) + suffix
     if '硅钢片:' not in line or 'B25:' not in line:return line
     name=str(snapshot['inputs'].get('Paihao','-'))
     short=''

@@ -2,7 +2,9 @@
 import copy
 from io import BytesIO
 import json
+import xml.etree.ElementTree as ET
 
+import pytest
 from pypdf import PdfReader
 
 from dcsj import calculations, legacy_report, storage
@@ -33,6 +35,9 @@ def test_old_and_new_routes_keep_saved_values_and_validate_layout(client,snapsho
     assert pdf.status_code==200 and '-legacy.pdf' in pdf.headers['content-disposition']
     assert '2.73' in text and 'JB:' in text and '2.3' in text
     assert len(reader.pages)==2
+    for label in ('计算:', '校核:', '日期:'):
+        assert reader.pages[0].extract_text().count(label) == 1
+        assert label not in reader.pages[1].extract_text()
     assert client.get(base+'?layout=wrong').status_code==422
     assert client.get(url+'?layout=wrong').status_code==422
     assert client.get('/reports/missing?layout=legacy').status_code==404
@@ -132,6 +137,62 @@ def test_native_report_keeps_original_sections_and_intermediates(client,snapshot
     assert all(not page.border for page in pages)
     assert sum(i['kind']=='panel' or (i['kind']=='image' and bool(i['title'])) for i in pages[0].items)==2
     assert '原版' in pages[0].title
+
+
+def test_native_signoff_survives_pagination_and_old_truncated_text(snapshot):
+    from dcsj.classic_sheet import COLUMNS, byte_width, fallback, frame, native_pages
+    record = {**snapshot, 'name':'签字栏测试', 'calculation_id':'signoff'}
+    first, second = fallback(record)
+    # Independent of the renderer: original grid columns are 25, 40 and 55 (zero-based).
+    signature = first[-2]
+    for label, col in [('计算:', 25), ('校核:', 40), ('日期:', 55)]:
+        assert byte_width(signature[:signature.index(label)]) == col
+    assert first[-3] == frame() and first[-1] == '*' * COLUMNS
+    original = first.copy()
+    original[-2] = frame(' ' * 23 + '计算: 陈工     校核: 李工     日期: 2026-01-02')
+    for stored, expected in [(first, first), (first[:-3], first), (original, original)]:
+        record['legacy_report'] = {'status':'complete', 'text':'\n'+'\n'.join('   '+r for r in stored+second)}
+        (p1, p2), complete = native_pages(record)
+        assert complete and p1 == expected and p2 == second
+        assert p2[0] == '*' + '.' * 74 + '*'
+
+
+@pytest.mark.parametrize('code, symbol', [('$','△'), ('D','△'), ('Δ','△'), ('△','△'), ('y','Y'), ('Y','Y')])
+def test_connection_in_both_rating_bands(snapshot, code, symbol):
+    from dcsj.classic_sheet import byte_width, display_band_line, fallback
+    record = {**snapshot, 'name':'R$1', 'calculation_id':'connection'}
+    record['inputs'].update(SizeX='R$1', Jiefa=code)
+    first, second = fallback(record)
+    for page in (first, second):
+        band = next(row for row in page if row.startswith('* 型号:'))
+        assert f'接法:{symbol} 电压:' in band
+    native = f'* 型号:R$1 功率: 1.00kW  极数: 4.  接法: {code}  电压: 220. 频率: 50. *'
+    expected = display_band_line(native,record)
+    assert byte_width(expected.partition('电压:')[0]) == byte_width(native.partition('电压:')[0])
+    assert expected.split('接法:')[1].split('电压:')[0].strip() == symbol
+    assert 'R$1' in expected
+
+
+def test_saved_delta_record_renders_in_svg_and_pdf_without_rewriting_snapshot(snapshot):
+    from dcsj.classic_sheet import fallback
+    record = {**snapshot, 'name':'R$1', 'calculation_id':'connection'}
+    record['inputs'].update(SizeX='R$1', Jiefa='△')
+    first, second = fallback(record)
+    native = '* 型号:R$1 功率: 1.00kW  极数: 4.  接法: $  电压: 220. 频率: 50. *'
+    rows = [native if row.startswith('* 型号:') else row for row in first+second]
+    record['legacy_report'] = {'status':'complete', 'text':'\n'+'\n'.join('   '+r for r in rows)}
+    before = copy.deepcopy(record)
+    html_pages = []
+    for page in legacy_report.main_sheets(record):
+        node = ET.fromstring(legacy_report.sheet_svg(page))
+        html_pages.append(''.join(node.itertext()))
+    pdf, _ = text_of(legacy_report.render_pdf(record))
+    for texts in (html_pages, [page.extract_text() for page in pdf.pages]):
+        assert len(texts) == 2
+        for text in texts:
+            assert '接法:△电压:' in ''.join(text.split())
+            assert 'R$1' in text
+    assert record == before
 
 
 def test_original_artwork_matches_saved_slot_type_and_fixed_print_grid(tmp_path, monkeypatch, snapshot):
