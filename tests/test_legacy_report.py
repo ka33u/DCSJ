@@ -130,5 +130,43 @@ def test_native_report_keeps_original_sections_and_intermediates(client,snapshot
     assert '未保存原版中间明细' not in text
     pages=legacy_report.main_sheets(saved)
     assert all(not page.border for page in pages)
-    assert len([i for i in pages[0].items if i['kind']=='panel'])==2
+    assert sum(i['kind']=='panel' or (i['kind']=='image' and bool(i['title'])) for i in pages[0].items)==2
     assert '原版' in pages[0].title
+
+
+def test_original_artwork_matches_saved_slot_type_and_fixed_print_grid(tmp_path, monkeypatch, snapshot):
+    from zipfile import ZipFile
+    from PIL import Image
+    from dcsj import classic_print_assets, pdf_fonts
+    monkeypatch.setenv('DCSJ_PDF_FONT', str(pdf_fonts.font_path()))
+    # Synthetic plates exercise both renderers without distributing original artwork.
+    monkeypatch.setenv('DCSJ_DATA_DIR', str(tmp_path))
+    def png(width, height):
+        data=BytesIO()
+        Image.new('L',(width,height),color=230).save(data,format='PNG')
+        return data.getvalue()
+    with ZipFile(tmp_path/'classic-print.zip','w') as archive:
+        for key in ('c1','c2','c9','c10','x1'):
+            archive.writestr(key+'.png',png(234,353))
+        archive.writestr('paper.png',png(297,440))
+    art=classic_print_assets.drawings()
+    params=dict(snapshot['inputs'],zc=2,bs2=7,bs1=6,b01=2,hs0=.6,zs1=28,
+                bc02=1,hr0=.5,zs2=20,br1=5,br2=2)
+    for code in [1,2,9,10]:
+        assert classic_print_assets.slot_picture({**params,'zc':code},art) is art[f'c{code}']
+    for change in [{'zc':21},{'bs2':-7},{'bc02':-1},{'zc':2.5}]:
+        assert classic_print_assets.slot_picture({**params,**change},art) is None
+    saved={**snapshot,'inputs':params,'name':'测试','calculation_id':'art'}
+    pages=legacy_report.main_sheets(saved)
+    figures=[i for i in pages[0].items if i['kind']=='image' and i['title']]
+    assert len(figures)==2 and figures[0]['y']==figures[1]['y']
+    # The first line can contain several font runs, so compare distinct baselines.
+    rows=[sorted({i['y'] for i in page.items if i.get('classic')}) for page in pages[:2]]
+    assert rows[0][1]-rows[0][0]==rows[1][1]-rows[1][0]
+    svg=legacy_report.sheet_svg(pages[0])
+    assert svg.count('data:image/png;base64,')==3
+    reader,_=text_of(legacy_report.render_pdf(saved))
+    assert len(reader.pages[0].images)>=2
+    (tmp_path/'classic-print.zip').write_bytes(b'broken archive')
+    assert classic_print_assets.drawings()=={}
+    assert sum(i['kind']=='panel' for i in legacy_report.main_sheets(saved)[0].items)==2

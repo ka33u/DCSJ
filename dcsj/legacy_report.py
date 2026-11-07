@@ -3,6 +3,7 @@
 Only saved inputs/outputs are used. This renderer never executes the numerical
 kernel or resolves a current material, slot, or model resource.
 """
+from base64 import b64encode
 from copy import deepcopy
 from html import escape
 from io import BytesIO
@@ -10,6 +11,7 @@ import math
 import unicodedata
 from itertools import groupby
 
+from . import classic_type
 from . import report_summary as summary
 from .kernel_layout import OUTPUT_MAP
 from .parameters import ELEMENT_KEYS
@@ -63,8 +65,8 @@ class Sheet:
     def rule(self, y):
         self.line(10, y, WIDTH-10, y, True)
 
-    def panel(self, panel, x, y, scale=1):
-        self.items.append(dict(kind='panel', panel=panel, x=x, y=y, scale=scale))
+    def panel(self, panel, x, y, scale=1, scale_y=None):
+        self.items.append(dict(kind='panel', panel=panel, x=x, y=y, scale=scale, scale_y=scale if scale_y is None else scale_y))
 
     def footer(self, identity, page, count):
         self.rule(763)
@@ -73,33 +75,62 @@ class Sheet:
 
 
 def winding_panel():
-    """Original-style symbolic coil/end-ring views; no invented dimensions."""
-    p = dict(width=230, height=300, title='绕组与端环示意', description='符号示意，数值见尺寸栏', paths=[], lines=[], texts=[])
-    def text(x,y,label,size=9,anchor='middle'):
-        p['texts'].append(dict(x=x,y=y,text=label,size=size,anchor=anchor))
-    def path(commands):
-        p['paths'].append(dict(commands=commands,stroke='#000',fill='none'))
-    def line(x1,y1,x2,y2,dash=False):
-        p['lines'].append(dict(x1=x1,y1=y1,x2=x2,y2=y2,**({'dash':[3,2]} if dash else {})))
-    def dim(x1,y1,x2,y2,label):
-        line(x1,y1,x2,y2)
-        if y1==y2:
-            line(x1,y1-3,x1,y1+3);line(x2,y2-3,x2,y2+3);text((x1+x2)/2,y1+12,label)
-        else:
-            line(x1-3,y1,x1+3,y1);line(x2-3,y2,x2+3,y2);text(x1+8,(y1+y2)/2,label,8,'start')
-    text(115,16,'定子线圈')
-    path([['M',50,32],['L',180,32],['C',218,32,218,83,180,83],['L',50,83],['C',12,83,12,32,50,32],['Z']])
-    dim(50,94,180,94,'L');dim(115,37,115,79,'Ty')
-    path([['M',47,150],['L',94,150],['C',120,138,151,114,173,125],['C',197,137,186,155,170,161],['L',94,176],['L',47,176]])
-    for x in (47,65,94):line(x,133,x,191)
-    dim(47,190,65,190,'d');dim(94,190,183,190,'fd')
-    text(115,222,'转子导条与端环')
-    path([['M',45,240],['L',173,240],['L',173,270],['L',45,270]])
-    path([['M',139,229],['L',139,281],['L',173,281],['L',173,229],['Z']])
-    for x in range(141,172,8):line(x,241,min(x+14,173),268)
-    line(30,255,196,255,True);dim(190,240,190,270,'Dr')
-    return p
+    """Vector equivalents of the three symbolic views on the original winding plate."""
+    p = dict(width=234, height=353, title='定子与转子线圈', description='线圈端部、端环及尺寸符号',
+             paths=[], lines=[], texts=[])
+    def line(x1, y1, x2, y2):
+        p['lines'].append(dict(x1=x1, y1=y1, x2=x2, y2=y2))
+    def path(*commands, fill='none'):
+        p['paths'].append(dict(commands=commands, stroke='#000', fill=fill))
+    def label(x, y, value, rotate=0):
+        p['texts'].append(dict(x=x, y=y, text=value, size=13, anchor='middle', rotate=rotate))
+    def arrow(x, y, dx, dy):
+        length, half = 8, 1.2
+        path(['M',x,y], ['L',x+length*dx-half*dy,y+length*dy+half*dx],
+             ['L',x+length*dx+half*dy,y+length*dy-half*dx], ['Z'], fill='#000')
+    def horizontal(x1, x2, y, value, outside=False):
+        line(x1-15 if outside else x1,y,x2+15 if outside else x2,y)
+        arrow(x1,y,-1 if outside else 1,0)
+        arrow(x2,y,1 if outside else -1,0)
+        label((x1+x2)/2,y-4,value)
 
+    line(14,6,229,6)
+    label(118,26,'定子线圈')
+    path(['M',59,39], ['L',179,39], ['C',217,39,217,96,179,96],
+         ['L',59,96], ['C',21,96,21,39,59,39], ['Z'])
+    for x in (59,179):
+        line(x,96,x,129)
+    horizontal(59,179,122,'LB')
+    line(119,39,119,96)
+    arrow(119,39,0,1)
+    arrow(119,96,0,-1)
+    label(112,67,'Ty',-90)
+
+    path(['M',104,166], ['L',120,166], ['L',178,142], ['C',202,135,216,174,191,183],
+         ['L',120,192], ['L',104,192])
+    line(31,206,104,206)
+    for x, y in [(49,194),(68,180),(86,167),(104,154)]:
+        line(x,y,x,206)
+    for x, y in [(104,192),(120,192),(205,165)]:
+        line(x,y,x,225)
+    horizontal(104,120,219,'d',outside=True)
+    horizontal(120,205,219,'Fd')
+
+    label(116,253,'转子线圈')
+    path(['M',35,265], ['L',132,265], ['L',132,333])
+    path(['M',132,279], ['L',169,279], ['L',169,319], ['L',132,319], ['Z'])
+    path(['M',169,285], ['L',198,285], ['L',198,313], ['L',169,313])
+    for x, y in [(132,290),(132,304),(132,318),(145,319),(159,319)]:
+        n=min(169-x,y-279)
+        line(x,y,x+n,y-n)
+    line(70,299,219,299)
+    for x, h in [(87,9),(101,16),(117,23)]:
+        line(x,299-h,x,299+h)
+    line(211,299,211,334)
+    arrow(211,299,0,1)
+    label(206,327,'Dr',-90)
+    line(14,346,229,346)
+    return p
 
 def field(data, key, label=None):
     return f'{label or key}={plain(data.get(key))}'
@@ -160,16 +191,15 @@ def supplemental_rows(snapshot):
     return rows
 
 
-def _classic_text(page, text, y, size):
-    from .classic_sheet import byte_width
-    # Chinese occupies two original report cells, ASCII one. Separate runs keep
-    # all numeric columns aligned in both SVG and embedded-font PDF output.
-    cell=size*.6;x=(WIDTH-76*cell)/2
-    for ascii_run,chars in groupby(text,key=lambda ch:ord(ch)<128):
-        run=''.join(chars);page.text(x,y,run,size)
-        item=page.items[-1];item['width']=byte_width(run)*cell
-        item['advance_scale']=1 if ascii_run else 1.2
-        x+=item['width']
+def _classic_text(page, text, y):
+    from .classic_sheet import COLUMNS, byte_width
+    x = (WIDTH - COLUMNS * classic_type.CELL) / 2
+    for _, chars in groupby(text, key=lambda ch: ord(ch) < 128):
+        run = ''.join(chars)
+        page.text(x, y, run, classic_type.SIZE)
+        item = page.items[-1]
+        item.update(classic=True, width=byte_width(run) * classic_type.CELL)
+        x += item['width']
 
 
 def _classic_wrap(text, width=74):
@@ -216,12 +246,19 @@ def main_sheets(snapshot):
     if tail:
         count=math.ceil(len(tail)/60);length=math.ceil(len(tail)/count)
         remaining.extend(tail[i:i+length] for i in range(0,len(tail),length))
-    for number,lines in enumerate([first,*remaining]):
+    from .classic_print_assets import drawings, slot_picture
+    art = drawings()
+    sheets = [first, *remaining]
+    # A single grid keeps corresponding columns and line pitch identical on both sheets.
+    step = min(13.25, 742 / max(1, max(map(len, sheets)) - 1))
+    frame_width = 76 * classic_type.CELL
+    left = (WIDTH - frame_width) / 2
+    for number,lines in enumerate(sheets):
         page=Sheet('电磁计算单 · 原版'+('（名义尺寸）' if snapshot.get('optimization',{}).get('robustness') else ''))
         page.border=False
-        # Native first sheet has 21 drawing rows and 34 compact numeric rows.
-        # Fill each A4 page vertically; font width is stable across both pages.
-        size=11.2;step=min(15.2,742/max(1,len(lines)-1))
+        if 'paper' in art and number < 2:
+            page.items.append(dict(kind='image', picture=art['paper'], title='',
+                                   x=left, y=6, width=frame_width, height=56 * step + 10))
         for index,line in enumerate(lines):
             line=material_line(line,snapshot)
             if line.startswith('*') and line.endswith('*') and line.strip('* .'):
@@ -229,20 +266,28 @@ def main_sheets(snapshot):
                 # Long user identifiers are preserved in the continuation below.
                 if byte_width(inside)>74:inside=_classic_wrap(inside,71)[0]+'...'
                 line='*'+inside+' '*max(0,74-byte_width(inside))+'*'
-            _classic_text(page,line,18+index*step,size)
+            _classic_text(page,line,18+index*step)
         if number==0:
-            graphic_height=step*20.6
-            page.panel(combined_slots(snapshot['inputs']),15,24,graphic_height/300)
-            coils=winding_panel()
-            for item in coils['texts']:
-                if item['text']=='L':item['text']='LB'
-                if item['text']=='fd':item['text']='Fd'
-                if item['text']=='转子导条与端环':item['text']='转子线圈'
-            page.panel(coils,287,24,graphic_height/300)
+            height = step * 20.6
+            top = 18 + .68 * step
+            # Picture2 (slot) and Picture1 (winding) share the 353-pixel
+            # height in the original report. Their left edges are 262.57 pixels apart.
+            parts = [
+                (slot_picture(snapshot['inputs'], art), '定转子槽型组合图',
+                 left + .057 * frame_width, lambda: combined_slots(snapshot['inputs'])),
+                (art.get('x1'), '定子线圈与转子线圈',
+                 left + .057 * frame_width + 262.57 * height / 353, winding_panel),
+            ]
+            for picture, title, x, fallback in parts:
+                if picture:
+                    page.items.append(dict(kind='image', picture=picture, title=title, x=x, y=top,
+                                           width=height * picture['width'] / picture['height'], height=height))
+                else:
+                    panel = fallback()
+                    page.panel(panel, x, top, height * 234 / (353 * panel['width']), height / panel['height'])
         pages.append(page)
     for index,page in enumerate(pages,1):
-        page.text(12,781,'DCSJ · '+snapshot['calculation_id'],6.5,width=430)
-        page.text(528,781,f'{index} / {len(pages)}',8,'end')
+        page.text(WIDTH/2,781,str(index),8,'middle')
     return pages
 
 
@@ -268,21 +313,37 @@ def panel_svg(panel):
     from .slot_diagrams import svg
     monochrome=deepcopy(panel)
     for item in [*monochrome['paths'],*monochrome['lines']]:item['stroke']='#000'
-    return svg(monochrome).replace('<svg ',f'<svg width="{panel["width"]}" height="{panel["height"]}" ',1).replace('fill="#263942"','fill="#000"')
+    return svg(monochrome).replace('<svg ',f'<svg width="{panel["width"]}" height="{panel["height"]}" ',1).replace('fill="#263942"','fill="#000"').replace('font-family="sans-serif"', 'font-family="SimSun, Songti SC, serif"')
 
 
 def sheet_svg(page):
     out=[f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-label="{escape(page.title,quote=True)}">',
          '<rect x="4" y="4" width="532" height="782" fill="white" stroke="'+('black' if page.border else 'none')+'" stroke-width=".55" stroke-dasharray="1 3"/>']
     for item in page.items:
-        if item['kind']=='text':
+        if item['kind']=='image':
+            data = b64encode(item['picture']['png']).decode('ascii')
+            out.append(f'<image x="{item["x"]}" y="{item["y"]}" width="{item["width"]}" height="{item["height"]}" '
+                       f'preserveAspectRatio="none" href="data:image/png;base64,{data}"><title>{escape(item["title"])}</title></image>')
+        elif item.get('classic'):
+            x = item['x']
+            out.append(f'<text y="{item["y"]}" font-size="{item["size"]}" font-family="{escape(classic_type.FAMILY, quote=True)}" xml:space="preserve">')
+            for word, advance in classic_type.runs(item['value']):
+                if len(word) > 1 and word == '.' * len(word):
+                    centers = ' '.join(f'{x+(i+.5)*classic_type.CELL:.3f}' for i in range(len(word)))
+                    out.append(f'<tspan x="{centers}" text-anchor="middle">{word}</tspan>')
+                    x += advance
+                    continue
+                out.append(f'<tspan x="{x:.4f}" textLength="{advance:.4f}" lengthAdjust="spacingAndGlyphs">{escape(word)}</tspan>')
+                x += advance
+            out.append('</text>')
+        elif item['kind']=='text':
             out.append(f'<text x="{item["x"]}" y="{item["y"]}" font-size="{item["size"]}" text-anchor="{item["anchor"]}"'+
                        (f' textLength="{item["width"]}" lengthAdjust="spacingAndGlyphs"' if item['value'] else '')+
                        ' xml:space="preserve">'+escape(item['value'])+'</text>')
         elif item['kind']=='line':
             out.append(f'<line x1="{item["x1"]}" y1="{item["y1"]}" x2="{item["x2"]}" y2="{item["y2"]}" stroke="black" stroke-width=".55"'+(' stroke-dasharray="1 3"' if item['dash'] else '')+'/>')
         else:
-            out.append(f'<g transform="translate({item["x"]} {item["y"]}) scale({item["scale"]})">'+panel_svg(item['panel'])+'</g>')
+            out.append(f'<g transform="translate({item["x"]} {item["y"]}) scale({item["scale"]} {item["scale_y"]})">'+panel_svg(item['panel'])+'</g>')
     return ''.join(out)+'</svg>'
 
 
@@ -307,12 +368,14 @@ def render_pdf(record, *, tx=False):
     from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
+    from reportlab.lib.utils import ImageReader
     from reportlab.pdfbase.pdfmetrics import stringWidth
     from .pdf_report import _font, _RENDER_SLOT, Slot, PDFContentError
     from .execution import BusyError
     if not _RENDER_SLOT.acquire(blocking=False):raise BusyError('PDF 正在生成，请稍后重试。')
     try:
         font,cmap=_font();pages=tx_sheets(record) if tx else main_sheets(record)
+        song = None if tx else classic_type.song_font()
         stream=BytesIO();c=canvas.Canvas(stream,pagesize=A4,pageCompression=1)
         c.setTitle(plain(record['name'])+' · 旧版打印');c.setAuthor('DCSJ')
         scale=min(186*mm/WIDTH,272*mm/HEIGHT)
@@ -322,7 +385,38 @@ def render_pdf(record, *, tx=False):
             if page.border:
                 c.setLineWidth(.55);c.setDash([1,3]);c.rect(4,4,532,782);c.setDash([])
             for item in page.items:
-                if item['kind']=='text':
+                if item['kind']=='image':
+                    c.drawImage(ImageReader(BytesIO(item['picture']['png'])), item['x'], HEIGHT-item['y']-item['height'],
+                                width=item['width'], height=item['height'])
+                elif item.get('classic'):
+                    x = item['x']
+                    text = c.beginText(x, HEIGHT-item['y'])
+                    for word, advance in classic_type.runs(item['value']):
+                        if song and all(song[1].get(ord(ch)) for ch in word):
+                            face = song[0]
+                        elif word.isascii():
+                            face = 'Times-Roman'
+                        else:
+                            face = font
+                            for ch in word:
+                                if not cmap.get(ord(ch)):
+                                    raise PDFContentError(f'PDF 字体不支持字符 U+{ord(ch):04X}')
+                        size = item['size']
+                        text.setFont(face,size)
+                        if len(word) > 1 and word == '.' * len(word):
+                            gap = classic_type.CELL - stringWidth('.',face,size)
+                            text.setTextOrigin(x + gap/2, HEIGHT-item['y'])
+                            text.setHorizScale(100)
+                            text.setCharSpace(gap)
+                            text.textOut(word)
+                            text.setCharSpace(0)
+                            text.setTextOrigin(x + advance, HEIGHT-item['y'])
+                        else:
+                            text.setHorizScale(100 * advance / stringWidth(word,face,size))
+                            text.textOut(word)
+                        x += advance
+                    c.drawText(text)
+                elif item['kind']=='text':
                     x=item['x']-({'start':0,'middle':.5,'end':1}[item['anchor']])*item['width']
                     text=c.beginText()
                     for ascii_run,chars in groupby(item['value'],key=lambda ch:ord(ch)<128):
@@ -342,8 +436,8 @@ def render_pdf(record, *, tx=False):
                 else:
                     panel=deepcopy(item['panel'])
                     for part in [*panel['paths'],*panel['lines']]:part['stroke']='#000'
-                    c.saveState();c.translate(item['x'],HEIGHT-item['y']-panel['height']*item['scale']);c.scale(item['scale'],item['scale'])
-                    Slot(panel,font).drawOn(c,0,0);c.restoreState()
+                    c.saveState();c.translate(item['x'],HEIGHT-item['y']-panel['height']*item['scale_y']);c.scale(item['scale'],item['scale_y'])
+                    Slot(panel, song[0] if song and all(song[1].get(ord(ch)) for t in panel['texts'] for ch in t['text']) else font).drawOn(c,0,0);c.restoreState()
             c.restoreState();c.showPage()
         c.save();return stream.getvalue()
     finally:_RENDER_SLOT.release()
