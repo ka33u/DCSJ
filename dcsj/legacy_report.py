@@ -18,6 +18,11 @@ from .parameters import ELEMENT_KEYS
 from .wire_selection import recorded
 
 WIDTH, HEIGHT = 540, 790
+A4_WIDTH_MM, A4_HEIGHT_MM = 210, 297
+CLASSIC_BODY_WIDTH_MM = 150
+CLASSIC_FIRST_BASELINE_MM = 19
+CLASSIC_LAST_BASELINE_MM = 280
+CLASSIC_PAGE_NUMBER_MM = 286
 
 
 def plain(value):
@@ -47,9 +52,17 @@ def wrap(value, limit):
 
 
 class Sheet:
-    def __init__(self, title):
+    def __init__(self, title, *, height=HEIGHT, scale_mm=None):
         self.title, self.items = title, []
         self.border = True
+        self.height = height
+        self.scale_mm = scale_mm if scale_mm is not None else min(186 / WIDTH, 272 / HEIGHT)
+
+    @property
+    def paper_origin(self):
+        """Identical physical placement in the browser preview, print and PDF."""
+        return ((A4_WIDTH_MM - WIDTH * self.scale_mm) / 2,
+                (A4_HEIGHT_MM - self.height * self.scale_mm) / 2)
 
     def text(self, x, y, value, size=10, anchor='start', width=None):
         value = plain(value)
@@ -249,16 +262,21 @@ def main_sheets(snapshot):
     from .classic_print_assets import drawings, slot_picture
     art = drawings()
     sheets = [first, *remaining]
-    # A single grid keeps corresponding columns and line pitch identical on both sheets.
-    step = min(13.25, 742 / max(1, max(map(len, sheets)) - 1))
     frame_width = 76 * classic_type.CELL
+    scale_mm = CLASSIC_BODY_WIDTH_MM / frame_width
+    first_y = CLASSIC_FIRST_BASELINE_MM / scale_mm
+    # Reserve the same physical margins and footer on every A4 page. Extra
+    # sheets can shorten the grid, but can never push it into the page number.
+    span = (CLASSIC_LAST_BASELINE_MM - CLASSIC_FIRST_BASELINE_MM) / scale_mm
+    step = min(13.25, span / max(1, max(map(len, sheets)) - 1))
     left = (WIDTH - frame_width) / 2
     for number,lines in enumerate(sheets):
-        page=Sheet('电磁计算单 · 原版'+('（名义尺寸）' if snapshot.get('optimization',{}).get('robustness') else ''))
+        page=Sheet('电磁计算单 · 原版'+('（名义尺寸）' if snapshot.get('optimization',{}).get('robustness') else ''),
+                   height=A4_HEIGHT_MM / scale_mm, scale_mm=scale_mm)
         page.border=False
         if 'paper' in art and number < 2:
             page.items.append(dict(kind='image', picture=art['paper'], title='',
-                                   x=left, y=6, width=frame_width, height=56 * step + 10))
+                                   x=left, y=first_y-12, width=frame_width, height=56 * step + 10))
         for index,line in enumerate(lines):
             line=display_band_line(line,snapshot)
             if line.startswith('*') and line.endswith('*') and line.strip('* .'):
@@ -266,10 +284,10 @@ def main_sheets(snapshot):
                 # Long user identifiers are preserved in the continuation below.
                 if byte_width(inside)>74:inside=_classic_wrap(inside,71)[0]+'...'
                 line='*'+inside+' '*max(0,74-byte_width(inside))+'*'
-            _classic_text(page,line,18+index*step)
+            _classic_text(page,line,first_y+index*step)
         if number==0:
             height = step * 20.6
-            top = 18 + .68 * step
+            top = first_y + .68 * step
             # Picture2 (slot) and Picture1 (winding) share the 353-pixel
             # height in the original report. Their left edges are 262.57 pixels apart.
             parts = [
@@ -287,7 +305,7 @@ def main_sheets(snapshot):
                     page.panel(panel, x, top, height * 234 / (353 * panel['width']), height / panel['height'])
         pages.append(page)
     for index,page in enumerate(pages,1):
-        page.text(WIDTH/2,781,str(index),8,'middle')
+        page.text(WIDTH/2,CLASSIC_PAGE_NUMBER_MM / scale_mm,str(index),8,'middle')
     return pages
 
 
@@ -317,8 +335,12 @@ def panel_svg(panel):
 
 
 def sheet_svg(page):
-    out=[f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-label="{escape(page.title,quote=True)}">',
-         '<rect x="4" y="4" width="532" height="782" fill="white" stroke="'+('black' if page.border else 'none')+'" stroke-width=".55" stroke-dasharray="1 3"/>']
+    left, top = page.paper_origin
+    out=[f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {A4_WIDTH_MM} {A4_HEIGHT_MM}" role="img" aria-label="{escape(page.title,quote=True)}">',
+         f'<rect width="{A4_WIDTH_MM}" height="{A4_HEIGHT_MM}" fill="white"/>',
+         f'<g transform="translate({left} {top}) scale({page.scale_mm})">']
+    if page.border:
+        out.append('<rect x="4" y="4" width="532" height="782" fill="white" stroke="black" stroke-width=".55" stroke-dasharray="1 3"/>')
     for item in page.items:
         if item['kind']=='image':
             data = b64encode(item['picture']['png']).decode('ascii')
@@ -344,7 +366,7 @@ def sheet_svg(page):
             out.append(f'<line x1="{item["x1"]}" y1="{item["y1"]}" x2="{item["x2"]}" y2="{item["y2"]}" stroke="black" stroke-width=".55"'+(' stroke-dasharray="1 3"' if item['dash'] else '')+'/>')
         else:
             out.append(f'<g transform="translate({item["x"]} {item["y"]}) scale({item["scale"]} {item["scale_y"]})">'+panel_svg(item['panel'])+'</g>')
-    return ''.join(out)+'</svg>'
+    return ''.join(out)+'</g></svg>'
 
 
 def render_html(record, *, tx=False):
@@ -357,11 +379,11 @@ def render_html(record, *, tx=False):
     download=f'<a href="{escape(pdf,quote=True)}">下载旧版 PDF</a>' if status()['available'] else ''
     return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+\
         '<title>'+escape(record['name'])+' · 旧版打印</title><style>'+\
-        'body{margin:0;background:#e8e8e8;color:#000;font-family:"Courier New","SimSun",monospace}.toolbar{position:sticky;top:0;z-index:2;padding:12px;text-align:center;background:#20343d;color:white;font:14px system-ui}.toolbar a,.toolbar button{display:inline-block;margin:0 5px;padding:8px 16px;border:1px solid #c8d1d5;border-radius:4px;background:white;color:#17323f;text-decoration:none;cursor:pointer;font:inherit}.toolbar small{display:block;margin-top:8px}.sheet{box-sizing:border-box;width:186mm;height:272mm;margin:18px auto;background:white}.sheet>svg{display:block;width:100%;height:100%;font-family:"Courier New","SimSun",monospace}'+\
-        '@page{size:A4 portrait;margin:12mm}@media print{body{background:white}.toolbar{display:none}.sheet{margin:0 auto;break-after:page;break-inside:avoid}.sheet:last-child{break-after:auto}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}'+\
-        '@media screen and (max-width:740px){.sheet{width:100%;height:auto;aspect-ratio:186/272}}'+\
+        'body{margin:0;background:#e8e8e8;color:#000;font-family:"Courier New","SimSun",monospace}.toolbar{position:sticky;top:0;z-index:2;padding:12px;text-align:center;background:#20343d;color:white;font:14px system-ui}.toolbar a,.toolbar button{display:inline-block;margin:0 5px;padding:8px 16px;border:1px solid #c8d1d5;border-radius:4px;background:white;color:#17323f;text-decoration:none;cursor:pointer;font:inherit}.toolbar small{display:block;margin-top:8px}.sheet{box-sizing:border-box;width:210mm;height:297mm;margin:18px auto;background:white;box-shadow:0 1px 4px #aaa}.sheet>svg{display:block;width:100%;height:100%;font-family:"Courier New","SimSun",monospace}'+\
+        '@page{size:A4 portrait;margin:0}@media print{body{background:white}.toolbar{display:none}.sheet{margin:0 auto;box-shadow:none;break-after:page;break-inside:avoid}.sheet:last-child{break-after:auto}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}'+\
+        '@media screen and (max-width:820px){.sheet{width:100%;height:auto;aspect-ratio:210/297}}'+\
         '</style></head><body><nav class="toolbar"><a href="'+escape(base,quote=True)+'">新版打印</a><button type="button" onclick="window.print()">旧版打印</button>'+download+\
-        '<small>A4 纵向 · 100% 比例 · 关闭浏览器页眉页脚'+old_note+'</small></nav><main>'+''.join('<section class="sheet">'+sheet_svg(p)+'</section>' for p in pages)+'</main></body></html>'
+        '<small>A4 纵向 · 100% 比例 · 已内置纸张留白 · 关闭浏览器页眉页脚'+old_note+'</small></nav><main>'+''.join('<section class="sheet">'+sheet_svg(p)+'</section>' for p in pages)+'</main></body></html>'
 
 
 def render_pdf(record, *, tx=False):
@@ -378,19 +400,22 @@ def render_pdf(record, *, tx=False):
         song = None if tx else classic_type.song_font()
         stream=BytesIO();c=canvas.Canvas(stream,pagesize=A4,pageCompression=1)
         c.setTitle(plain(record['name'])+' · 旧版打印');c.setAuthor('DCSJ')
-        scale=min(186*mm/WIDTH,272*mm/HEIGHT)
-        left=(A4[0]-WIDTH*scale)/2;bottom=(A4[1]-HEIGHT*scale)/2
         for page in pages:
+            scale = page.scale_mm * mm
+            left_mm, top_mm = page.paper_origin
+            left = left_mm * mm
+            height = page.height
+            bottom = A4[1] - top_mm * mm - height * scale
             c.saveState();c.translate(left,bottom);c.scale(scale,scale)
             if page.border:
                 c.setLineWidth(.55);c.setDash([1,3]);c.rect(4,4,532,782);c.setDash([])
             for item in page.items:
                 if item['kind']=='image':
-                    c.drawImage(ImageReader(BytesIO(item['picture']['png'])), item['x'], HEIGHT-item['y']-item['height'],
+                    c.drawImage(ImageReader(BytesIO(item['picture']['png'])), item['x'], height-item['y']-item['height'],
                                 width=item['width'], height=item['height'])
                 elif item.get('classic'):
                     x = item['x']
-                    text = c.beginText(x, HEIGHT-item['y'])
+                    text = c.beginText(x, height-item['y'])
                     for word, advance in classic_type.runs(item['value']):
                         if song and all(song[1].get(ord(ch)) for ch in word):
                             face = song[0]
@@ -405,12 +430,12 @@ def render_pdf(record, *, tx=False):
                         text.setFont(face,size)
                         if len(word) > 1 and word == '.' * len(word):
                             gap = classic_type.CELL - stringWidth('.',face,size)
-                            text.setTextOrigin(x + gap/2, HEIGHT-item['y'])
+                            text.setTextOrigin(x + gap/2, height-item['y'])
                             text.setHorizScale(100)
                             text.setCharSpace(gap)
                             text.textOut(word)
                             text.setCharSpace(0)
-                            text.setTextOrigin(x + advance, HEIGHT-item['y'])
+                            text.setTextOrigin(x + advance, height-item['y'])
                         else:
                             text.setHorizScale(100 * advance / stringWidth(word,face,size))
                             text.textOut(word)
@@ -426,17 +451,17 @@ def render_pdf(record, *, tx=False):
                                 raise PDFContentError(f'PDF 字体不支持字符 U+{ord(ch):04X}')
                         advance=item['size']*len(run)*(.6 if ascii_run else 1)*item.get('advance_scale',1)
                         actual=stringWidth(run,face,item['size'])
-                        text.setTextOrigin(x,HEIGHT-item['y']);text.setFont(face,item['size'])
+                        text.setTextOrigin(x,height-item['y']);text.setFont(face,item['size'])
                         text.setHorizScale(100*advance/actual if actual else 100)
                         text.textOut(run);x+=advance
                     c.drawText(text)
                 elif item['kind']=='line':
                     c.setDash([1,3] if item['dash'] else []);c.setLineWidth(.55)
-                    c.line(item['x1'],HEIGHT-item['y1'],item['x2'],HEIGHT-item['y2']);c.setDash([])
+                    c.line(item['x1'],height-item['y1'],item['x2'],height-item['y2']);c.setDash([])
                 else:
                     panel=deepcopy(item['panel'])
                     for part in [*panel['paths'],*panel['lines']]:part['stroke']='#000'
-                    c.saveState();c.translate(item['x'],HEIGHT-item['y']-panel['height']*item['scale_y']);c.scale(item['scale'],item['scale_y'])
+                    c.saveState();c.translate(item['x'],height-item['y']-panel['height']*item['scale_y']);c.scale(item['scale'],item['scale_y'])
                     Slot(panel, song[0] if song and all(song[1].get(ord(ch)) for t in panel['texts'] for ch in t['text']) else font).drawOn(c,0,0);c.restoreState()
             c.restoreState();c.showPage()
         c.save();return stream.getvalue()

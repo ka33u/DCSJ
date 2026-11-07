@@ -30,11 +30,33 @@ def test_old_and_new_routes_keep_saved_values_and_validate_layout(client,snapsho
     assert '&lt;script&gt;' in old.text and '&lt;img' in old.text
     assert '2.73' in old.text and '9.99' not in old.text
     assert old.headers['cache-control']=='no-store'
+    assert 'width:210mm;height:297mm' in old.text and 'aspect-ratio:210/297' in old.text
+    assert '@page{size:A4 portrait;margin:0}' in old.text
     url=f'/api/v1/calculations/{saved["calculation_id"]}/report.pdf'
     pdf=client.get(url+'?layout=legacy');reader,text=text_of(pdf.content)
     assert pdf.status_code==200 and '-legacy.pdf' in pdf.headers['content-disposition']
     assert '2.73' in text and 'JB:' in text and '2.3' in text
     assert len(reader.pages)==2
+    # Measure the exported sheet in millimetres, including the physical page
+    # rather than only the inner diagram viewport. These are print-safe bounds.
+    mm = 72 / 25.4
+    for number, page in enumerate(reader.pages, 1):
+        assert float(page.mediabox.width) / mm == pytest.approx(210, abs=.01)
+        assert float(page.mediabox.height) / mm == pytest.approx(297, abs=.01)
+        footers = []
+        def check_position(text, cm, tm, font, size):
+            if not text.strip():
+                return
+            x = (tm[4] * cm[0] + cm[4]) / mm
+            y = 297 - (tm[5] * cm[3] + cm[5]) / mm
+            assert 29 <= x <= 181
+            assert 15 <= y <= 286.01
+            if size == 8 and text.strip() == str(number):
+                footers.append((x, y))
+        page.extract_text(visitor_text=check_position)
+        assert len(footers) == 1
+        assert footers[0][0] == pytest.approx(104.19, abs=.02)
+        assert footers[0][1] == pytest.approx(286, abs=.01)
     for label in ('计算:', '校核:', '日期:'):
         assert reader.pages[0].extract_text().count(label) == 1
         assert label not in reader.pages[1].extract_text()
@@ -71,7 +93,10 @@ def test_long_inputs_zero_and_custom_elements_survive_balanced_pagination(snapsh
             if item['kind']=='text':
                 left=item['x']-{'start':0,'middle':.5,'end':1}[item['anchor']]*item['width']
                 assert left>=4 and left+item['width']<=536.001
-                assert 4<=item['y']<=782
+                top = page.paper_origin[1] + item['y'] * page.scale_mm
+                assert 19 - 1e-8 <= top <= 286 + 1e-8
+                if item.get('classic'):
+                    assert top <= 280 + 1e-8
 
 
 def test_tx_native_report_keeps_every_line_and_centers_each_sheet(client,monkeypatch):
