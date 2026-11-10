@@ -442,11 +442,11 @@ def _calculate(body: CalculationInput, origin=None):
         bindings = saved_bindings
     elif body.base_model_id and origin is None:
         origin = catalog.lineage(body.base_model_id)
-    resolved_slots = slots.resolve(bindings)
     try:
         result = compute(body.parameters)
         result['slot_bindings'] = bindings
-        result['slots'] = slots.snapshot(result['inputs'], resolved=resolved_slots)
+        from .slot_identity import snapshot as identify_slots
+        result['slots'] = identify_slots(result['inputs'])
         result['provenance']['base_model'] = origin
         if not body.persist:
             return {**result, 'calculation_id': None, 'persisted': False,
@@ -514,20 +514,26 @@ def user_library_schema():
 
 
 @app.post('/api/v1/library/{kind}', tags=['资源与用户数据'], status_code=201)
-def save_user_entry(kind: str, body: LibraryInput):
-    return library.save(kind, body.name, body.document, expected_revision=body.expected_revision)
+def save_user_entry(kind: str, body: LibraryInput, request:Request):
+    return library.save(kind, body.name, body.document, expected_revision=body.expected_revision,
+                        actor=request.state.user if kind=='slots' else None)
 
 
 @app.get('/api/v1/library/{kind}/{identity}', tags=['资源与用户数据'])
-def get_user_entry(kind: str, identity: str, revision: Annotated[int | None, Query(ge=1)] = None):
-    return library.get(kind, identity, revision)
+def get_user_entry(kind: str, identity: str, request:Request, revision: Annotated[int | None, Query(ge=1)] = None):
+    result=library.get(kind, identity, revision)
+    if kind=='slots':
+        from .slot_identity import permissions
+        result=permissions(result,request.state.user)
+    return result
 
 
 @app.put('/api/v1/library/{kind}/{identity}', tags=['资源与用户数据'])
-def update_user_entry(kind: str, identity: str, body: LibraryInput):
+def update_user_entry(kind: str, identity: str, body: LibraryInput, request:Request):
     if body.expected_revision is None:
         raise HTTPException(422, '更新用户数据必须指定 expected_revision')
-    return library.save(kind, body.name, body.document, identity, body.expected_revision)
+    return library.save(kind, body.name, body.document, identity, body.expected_revision,
+                        actor=request.state.user if kind=='slots' else None)
 
 
 @app.get('/api/v1/library/{kind}/{identity}/revisions', tags=['资源与用户数据'])
@@ -536,8 +542,9 @@ def user_entry_revisions(kind: str, identity: str):
 
 
 @app.post('/api/v1/library/{kind}/{identity}/archive', tags=['资源与用户数据'])
-def archive_user_entry(kind: str, identity: str, body: ArchiveInput):
-    return library.archive(kind, identity, body.expected_revision, body.archived)
+def archive_user_entry(kind: str, identity: str, body: ArchiveInput,request:Request):
+    return library.archive(kind, identity, body.expected_revision, body.archived,
+                           actor=request.state.user if kind=='slots' else None)
 
 
 @app.get("/api/v1/projects", tags=["保存的设计"])

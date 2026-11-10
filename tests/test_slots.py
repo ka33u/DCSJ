@@ -14,15 +14,16 @@ def document(**changes):
 
 def test_slot_revisions_and_search_keep_fixed_reference(client, monkeypatch):
     monkeypatch.setattr(slots, 'resource_entries', lambda: [])
-    one=library.save('slots','Synthetic shape',document())
+    actor=client.get('/api/v1/auth/me').json()
+    one=library.save('slots','Synthetic shape',document(),actor=actor)
     updated=document();updated['parameters']['br2']=3
-    two=library.save('slots','Synthetic shape',updated,one['id'],1)
+    two=library.save('slots','Synthetic shape',updated,one['id'],1,actor=actor)
     assert slots.get(one['reference'])['document']['parameters']['br2']==2
     assert slots.get(two['reference'])['document']['parameters']['br2']==3
     assert slots.search('SYN-R-1',side='rotor')['total']==1
     assert slots.search('SYN-R-1',side='stator')['total']==0
     assert slots.search('SYN-R-1',module='tx')['total']==0
-    library.archive('slots',one['id'],2,True)
+    library.archive('slots',one['id'],2,True,actor=actor)
     assert slots.search()['total']==0
     assert slots.search(include_archived=True)['total']==1
     assert slots.get(one['reference'])['revision']==1

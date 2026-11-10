@@ -12,18 +12,31 @@ window.SlotPicker = (() => {
   function field(label,input){const l=node('label',undefined,'slot-field');l.append(node('span',label),input);return l;}
   function summary(data){
     const host=node('div',undefined,'slot-summary');
-    for(const e of data?.entries||[]){
-      const row=node('div',undefined,'slot-summary-row');
-      row.append(node('strong',names[e.side]+' · '+e.name),node('span',(e.drawing?'图号 '+e.drawing+' · ':'')+statuses[e.status]));
-      const area=e.area;row.append(node('span',`${area.label}：${number(area.value_mm2)}${area.value_mm2==null?'':' mm²'}`));
-      if(e.document?.reference_area_mm2!=null)row.append(node('span',`图纸参考面积 ${number(e.document.reference_area_mm2)} mm²`));
-      if(area.value_mm2!=null)row.title=area.note;
+    const labels={...statuses,recognized:'尺寸识别一致',ambiguous:'同尺寸多个名称或图号',unrecognized:'未识别'};
+    for(const e of data?.entries||[]){const row=node('div',undefined,'slot-summary-row');row.append(node('strong',names[e.side]+' · '+(e.identities?.length>1?'同尺寸多个名称或图号':e.name)));
+      if(e.identities?.length>1){for(const pair of e.identities)row.append(node('span',pair.name+' · '+(pair.drawing||'未填写图号')));}
+      else row.append(node('span',(e.drawing?'图号 '+e.drawing+' · ':'')+(labels[e.status]||e.status)));
       host.append(row);
+    }return host;
+  }
+  function mountSaveOnly(host,config){
+    const bar=node('div',undefined,'slot-tools'),message=node('p',undefined,'slot-message');host.classList.add('slot-workbench');bar.append(node('strong','槽型另存为'));
+    for(const side of Object.keys(names))bar.append(action('另存为'+names[side]+'槽型',()=>capture(side)));
+    host.append(bar,message);
+    async function capture(side){
+      if(config.busy())return;
+      let parameters;try{parameters=config.read();if(!Object.keys(parameters).length)throw Error('请先载入设计');}catch(e){message.textContent=e.message;return;}
+      const d=node('dialog',undefined,'slot-dialog'),name=node('input'),drawing=node('input'),author=node('input'),status=node('p');author.readOnly=true;author.value=window.DCSJAuth?.username?.()||'当前登录账户';name.maxLength=drawing.maxLength=120;
+      name.value=(parameters.SizeX||parameters.TYP||'自定义')+' · '+names[side]+'槽';
+      d.append(node('h2','另存为'+names[side]+'槽型'),field('槽型名称',name),field('图号',drawing),field('作者（保存账户）',author),status);
+      const save=action('保存槽型',async()=>{save.disabled=true;try{if(!name.value.trim())throw Error('请填写槽型名称');const doc=await api('/slots/capture',{module:config.module,parameters,side});doc.drawing=drawing.value.trim();const item=await api('/slots/save',{name:name.value.trim(),document:doc,operation:'copy'});message.textContent=`已另存为自己的槽型 · 作者 ${item.author||author.value} · v${item.revision||1}`;d.close();}catch(e){status.textContent=e.message;}finally{save.disabled=false;}});
+      d.append(save,action('取消',()=>d.close()));document.body.append(d);d.addEventListener('close',()=>d.remove());d.showModal();name.focus();
     }
-    return host;
+    return {update(){},refresh(){},capture};
   }
   function mount(host,config){
     if(!host)return null;
+    if(config.saveOnly)return mountSaveOnly(host,config);
     let timer,sequence=0;
     const heading=node('div',undefined,'slot-tools');heading.append(node('strong','定转子槽型'));
     const manager=node('a','管理槽型库 ↗');manager.href='/slots';manager.target='_blank';manager.rel='noopener';heading.append(manager);
@@ -75,8 +88,9 @@ window.SlotPicker = (() => {
       function select(item){
         const id=++selectionId;detail.replaceChildren(node('h3',item.name));
         const applications=node('select');applications.setAttribute('aria-label','适用规格');applications.append(new Option('槽型基准尺寸',''));
-        for(const [i,a] of item.document.applications.entries())applications.append(new Option(`${a.series} · ${a.frame} · ${a.poles} 极 · ${a.power} kW · g=${a.geometry.gap_mm??'—'} mm`,i));
+        for(const [i,a] of (item.document.applications||[]).entries())applications.append(new Option(`${a.series} · ${a.frame} · ${a.poles} 极 · ${a.power} kW · g=${a.geometry.gap_mm??'—'} mm`,i));
         const include=node('input');include.type='checkbox';const label=field('同时带入参考定子内外径和气隙',include),preview=node('div');
+        const source=item.document.drawing_source;if(source)detail.append(node('p',`${source.sheet} 第 ${source.row} 行 · ${source.status}${source.review_required?(Object.keys(item.document.parameters).length?'；原表待核，请核对当前版本尺寸':'；原表待核，槽尺寸不自动带入'):''}${source.hr0_diameter_mm!=null?'；hr0 按当前外径换算，请在变更预览中核对':''}`));
         detail.append(applications,label,node('p',Object.keys(item.document.parameters).length?'将带入已保存的槽尺寸。':'资料未含槽宽、槽深等尺寸：仅关联图号，当前槽尺寸保留。'),preview);
         const apply=action('预览带入内容',async()=>{
           apply.disabled=true;try{
@@ -93,18 +107,7 @@ window.SlotPicker = (() => {
       await load();search.focus();
     }
     async function capture(side){
-      if(config.busy())return;
-      let body;try{body=get();if(!Object.keys(body.parameters).length)throw new Error('请先载入设计');}catch(e){error(e);return;}
-      const d=dialog('保存当前'+names[side]+'槽型'),name=node('input'),drawing=node('input'),source=node('input');name.maxLength=drawing.maxLength=120;source.maxLength=2000;source.value='从当前设计提取';
-      name.value=(body.parameters.SizeX||body.parameters.TYP||'自定义')+' · '+names[side]+'槽';
-      const status=node('p');d.append(field('槽型名称',name),field('冲片图号（可选）',drawing),field('来源',source),node('p','保存所选侧的当前尺寸与外径基准；主程序尺寸为 mm，TX 尺寸为 cm。'),status);
-      const save=action('保存到用户槽型库',async()=>{if(config.busy())return;save.disabled=true;try{
-        if(!name.value.trim()||!source.value.trim())throw new Error('请填写名称和来源');
-        const doc=await api('/slots/capture',{...body,side});doc.drawing=drawing.value.trim();doc.source=source.value.trim();
-        const item=await api('/library/slots',{name:name.value.trim(),document:doc});
-        if(JSON.stringify(get())===JSON.stringify(body))config.apply(body.parameters,{[side]:item.reference});
-        d.close();update();
-      }catch(e){status.textContent=e.message;}finally{save.disabled=false;}});d.append(save);name.focus();
+      const temporary=node('div');const captureOnly=mountSaveOnly(temporary,config);await captureOnly.capture(side);
     }
     return {update,refresh};
   }

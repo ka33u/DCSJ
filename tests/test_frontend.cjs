@@ -240,14 +240,14 @@ test('slot catalog creates a new user entry and round-trips dimensions without o
   const schema={fields:{main:{stator:[{key:'bs1',label:'槽宽',unit:'mm'}],rotor:[]},tx:{stator:[],rotor:[]}}};
   w.fetch=async(url,options={})=>{const path=new URL(url,w.location.href).pathname;const body=options.body?JSON.parse(options.body):undefined;calls.push({path,method:options.method||'GET',body});let data;
     if(path==='/api/v1/slots/schema')data=schema;
-    else if(path==='/api/v1/slots')data={items:saved?[saved]:[],total:saved?1:0};
-    else if(path==='/api/v1/library/slots'){saved={...body,id:'synthetic',reference:'user-slot:synthetic@1',revision:1,origin:'user',archived:false};data=saved;}
+    else if(path==='/api/v1/slots/profiles')data={items:saved?[saved]:[],total:saved?1:0};
+    else if(path==='/api/v1/slots/save'){saved={...body,id:'synthetic',reference:'user-slot:synthetic@1',revision:1,origin:'user',archived:false,can_edit:true,can_archive:true,author:'张工'};data=saved;}
     else throw new Error(path);
     return {ok:true,json:async()=>data};};
   w.eval(readFileSync(resolve(root,'frontend/slot-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/slots.js'),'utf8'));await settle();
   doc.querySelector('#new-slot').click();doc.querySelector('#slot-name').value='Synthetic';doc.querySelector('[data-dimension="bs1"]').value='7.5';
   doc.querySelector('#slot-editor').dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));await settle();
-  const request=calls.find(c=>c.method==='POST');assert.equal(request.path,'/api/v1/library/slots');assert.equal(request.body.document.parameters.bs1,7.5);assert.equal(request.body.expected_revision,undefined);
+  const request=calls.find(c=>c.method==='POST');assert.equal(request.path,'/api/v1/slots/save');assert.equal(request.body.document.parameters.bs1,7.5);assert.equal(request.body.expected_revision,undefined);
   assert.match(doc.querySelector('#feedback').textContent,/已保存/);assert.equal(doc.querySelector('#next').disabled,true);
   assert.equal(doc.querySelector('#save').textContent,'保存新版本');
 });
@@ -1544,6 +1544,7 @@ test('failed verification retains all scenarios for a new search with explicit b
   assert.match(d.querySelector('#optimization-detail').textContent,/后续搜索/);
 });
 
+
 test('foreign designs are copy-only and retain the loaded revision',async t=>{
   const source={id:'other',revision:3,owner:'李工',author:'李工',name:'共享方案',parameters};
   const ui=await app(t,(path,req)=>{
@@ -1576,4 +1577,63 @@ test('TX foreign revision shows the changed values and can only be copied',async
   assert.match(a.doc.querySelector('#version-details').textContent,/1 → 2/);
   a.doc.querySelector('#save-copy').click();await settle();
   assert.equal(a.calls.find(c=>c.method==='POST' && c.path==='/designs').body.copied_from,'saved-design:other@2');
+});
+
+
+test('main slot save-only controls never preview, bind or change design parameters',async t=>{
+ const dom=new JSDOM('<div id="host"></div>',{url:'http://dcsj.invalid/',runScripts:'outside-only'});const w=dom.window,d=w.document;t.after(()=>w.close());
+ w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.dispatchEvent(new w.Event('close'));};
+ const p={SizeX:'Synthetic',Di1:120,g:.5,hr0:.7},calls=[];let applies=0;
+ w.fetch=async(url,options={})=>{const path=new URL(url,w.location.href).pathname,body=JSON.parse(options.body);calls.push({path,body});let data;
+  if(path==='/api/v1/slots/capture')data={schema_version:2,side:'rotor',module:'main',parameters:{hr0:.7},geometry:{rotor_outer_mm:119,rotor_inner_mm:30}};
+  else if(path==='/api/v1/slots/save')data={name:body.name,document:body.document};else throw Error(path);
+  return {ok:true,json:async()=>data};};
+ w.eval(readFileSync(resolve(root,'frontend/slot-picker.js'),'utf8'));
+ const picker=w.SlotPicker.mount(d.querySelector('#host'),{module:'main',saveOnly:true,read:()=>p,busy:()=>false,apply:()=>applies++});
+ picker.update();await picker.refresh();assert.equal(calls.length,0);assert.doesNotMatch(d.body.textContent,/选择|解除|气隙|管理槽型库/);
+ [...d.querySelectorAll('button')].find(b=>b.textContent==='另存为转子槽型').click();
+ assert.doesNotMatch(d.querySelector('dialog').textContent,/来源|面积|适用规格/);
+ [...d.querySelectorAll('button')].find(b=>b.textContent==='保存槽型').click();await settle();
+ assert.equal(applies,0);assert.equal(p.hr0,.7);assert.equal(calls.length,2);assert.equal(calls[1].body.document.schema_version,2);
+});
+
+test('compact slot catalog shows paired names and clears old aliases when dimensions change',async t=>{
+ const dom=new JSDOM(readFileSync(resolve(root,'frontend/slots.html'),'utf8'),{url:'http://dcsj.invalid/slots',runScripts:'outside-only'});
+ const w=dom.window,d=w.document;t.after(()=>w.close());w.DCSJAuth={ready:Promise.resolve({username:'张工'}),username:()=> '张工'};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+ const entry={id:'slot',reference:'resource-slot:test:slot',origin:'resource',name:'First',document:{schema_version:2,side:'stator',module:'main',drawing:'DRAW-1',parameters:{bs1:4},geometry:{stator_outer_mm:200,bore_mm:120},aliases:[{name:'Second',drawing:'DRAW-2'}]}};let saved;
+ w.fetch=async(url,options={})=>{const path=new URL(url,w.location.href).pathname;let data;
+  if(path==='/api/v1/slots/schema')data={fields:{main:{stator:[{key:'bs1',label:'槽宽',unit:'mm'}]}}};
+  else if(path==='/api/v1/slots/profiles')data={items:[entry],total:1};
+  else if(path==='/api/v1/slots/save'){saved=JSON.parse(options.body);data={...saved,id:'user',reference:'user-slot:test@1',origin:'user',revision:1,author:'张工',can_edit:true,can_archive:true};}
+  else throw Error(path);return {ok:true,json:async()=>data};};
+ w.eval(readFileSync(resolve(root,'frontend/slot-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/slots.js'),'utf8'));await settle();
+ d.querySelector('#slot-list button').click();assert.match(d.querySelector('#aliases').textContent,/Second · DRAW-2/);
+ assert.doesNotMatch(d.body.textContent,/单槽面积|适用规格|来源|型号尺寸对应/);
+ const input=d.querySelector('[data-dimension=bs1]');input.value='5';input.dispatchEvent(new w.Event('input',{bubbles:true}));
+ d.querySelector('#copy').click();assert.equal(d.querySelector('#save').hidden,true);assert.equal(d.querySelector('#copy-author').value,'张工');assert.ok(d.querySelector('#copy-author').readOnly);
+ d.querySelector('#copy-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await settle();
+ assert.deepEqual(saved.document.aliases,[]);assert.deepEqual(Object.keys(saved.document).sort(),['schema_version','side','module','drawing','parameters','geometry','aliases'].sort());
+});
+
+test('slot owner saves a revision, module switching retains identity, and a duplicate copy stays independent',async t=>{
+ const dom=new JSDOM(readFileSync(resolve(root,'frontend/slots.html'),'utf8'),{url:'http://dcsj.invalid/slots',runScripts:'outside-only'});
+ const w=dom.window,d=w.document;t.after(()=>w.close());w.DCSJAuth={ready:Promise.resolve({username:'张工'}),username:()=> '张工'};w.confirm=()=>true;
+ w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+ const original={id:'mine',reference:'user-slot:mine@1',origin:'user',name:'Mine',revision:1,author:'张工',can_edit:true,can_archive:true,document:{schema_version:2,side:'stator',module:'main',drawing:'TEST',parameters:{bs1:4},geometry:{stator_outer_mm:200,bore_mm:120},aliases:[]}};
+ let entry=structuredClone(original),writes=[];
+ w.fetch=async(url,options={})=>{const path=new URL(url,w.location.href).pathname,body=options.body?JSON.parse(options.body):null;let data;
+  if(path==='/api/v1/slots/schema')data={fields:{main:{stator:[{key:'bs1',label:'槽宽',unit:'mm'}]},tx:{stator:[{key:'bs1',label:'槽宽',unit:'cm'}]}}};
+  else if(path==='/api/v1/slots/profiles')data={items:[entry],total:1};
+  else if(path==='/api/v1/slots/save'){writes.push(body);entry={...entry,name:body.name,document:body.document,id:body.operation==='copy'?'copy':'mine',revision:body.operation==='copy'?1:entry.revision+1};entry.reference=`user-slot:${entry.id}@${entry.revision}`;data=entry;}
+  else throw Error(path);return {ok:true,json:async()=>data};};
+ w.eval(readFileSync(resolve(root,'frontend/slot-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/slots.js'),'utf8'));await settle();d.querySelector('#slot-list button').click();
+ assert.equal(d.querySelector('#save').hidden,false);assert.equal(d.querySelector('#save').textContent,'保存新版本');assert.equal(d.querySelector('#slot-author').value,'张工');assert.ok(d.querySelector('#slot-author').readOnly);
+ d.querySelector('#module').value='tx';d.querySelector('#module').dispatchEvent(new w.Event('change'));d.querySelector('[data-dimension=bs1]').value='.4';
+ d.querySelector('#slot-editor').dispatchEvent(new w.Event('submit',{cancelable:true}));await settle();
+ assert.equal(writes[0].operation,'update');assert.equal(writes[0].identity,'mine');assert.equal(writes[0].expected_revision,1);assert.equal(writes[0].document.module,'tx');
+ assert.equal(d.querySelector('#slot-author').value,'张工');
+ d.querySelector('#copy').click();d.querySelector('#copy-name').value='Mine';d.querySelector('#copy-form').dispatchEvent(new w.Event('submit',{cancelable:true}));d.querySelector('#copy-form').dispatchEvent(new w.Event('submit',{cancelable:true}));await settle();
+ assert.equal(writes.length,2,'A double submit creates one copy');assert.equal(writes[1].operation,'copy');assert.equal(writes[1].identity,undefined);assert.equal(writes[1].expected_revision,undefined);assert.equal(writes[1].copied_from,'user-slot:mine@2');
+ assert.match(d.querySelector('#record-version').textContent,/当前 v1/);
+ assert.equal(writes[1].author,undefined,'Author is derived by the server');
 });

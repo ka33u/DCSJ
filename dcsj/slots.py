@@ -33,6 +33,7 @@ class Geometry(BaseModel):
     gap_mm: float | None = Field(default=None, gt=0, le=1000)
     stator_outer_mm: float | None = Field(default=None, gt=0, le=100000)
     hr0_mm: float | None = Field(default=None, ge=0, le=1000)
+    rotor_inner_mm: float | None = Field(default=None, gt=0, le=100000)
 
 
 class Application(BaseModel):
@@ -47,8 +48,59 @@ class Application(BaseModel):
     source: str = Field(default='', max_length=400)
 
 
+class ModelSource(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    path: str = Field(max_length=2000)
+    table: str = Field(max_length=200)
+    row: int = Field(ge=0)
+    sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class DimensionSource(BaseModel):
+    """Origin of adopted input dimensions, not a drawing certification."""
+    model_config = ConfigDict(extra='forbid')
+    method: Literal['application-cross-reference-v1']
+    slot_reference: str = Field(min_length=1, max_length=200)
+    record_id: str = Field(min_length=1, max_length=200)
+    model: str = Field(max_length=200)
+    series: str = Field(max_length=80)
+    catalog_token: str = Field(pattern=r'^[a-f0-9]{64}$')
+    input_sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    source: ModelSource
+    application: Application
+    geometry_matches: bool
+
+
+class DrawingSource(BaseModel):
+    """Immutable workbook evidence, including values not yet approved for use."""
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    file: str = Field(min_length=1, max_length=200)
+    sha256: str = Field(pattern=r'^[a-f0-9]{64}$')
+    sheet: str = Field(min_length=1, max_length=80)
+    row: int = Field(ge=1)
+    original_index: str = Field(max_length=80)
+    model_note: str = Field(default='', max_length=400)
+    frame: str = Field(default='', max_length=80)
+    shape: str = Field(default='', max_length=400)
+    status: str = Field(default='', max_length=200)
+    review_required: bool = False
+    parameters: dict[str, float] = Field(default_factory=dict)
+    hr0_basis: Literal['blank_outer', 'turned_outer'] | None = None
+    hr0_diameter_mm: float | None = Field(default=None, gt=0)
+    blank_outer_mm: float | None = Field(default=None, gt=0)
+    finished_outer_mm: float | None = Field(default=None, gt=0)
+    total_depth_mm: float | None = Field(default=None, gt=0)
+
+
+class SlotAlias(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1, max_length=120)
+    drawing: str = Field(default='', max_length=120)
+
+
 class SlotDocument(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    schema_version: Literal[1, 2] = 1
     side: Literal['stator', 'rotor']
     module: Literal['reference', 'main', 'tx'] = 'reference'
     drawing: str = Field(default='', max_length=120)
@@ -59,6 +111,9 @@ class SlotDocument(BaseModel):
     notes: str = Field(default='', max_length=4000)
     reference_area_mm2: float | None = Field(default=None, gt=0, le=1e9,
         description='图纸给出的单槽面积；仅作参考，不替换本次参数的几何面积')
+    dimension_source: DimensionSource | None = None
+    drawing_source: DrawingSource | None = None
+    aliases: list[SlotAlias] = Field(default_factory=list, max_length=1000)
 
     @model_validator(mode='after')
     def validate_dimensions(self):
@@ -71,6 +126,20 @@ class SlotDocument(BaseModel):
             raise ValueError('槽数、槽型代码和元素类型须为整数')
         if not self.source.strip():
             raise ValueError('请填写资料来源')
+        if self.drawing_source:
+            raw = self.drawing_source.parameters
+            if set(raw) - set(MAIN_KEYS[self.side]) or any(not math.isfinite(v) or abs(v)>1e6 for v in raw.values()):
+                raise ValueError('表格原始尺寸包含无效参数')
+            if any(v != int(v) for k, v in raw.items() if k in integers):
+                raise ValueError('表格原始槽数和槽型代码须为整数')
+            if (self.side == 'rotor' and self.module == 'main' and 'hr0' in self.parameters
+                    and self.drawing_source.hr0_diameter_mm is not None and self.geometry.rotor_outer_mm is None):
+                raise ValueError('表格 hr0 须保留对应的转子外径基准')
+        if self.schema_version == 2:
+            from .slot_identity import issues
+            errors = issues(self.model_dump(mode='json'))
+            if errors:
+                raise ValueError('；'.join(errors))
         return self
 
 
@@ -131,10 +200,14 @@ def get(reference):
     application = re.fullmatch(r'(.+)#app([0-9]{1,4})', reference)
     if application:
         item = get(application[1]);index = int(application[2])
-        if index >= len(item['document']['applications']):
+        if index >= len(item['document'].get('applications', [])):
             raise NotFoundError('槽型适用规格不存在')
-        return {**item, 'reference': reference, 'document': {**item['document'],
-                'geometry': item['document']['applications'][index]['geometry']}}
+        geometry = item['document']['applications'][index]['geometry']
+        if item['document'].get('drawing_source'):
+            # An older application may give a finished OD; it cannot replace the
+            # drawing's blank OD / hr0 baseline or shaft hole.
+            geometry = {**geometry, **{k:v for k,v in item['document']['geometry'].items() if v is not None}}
+        return {**item, 'reference': reference, 'document': {**item['document'], 'geometry': geometry}}
     if reference.startswith('user-slot:'):
         return library.from_reference(reference, 'slots') | {'origin': 'user'}
     match = re.fullmatch(r'resource-slot:([a-f0-9]{64}):([a-z0-9_-]{1,80})', reference)
@@ -193,6 +266,31 @@ def geometry(parameters, module='main'):
             'rotor_outer_mm': bore-2*gap if bore is not None and gap is not None else None, 'hr0_mm': h0}
 
 
+def reference_geometry(doc):
+    ref = dict(doc.get('geometry', {}))
+    if doc.get('drawing_source') and doc.get('module') == 'main' and doc['side'] == 'rotor' and 'hr0' in doc['parameters']:
+        ref['hr0_mm'] = doc['parameters']['hr0']
+    if (doc.get('drawing_source') or {}).get('hr0_basis') == 'blank_outer':
+        ref['outer_basis'] = 'blank_outer'
+    return ref
+
+
+def effective_dimensions(doc, parameters, module='main'):
+    """Move a supplied rotor neck to the design OD without adding airgap twice."""
+    values = dict(doc['parameters'])
+    source = doc.get('drawing_source') or {}
+    basis = doc.get('geometry',{}).get('rotor_outer_mm')
+    if doc['side']=='rotor' and module=='main' and 'hr0' in values and (source.get('hr0_diameter_mm') is not None or doc.get('schema_version')==2) and basis is not None:
+        d2 = geometry(parameters, module)['rotor_outer_mm']
+        if d2 is None:
+            raise InputError([{'field':'Di1', 'message':'须先提供定子内径和气隙，才能换算表格 hr0 的外圆基准'}])
+        values['hr0'] += (d2-basis)/2
+        if values['hr0'] < -1e-9:
+            raise InputError([{'field':'hr0', 'message':'按当前外径换算后的 hr0 为负，请核对冲片外径、定子内径和气隙'}])
+        values['hr0'] = max(0,values['hr0'])
+    return values
+
+
 def geometry_check(parameters, module='main', reference=None):
     g = geometry(parameters, module)
     checks = []
@@ -215,8 +313,12 @@ def geometry_check(parameters, module='main', reference=None):
     ref = reference or {}
     if d2 is not None and ref.get('rotor_outer_mm') is not None:
         rd = ref['rotor_outer_mm']
-        checks.append({'key': 'reference_diameter', 'passed': math.isclose(d2, rd, abs_tol=.001, rel_tol=0),
-                       'message': f'本次转子外径 {d2:g} mm；参考外径 {rd:g} mm；差值 {d2-rd:+.4g} mm'})
+        if ref.get('outer_basis') == 'blank_outer':
+            checks.append({'key':'machining_allowance', 'passed':d2<=rd+.001,
+                           'message':f'冲片外径 {rd:g} mm，本次加工外径 {d2:g} mm，单边加工量 {(rd-d2)/2:g} mm'})
+        else:
+            checks.append({'key': 'reference_diameter', 'passed': math.isclose(d2, rd, abs_tol=.001, rel_tol=0),
+                           'message': f'本次转子外径 {d2:g} mm；参考外径 {rd:g} mm；差值 {d2-rd:+.4g} mm'})
         if ref.get('hr0_mm') is not None and h0 is not None:
             expected = ref['hr0_mm'] + (d2-rd)/2
             checks.append({'key': 'hr0_link', 'passed': expected >= 0 and math.isclose(h0, expected, abs_tol=.001, rel_tol=0),
@@ -280,21 +382,26 @@ def snapshot(parameters, bindings=None, module='main', resolved=None, details=No
                 return math.isclose(float(parameters[key]), value, rel_tol=1e-9, abs_tol=1e-9)
             except (KeyError, TypeError, ValueError):
                 return False
-        changes = [k for k,v in doc['parameters'].items() if not equal(k,v)] if doc else []
+        try:
+            expected = effective_dimensions(doc, parameters, module) if doc else {}
+        except InputError:
+            expected = doc['parameters']
+        changes = [k for k,v in expected.items() if not equal(k,v)]
         entries.append({'side': side, 'name': item['name'] if item else '手工参数',
                         'drawing': doc['drawing'] if doc else '', 'reference': item['reference'] if item else None,
                         'revision': item['revision'] if item else None, 'document': doc,
                         'status': ('modified' if changes else 'matched') if doc and doc['parameters'] else ('reference_only' if doc else 'manual'),
                         'changed_fields': changes, 'area': area[side]})
     rotor = resolved.get('rotor', {}).get('document', {})
-    return {'entries': entries, 'geometry_check': geometry_check(parameters, module, rotor.get('geometry'))}
+    return {'entries': entries, 'geometry_check': geometry_check(parameters, module, reference_geometry(rotor))}
 
 
 def capture(parameters, side, module='main'):
+    from .slot_identity import from_parameters, compact, validate_complete
     try:
-        return SlotDocument(side=side, module=module,
-                            parameters={k:parameters[k] for k in KEYS[module][side] if k in parameters},
-                            geometry=geometry(parameters, module), source='从当前设计提取').model_dump(mode='json')
+        doc = from_parameters(parameters, side, module)
+        validate_complete(doc)
+        return compact(doc)
     except ValidationError as error:
         raise InputError([{'field':'.'.join(str(k) for k in e['loc']), 'message':e['msg']} for e in error.errors()]) from None
 
@@ -308,9 +415,10 @@ def apply(reference, parameters, module='main', application=None, include_geomet
     ref = doc['geometry']
     if include_geometry:
         factor = 10 if module == 'tx' else 1
-        mapping = {'bore_mm': 'D3' if module == 'tx' else 'Di1', 'gap_mm': 'G' if module == 'tx' else 'g', 'stator_outer_mm': 'D1'}
+        mapping = {'bore_mm': 'D3' if module == 'tx' else 'Di1', 'gap_mm': 'G' if module == 'tx' else 'g', 'stator_outer_mm': 'D1', 'rotor_inner_mm':'D4' if module=='tx' else 'Di2'}
         changes.update({key:ref[name]/factor for name,key in mapping.items() if ref.get(name) is not None})
+    changes.update(effective_dimensions(doc, {**parameters, **changes}, module))
     result = {**parameters, **changes}
     return {'parameters': result, 'binding': {side:reference},
             'changes': [{'key':k, 'before':parameters.get(k), 'after':v} for k,v in changes.items() if parameters.get(k) != v],
-            'has_dimensions': bool(doc['parameters']), 'geometry_check': geometry_check(result, module, ref)}
+            'has_dimensions': bool(doc['parameters']), 'geometry_check': geometry_check(result, module, reference_geometry(doc))}

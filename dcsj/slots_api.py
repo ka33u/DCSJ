@@ -1,6 +1,6 @@
 """Slot catalog management and workbench preview endpoints."""
 from typing import Literal
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 import math
@@ -34,6 +34,39 @@ class ApplyInput(PreviewInput):
     reference: str = Field(min_length=1,max_length=200)
     application: int | None = Field(default=None,ge=0,le=999)
     include_geometry: bool = False
+
+
+class MatchDraftInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    reference: str = Field(min_length=1, max_length=200)
+    record_id: str = Field(min_length=1, max_length=200)
+    application: int = Field(ge=0, le=999)
+    catalog_token: str = Field(pattern=r'^[a-f0-9]{64}$')
+
+
+class SaveProfileInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1,max_length=120)
+    document: slots.SlotDocument
+    identity: str | None = Field(default=None,max_length=100)
+    expected_revision: int | None = Field(default=None,ge=1)
+    operation: Literal['create','update','copy'] | None = None
+    copied_from: str | None = Field(default=None,min_length=1,max_length=200)
+
+
+@router.get('/api/v1/slots/profiles')
+def profiles(request:Request, q: str=Query(default='',max_length=120), side:Literal['stator','rotor']|None=None,
+             module:Literal['main','tx']|None=None, limit:int=Query(default=40,ge=1,le=200),
+             offset:int=Query(default=0,ge=0,le=100000)):
+    from .slot_identity import profiles
+    return profiles(q,side,module,limit,offset,actor=request.state.user)
+
+
+@router.post('/api/v1/slots/save')
+def save_profile(body:SaveProfileInput,request:Request):
+    from .slot_identity import save_profile
+    return save_profile(body.name,body.document.model_dump(mode='json'),body.identity,body.expected_revision,
+                        actor=request.state.user,operation=body.operation,copied_from=body.copied_from)
 
 
 @router.get('/slots', include_in_schema=False)
@@ -70,8 +103,27 @@ def search(q: str=Query(default='',max_length=120), side:Literal['stator','rotor
 
 
 @router.get('/api/v1/slots/entry')
-def entry(reference:str=Query(min_length=1,max_length=200)):
-    return slots.get(reference)
+def entry(request:Request,reference:str=Query(min_length=1,max_length=200)):
+    from .slot_identity import permissions
+    return permissions(slots.get(reference),request.state.user)
+
+
+@router.get('/api/v1/slots/matches')
+def matches(reference: str = Query(min_length=1, max_length=200)):
+    from . import slot_matching
+    return slot_matching.matches(reference)
+
+
+@router.get('/api/v1/slots/matching-summary')
+def matching_summary():
+    from . import slot_matching
+    return slot_matching.summary()
+
+
+@router.post('/api/v1/slots/matches/draft')
+def match_draft(body: MatchDraftInput):
+    from . import slot_matching
+    return slot_matching.draft(body.reference, body.record_id, body.application, body.catalog_token)
 
 
 @router.post('/api/v1/slots/preview')

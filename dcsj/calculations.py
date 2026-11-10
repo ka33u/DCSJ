@@ -7,6 +7,9 @@ from .storage import ConflictError, NotFoundError, audit, connect, dumps, now
 
 
 def save(result, name=None, project_id=None, project_revision=None, *, database=None):
+    if result.get('slots', {}).get('method') != 'dimension-neck-diameter-v1':
+        from .slot_identity import snapshot as identify_slots
+        result = {**result, 'slots': identify_slots(result['inputs'])}
     identity, timestamp = str(uuid.uuid4()), now()
     name = name or str(result["inputs"]["SizeX"])
     with connect(database) as db:

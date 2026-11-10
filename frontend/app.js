@@ -643,7 +643,7 @@
     $("#result-badge").textContent = "计算中";
     $("#result-badge").className = "badge neutral";
     try {
-      const result = await api("/calculate", { method: "POST", body: JSON.stringify({ parameters: state.parameters, slot_bindings: state.slotBindings, name: state.name, base_model_id: state.baseModelId, ...(state.project && !state.dirty ? { project_id: state.project.id, project_revision: state.project.revision } : {}) }) });
+      const result = await api("/calculate", { method: "POST", body: JSON.stringify({ parameters: state.parameters, name: state.name, base_model_id: state.baseModelId, ...(state.project && !state.dirty ? { project_id: state.project.id, project_revision: state.project.revision } : {}) }) });
       if (!result || !Array.isArray(result.metrics)) throw new Error("计算接口没有返回约定的 metrics 数组，请检查后端接口。");
       state.result = result;
       state.resultRevision = revision;
@@ -2407,14 +2407,10 @@
   $("#export-design").addEventListener("click", exportDesign);
   const seriesPicker = window.SeriesPicker.mount($("#design-series-control"));
   const slotPicker = window.SlotPicker?.mount($("#slot-workbench"), {
-    module: "main", read: () => {
+    module: "main", saveOnly: true, read: () => {
       if (state.invalidInputs.size) throw new Error("请先完成当前参数输入");
       return state.parameters;
-    }, bindings: () => state.slotBindings, busy: () => state.busy,
-    apply: (parameters, binding) => {
-      state.parameters = parameters; state.slotBindings = { ...state.slotBindings, ...binding };
-      designChanged(); renderEditor(); showToast("槽型已带入，请重新计算。");
-    }, detach: side => { delete state.slotBindings[side]; designChanged(); },
+    }, busy: () => state.busy,
   });
   boot().catch(error => showNotice(`初始化失败：${errorText(error)}`));
 })();

@@ -247,3 +247,23 @@ def test_optional_tx_package_upgrade_rollback_and_user_data(bundle):
     assert tx.design(user['id'])['source']['resource_version']=='synthetic.tx.2'
     resources.activate(new['package_id'],legacy['package_id'])
     assert tx.status()['available']
+
+
+def test_drawing_dimension_package_requires_current_schema_and_preserves_old_reference(bundle, monkeypatch):
+    from dcsj import slots
+    source,output,_=bundle
+    item={'id':'synthetic','name':'Drawing','document':{'side':'stator','source':'Synthetic'}}
+    path=source/'data/slot_catalog.json'
+    path.write_text(json.dumps({'format_version':1,'items':[item]}))
+    build(source,output,'synthetic.old');old=resources.install(output/'resource-bundle.zip')
+    resources.activate(old['package_id'],None);ref=slots.resource_entries()[0]['reference']
+    item['document']['drawing_source']={'file':'synthetic.xlsx','sha256':'a'*64,'sheet':'Test','row':8,'original_index':'1','review_required':True,'parameters':{'Q1':36}}
+    path.write_text(json.dumps({'format_version':1,'items':[item]}))
+    release=build(source,output,'synthetic.new')
+    assert release['minimum_application']=='0.33.0'
+    new=resources.install(output/'resource-bundle.zip');resources.activate(new['package_id'],old['package_id'])
+    assert slots.get(ref)['document'].get('drawing_source') is None
+    assert slots.resource_entries()[0]['document']['drawing_source']['parameters']=={'Q1':36}
+    monkeypatch.setattr(resources,'__version__','0.32.3')
+    with pytest.raises(resources.ResourceError,match='0.33.0'):
+        resources.install(output/'resource-bundle.zip')

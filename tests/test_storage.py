@@ -6,7 +6,7 @@ import pytest
 from dcsj import projects
 from dcsj.design_history import OwnershipError
 from dcsj.backup import backup, restore
-from dcsj.storage import ConflictError, connect
+from dcsj.storage import ConflictError, connect, SCHEMA_VERSION
 
 
 def test_existing_database_migration_preserves_designs(tmp_path, monkeypatch):
@@ -67,7 +67,7 @@ def test_v10_upgrade_retains_old_tables_and_adds_empty_tolerance_tables(tmp_path
         names=[r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")]
         before={name:[tuple(r) for r in db.execute('SELECT * FROM '+name)] for name in names}
     with connect(path) as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0]==11
+        assert db.execute('PRAGMA user_version').fetchone()[0]==SCHEMA_VERSION
         assert {name:[tuple(r) for r in db.execute('SELECT * FROM '+name)] for name in names}==before
         for name in ['optimization_samples','optimization_assessments']:
             assert db.execute('SELECT count(*) FROM '+name).fetchone()[0]==0

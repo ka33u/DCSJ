@@ -86,12 +86,47 @@ def _decode(row):
 def get(kind, identity, revision=None):
     _kind(kind)
     with connect() as db:
-        row = db.execute('SELECT e.id,e.kind,r.name,r.revision,e.archived,r.created_at,e.updated_at,r.document '
+        row = db.execute('SELECT e.id,e.kind,r.name,r.revision,e.revision AS latest_revision,e.archived,r.created_at,e.updated_at,r.document, '
+                         'e.owner_id,r.author,e.copied_from '
                          'FROM library_entries e JOIN library_revisions r ON e.id=r.entry_id '
                          'AND r.revision=coalesce(?,e.revision) WHERE e.id=? AND e.kind=?', (revision, identity, kind)).fetchone()
+        previous = db.execute('SELECT name,document FROM library_revisions WHERE entry_id=? AND revision=?',
+                              (identity,row['revision']-1)).fetchone() if row and kind=='slots' else None
     if row is None:
         raise NotFoundError('用户记录或版本不存在')
-    return _decode(row)
+    result = _decode(row)
+    if kind=='slots':
+        result['changes'] = _slot_changes(previous,row)
+    return result
+
+
+def _slot_changes(previous, current):
+    if previous is None:
+        return []
+    def fields(row):
+        doc=json.loads(row['document']);values={'name':row['name']}
+        for key,value in doc.items():
+            if isinstance(value,dict):values.update({key+'.'+k:v for k,v in value.items()})
+            else:values[key]=value
+        return values
+    before,after=fields(previous),fields(current)
+    return [{'field':key,'before':before.get(key),'after':after.get(key)}
+            for key in sorted(before.keys()|after.keys()) if before.get(key)!=after.get(key)]
+
+
+def _slot_actor(db, actor, owner_id=None, updating=False):
+    """Only authenticated account IDs own slots; old unsigned rows are never claimed."""
+    from .design_history import OwnershipError
+    if actor is None:
+        # Internal migrations and old fixtures may write unsigned historical data.
+        # All HTTP slot writes supply an authenticated actor, including legacy routes.
+        if owner_id:
+            raise OwnershipError('槽型更新需要原作者账户。请登录后操作。')
+        return None,''
+    user=db.execute('SELECT id,username FROM auth_users WHERE id=?',(actor['id'],)).fetchone()
+    if user is None or (updating and owner_id!=user['id']):
+        raise OwnershipError('只能修改或归档自己账户保存的槽型，请另存为自己的副本。')
+    return user['id'],user['username']
 
 
 def list_entries(kind, include_archived=False, limit=50, offset=0):
@@ -105,7 +140,7 @@ def list_entries(kind, include_archived=False, limit=50, offset=0):
     return {'items': [_decode(row) for row in rows], 'total': count, 'limit': limit, 'offset': offset}
 
 
-def save(kind, name, document, identity=None, expected_revision=None):
+def save(kind, name, document, identity=None, expected_revision=None, *, actor=None, copied_from=''):
     _kind(kind)
     name = name.strip()
     if not name or len(name) > 120:
@@ -116,38 +151,58 @@ def save(kind, name, document, identity=None, expected_revision=None):
     except ValidationError as error:
         raise InputError([{'field': '.'.join(str(x) for x in item['loc']), 'message': item['msg']}
                           for item in error.errors()]) from None
+    if kind == 'slots' and document.get('schema_version') == 2:
+        from .slot_identity import compact
+        document = compact(document)
     encoded, timestamp = dumps(document), now()
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
+        owner_id,author = (None,'')
         if identity:
             previous = db.execute('SELECT * FROM library_entries WHERE id=? AND kind=?', (identity, kind)).fetchone()
             if previous is None:
                 raise NotFoundError('用户记录不存在')
+            if kind=='slots':
+                owner_id,author = _slot_actor(db,actor,previous['owner_id'],updating=True)
             if previous['revision'] != expected_revision or previous['archived']:
                 raise ConflictError('该用户记录已变化或已归档，请刷新或另存')
+            if kind=='slots':
+                old=db.execute('SELECT name,document FROM library_revisions WHERE entry_id=? AND revision=?',
+                               (identity,expected_revision)).fetchone()
+                if old['name']==name and old['document']==encoded:
+                    return get(kind,identity)|{'unchanged':True}
             revision = previous['revision'] + 1
             db.execute('UPDATE library_entries SET name=?,revision=?,updated_at=? WHERE id=?', (name, revision, timestamp, identity))
         else:
             if expected_revision is not None:
                 raise ConflictError('新增记录不接受 expected_revision')
             identity, revision = 'ul_' + uuid.uuid4().hex, 1
-            db.execute('INSERT INTO library_entries(id,kind,name,revision,created_at,updated_at) VALUES (?,?,?,?,?,?)',
-                       (identity, kind, name, revision, timestamp, timestamp))
-        db.execute('INSERT INTO library_revisions VALUES (?,?,?,?,?)', (identity, revision, name, encoded, timestamp))
-        audit(db, 'library.saved', identity, {'kind': kind, 'revision': revision})
+            if kind=='slots':owner_id,author = _slot_actor(db,actor)
+            db.execute('INSERT INTO library_entries(id,kind,name,revision,created_at,updated_at,owner_id,author,copied_from) VALUES (?,?,?,?,?,?,?,?,?)',
+                       (identity, kind, name, revision, timestamp, timestamp,owner_id,author,copied_from))
+        db.execute('INSERT INTO library_revisions(entry_id,revision,name,document,created_at,author) VALUES (?,?,?,?,?,?)',
+                   (identity, revision, name, encoded, timestamp,author))
+        audit(db, 'library.saved', identity, {'kind': kind, 'revision': revision,'actor_id':owner_id,'author':author})
     return get(kind, identity)
 
 
 def revisions(kind, identity):
     get(kind, identity)
     with connect() as db:
-        rows = db.execute('SELECT revision,name,created_at FROM library_revisions WHERE entry_id=? ORDER BY revision DESC', (identity,)).fetchall()
-    return {'items': [dict(row) for row in rows]}
+        rows = db.execute('SELECT revision,name,created_at,author,document FROM library_revisions WHERE entry_id=? ORDER BY revision DESC', (identity,)).fetchall()
+    return {'items': [{k:row[k] for k in ('revision','name','created_at','author')} |
+                      ({'changes':_slot_changes(rows[i+1] if i+1<len(rows) else None,row)} if kind=='slots' else {})
+                     for i,row in enumerate(rows)]}
 
 
-def archive(kind, identity, expected_revision, archived):
+def archive(kind, identity, expected_revision, archived, *, actor=None):
     _kind(kind)
     with connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if kind=='slots':
+            row=db.execute('SELECT owner_id FROM library_entries WHERE id=? AND kind=?',(identity,kind)).fetchone()
+            if row is None:raise NotFoundError('用户记录不存在')
+            _slot_actor(db,actor,row['owner_id'],updating=True)
         changed = db.execute('UPDATE library_entries SET archived=?,updated_at=? WHERE id=? AND kind=? AND revision=?',
                              (int(archived), now(), identity, kind, expected_revision)).rowcount
         if not changed:

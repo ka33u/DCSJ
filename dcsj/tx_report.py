@@ -23,7 +23,7 @@ def coil_svg(coils):
 def report(record):
     r=record['result'];p=record['parameters'];m=r['metrics']
     from .report_summary import slot_rows, SLOT_HEADERS, SLOT_AREA_NOTE
-    slots = '<h2>使用槽型与面积</h2><table><tr>' + ''.join('<th>'+escape(h)+'</th>' for h in SLOT_HEADERS) + '</tr>'
+    slots = '<h2>槽型名称与图号</h2><table><tr>' + ''.join('<th>'+escape(h)+'</th>' for h in SLOT_HEADERS) + '</tr>'
     slots += ''.join('<tr>'+''.join('<td>'+escape(str(value))+'</td>' for value in row)+'</tr>' for row in slot_rows(r))
     slots += '</table><p class="meta">'+escape(SLOT_AREA_NOTE)+'</p>'
     if not r.get('slots'):

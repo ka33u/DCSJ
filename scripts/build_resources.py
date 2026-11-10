@@ -33,9 +33,15 @@ def build(source_root, destination, version):
     if all(tx_present):
         counts['tx_model_versions'] = len(json.loads((staging / 'tx_catalog.json').read_text())['models'])
     if slots_present:
-        counts['slot_profiles'] = len(json.loads((staging / 'slot_catalog.json').read_text())['items'])
+        slot_items = json.loads((staging / 'slot_catalog.json').read_text())['items']
+        counts['slot_profiles'] = len(slot_items)
+    minimum = '0.9.0' if slots_present else ('0.8.0' if all(tx_present) else '0.6.0')
+    if slots_present and any('drawing_source' in i['document'] or 'rotor_inner_mm' in i['document'].get('geometry', {}) for i in slot_items):
+        minimum = '0.33.0'
+    if slots_present and any(i['document'].get('schema_version') == 2 for i in slot_items):
+        minimum = '0.34.0'
     manifest = {'format': 'dcsj-private-resources', 'format_version': 3 if slots_present else (2 if all(tx_present) else 1), 'abi': ABI,
-                'version': version, 'minimum_application': '0.9.0' if slots_present else ('0.8.0' if all(tx_present) else '0.6.0'), 'counts': counts,
+                'version': version, 'minimum_application': minimum, 'counts': counts,
                 'files': {name: {'size': (staging / name).stat().st_size, 'sha256': digest(staging / name)} for name in files}}
     validate_files(staging, manifest)
     (staging / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2), encoding='utf-8')
