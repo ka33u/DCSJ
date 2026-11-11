@@ -82,7 +82,12 @@ def check(body:TXInput):return {'valid':True,'parameters':validate(body.paramete
 
 
 @router.post('/api/v1/tx/calculate')
-def calculate(body:TXCalculationInput):return tx.calculate(body.parameters,body.persist,body.base_model_id,body.slot_bindings.model_dump(exclude_none=True))
+def calculate(body:TXCalculationInput):return calculation_view(tx.calculate(body.parameters,body.persist,body.base_model_id,body.slot_bindings.model_dump(exclude_none=True)))
+
+
+def calculation_view(record):
+    from .tx_print_data import winding
+    return {**record,'result':{**record['result'],'winding':winding(record['parameters'],record['result'])}}
 
 
 @router.get('/api/v1/tx/calculations')
@@ -90,7 +95,7 @@ def calculations():return {'items':tx.calculations()}
 
 
 @router.get('/api/v1/tx/calculations/{identity}')
-def calculation(identity:str):return tx.calculation(identity)
+def calculation(identity:str):return calculation_view(tx.calculation(identity))
 
 
 @router.get('/tx/reports/{identity}',response_class=HTMLResponse,include_in_schema=False)

@@ -7,6 +7,14 @@ window.DesignVersions = (() => {
     return owned(design) && !design.archived && !design.copyOnly &&
       (design.latest_revision == null || design.revision === design.latest_revision);
   }
+  function editReason(design) {
+    if (!design || !Object.hasOwn(design,'owner')) return '缺少设计归属信息，请更新并重启服务后刷新列表。';
+    if (!design.owner) return '首版未署名，请打开后另存为自己的方案。';
+    if (!owned(design)) return '原作者为「' + design.owner + '」，请打开后另存为自己的方案。';
+    if (design.archived) return '设计已归档，请先恢复。';
+    if (design.copyOnly || (design.latest_revision != null && design.revision !== design.latest_revision)) return '这是历史版本，请打开最新版修改，或另存为自己的方案。';
+    return '';
+  }
   function copyReference(d) {
     return 'saved-design:' + d.id + '@' + d.revision;
   }
@@ -44,5 +52,5 @@ window.DesignVersions = (() => {
     box.append(details);
     return box;
   }
-  return {owned, editable, copyReference, describe};
+  return {owned, editable, editReason, copyReference, describe};
 })();

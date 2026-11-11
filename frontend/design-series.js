@@ -9,18 +9,22 @@ window.DesignSeries=(()=>{
       all.indeterminate=selected.size>0&&!all.checked;
       all.disabled=!eligible.length||eligible.length>200;
       all.title=eligible.length>200?'单批最多 200 项，请逐条勾选或筛选列表':'';
-      count.textContent=`已选 ${selected.size} 项`;
-      button.disabled=!selected.size;
+      count.textContent=eligible.length?`已选 ${selected.size} 项 · 可修改 ${eligible.length} 项`:'没有可修改的设计，请查看各行说明';
+      button.disabled=!eligible.length;
+      button.title=eligible.length?'先勾选设计，再批量修改系列名':'仅可修改自己未归档的最新设计';
       for(const [id,input] of controls)input.checked=selected.has(id);
     }
     all.addEventListener('change',()=>{selected.clear();if(all.checked)for(const item of items.filter(DesignVersions.editable))selected.set(item.id,item);sync();});
-    button.addEventListener('click',()=>onEdit([...selected.values()]));
+    button.addEventListener('click',()=>{
+      if(!selected.size){count.textContent='请先勾选要修改的设计，或使用「全选可修改设计」。';controls.find(([,input])=>!input.disabled)?.[1].focus();return;}
+      onEdit([...selected.values()]);
+    });
     return {
       set(value){items=value;selected.clear();controls=[];sync();},
       checkbox(item){
         const input=document.createElement('input');input.type='checkbox';input.className='design-select';
         input.setAttribute('aria-label','选择设计 '+item.name);input.disabled=!DesignVersions.editable(item);
-        input.title=input.disabled?'仅可修改自己未归档的设计':'';
+        input.title=input.disabled?DesignVersions.editReason(item):'勾选后可批量修改系列名';
         input.onchange=()=>{if(input.checked&&selected.size>=200){input.checked=false;count.textContent='单批最多 200 项';return;}if(input.checked)selected.set(item.id,item);else selected.delete(item.id);sync();};
         controls.push([item.id,input]);return input;
       },

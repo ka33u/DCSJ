@@ -396,10 +396,51 @@
     box.append(list);
     return box;
   }
+  const primaryMetricKeys = ['ATA1','PF1','IST1','TST1','TM1','Sf'];
+  function metricStandard(key, result) {
+    const input = result.inputs || {};
+    if (key === 'Sf') {
+      const recorded = result.wire_selection?.target_fill;
+      const target = Number.isFinite(recorded) ? recorded : input._wire_target;
+      return {target:Number.isFinite(target) && target > 0 ? target : null, relation:'target', source:'目标槽满率'};
+    }
+    const source = {ATA1:'ATA',PF1:'PF',IST1:'IST',TST1:'TST',TM1:'TM'}[key];
+    const recorded = Array.isArray(result.requirements) ? result.requirements.find(item=>item.metric===key) : null;
+    // Historical reports keep their own standards; current editor values never apply here.
+    const target = Number.isFinite(recorded?.target) ? recorded.target : input[source+'_req'] ?? input[source];
+    return {target:Number.isFinite(target) ? target : null, relation:key==='IST1'?'maximum':'minimum', source};
+  }
+  function primaryMetricCard(metric, result) {
+    const standard=metricStandard(metric.key,result),percent=['ATA1','Sf'].includes(metric.key),factor=percent?100:1;
+    const unit=percent?'%':['IST1','TST1','TM1'].includes(metric.key)?'倍':metric.unit;
+    const actual=Number.isFinite(metric.value)?metric.value:null;
+    const card=el('div','metric-card');card.dataset.metric=metric.key;
+    card.append(el('span','metric-label',metric.label||metric.key));
+    const value=el('div','metric-value',fmt(actual===null?null:actual*factor,percent?3:5));
+    if(unit)value.append(el('span','metric-unit',unit));card.append(value);
+    const target=standard.target,reference=el('div','metric-standard');
+    reference.textContent=target===null?'标准值：未设置':`${standard.relation==='target'?'目标值':'标准值'} ${standard.relation==='maximum'?'≤':standard.relation==='minimum'?'≥':'='} ${fmt(target*factor,5)}${unit?' '+unit:''}`;
+    reference.title=target===null?'此计算快照未设置对应标准':`取自本次计算快照：${standard.source}`;
+    card.append(reference);
+    if(target!==null&&actual!==null){
+      const failed=standard.relation==='maximum'?actual>target:actual<target;
+      card.classList.toggle('metric-out-of-standard',failed);
+      const label=standard.relation==='maximum'?(failed?'超过上限':'未超过上限'):standard.relation==='target'?(failed?'低于目标':actual>target?'高于目标':'等于目标'):(failed?'低于标准':'达到标准');
+      const assessment=el('div','metric-assessment',label);
+      // Keep the exact comparison inspectable even if two displayed values round alike.
+      assessment.title=`计算值 ${actual}；${standard.relation==='target'?'目标':'标准'} ${target}`;
+      card.append(assessment);
+    }
+    return card;
+  }
   function renderResults(result) {
     const container = $("#result-content");
     container.replaceChildren();
     const metrics = Array.isArray(result.metrics) ? result.metrics : [];
+    const primary = primaryMetricKeys.map(key=>metrics.find(metric=>metric.key===key)).filter(Boolean);
+    const remaining = metrics.filter(metric=>!primaryMetricKeys.includes(metric.key));
+    const magnetic = metric=>['Bg','Bts','Bys','Btr','Btru','Btrl','Byr','btrmu','btrml'].includes(metric.key)||['G','T'].includes(metric.unit)||String(metric.label||'').includes('磁密');
+    const detailed = [...remaining.filter(magnetic),...remaining.filter(metric=>!magnetic(metric))];
     const curves = Array.isArray(result.curves) ? result.curves.filter(curve => curve.display !== false) : [];
     const warnings = Array.isArray(result.warnings) ? result.warnings : [];
     const meta = el("div", "result-meta");
@@ -463,30 +504,25 @@
       } else section.append(el('p','inline-error',cycle.reason || '没有有效的周期能耗结果'));
       container.append(section);
     }
-    if (metrics.length) {
-      const cards = el("div", "metric-grid");
-      metrics.slice(0, 6).forEach(metric => {
-        const card = el("div", "metric-card");
-        card.append(el("span", "metric-label", metric.label || metric.key));
-        const value = el("div", "metric-value", fmt(metric.value, typeof metric.value === "number" && Math.abs(metric.value) < 1 ? 5 : 3));
-        if (metric.unit) value.append(el("span", "metric-unit", metric.unit));
-        card.append(value);
-        cards.append(card);
-      });
+    if (primary.length) {
+      const cards = el("div", "metric-grid primary-metrics");
+      cards.setAttribute('aria-label','主要计算指标与标准值');
+      primary.forEach(metric=>cards.append(primaryMetricCard(metric,result)));
       container.append(cards);
     }
     curves.forEach(curve => container.append(renderCurve(curve)));
-    if (metrics.length) {
+    if (detailed.length) {
       container.append(el("h3", "result-section-title", "详细计算指标"));
       const scroll = el("div", "table-scroll");
-      const table = el("table", "result-table");
+      const table = el("table", "result-table detailed-metrics");
       const head = el("thead");
       const heading = el("tr");
       ["指标", "符号", "结果", "单位"].forEach(text => heading.append(el("th", "", text)));
       head.append(heading);
       const body = el("tbody");
-      metrics.forEach(metric => {
+      detailed.forEach(metric => {
         const row = el("tr");
+        row.dataset.metric=metric.key;if(magnetic(metric))row.classList.add('magnetic-metric');
         [metric.label || metric.key, metric.key, fmt(metric.value), metric.unit || "—"].forEach(value => row.append(el("td", "", value)));
         body.append(row);
       });
@@ -896,7 +932,13 @@
         const row = el("tr");
         const selected = el("td");selected.append(projectSelection.checkbox(project));row.append(selected);
         const date = new Date(project.updated_at);
-        [`${project.name} · v${project.revision}${project.archived ? " · 已归档" : ""}`, project.series || "未分类", project.author || "未署名", project.id, Number.isNaN(date.getTime()) ? project.updated_at || "—" : date.toLocaleString("zh-CN")].forEach(value => row.append(el("td", "", value)));
+        const name = el("td", "project-name", `${project.name} · v${project.revision}${project.archived ? " · 已归档" : ""}`);
+        name.append(el("small", "project-id", project.id));row.append(name);
+        const series = el("td", "project-series");series.append(el("span", "", project.series || "未分类"));
+        const editSeries = button("修改系列名", "text-button", () => editProjectSeries([project]));
+        const reason = DesignVersions.editReason(project);editSeries.disabled=!DesignVersions.editable(project);editSeries.title=reason||"修改此设计的系列名并保留版本差异";
+        series.append(editSeries);if(reason)series.append(el("small", "design-edit-reason", reason));row.append(series);
+        [project.author || "未署名", Number.isNaN(date.getTime()) ? project.updated_at || "—" : date.toLocaleString("zh-CN")].forEach(value => row.append(el("td", "", value)));
         const action = el("td");
         const trigger = button("打开设计 →", "text-button", async () => {
           if (state.busy) return showToast("计算正在进行，请在完成后打开其他设计。", "warning");
@@ -922,7 +964,6 @@
           } catch (error) { showToast(errorText(error), "error"); }
           finally { archive.disabled = false; }
         });
-        if (DesignVersions.editable(project)) action.append(button("修改系列名", "text-button", () => editProjectSeries([project])));
         if (DesignVersions.owned(project)) action.append(archive);
         row.append(action);
         $("#project-table-body").append(row);

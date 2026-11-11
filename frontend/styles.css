@@ -45,3 +45,6 @@
 .constraint-conflict{padding:12px 0;border-top:1px solid var(--line,#e2e9e6)}
 .constraint-conflict>p+p{margin-top:6px}
 .constraint-conflict .text-button{margin-left:8px;white-space:nowrap}
+
+/* Snapshot standards beside the six primary values; flux rows lead the detail table. */
+.primary-metrics .metric-standard{font-size:11px;line-height:1.6;color:#6a8177;margin-top:10px;font-variant-numeric:tabular-nums}.primary-metrics .metric-assessment{font-size:10px;color:#648274;margin-top:4px}.primary-metrics .metric-out-of-standard{background:#fff6f4;border-color:#e8b8b0}.primary-metrics .metric-out-of-standard .metric-value,.primary-metrics .metric-out-of-standard .metric-unit,.primary-metrics .metric-out-of-standard .metric-assessment{color:#b42318}.detailed-metrics .magnetic-metric{background:#f4f9f6}.detailed-metrics .magnetic-metric td:first-child{font-weight:600;color:#315c4a}

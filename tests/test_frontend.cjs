@@ -1714,7 +1714,7 @@ test('main batch series selection excludes foreign and archived designs and reta
   a.doc.querySelector('#projects-select-all').click();assert.match(a.doc.querySelector('#projects-selection-count').textContent,/2/);
   a.doc.querySelector('#projects-series-edit').click();assert.equal(a.doc.querySelectorAll('.series-targets li').length,2);assert.equal(a.doc.querySelector('.series-targets').querySelector('设计'),null);
   setSeriesDialog(a,'试制系列');submitSeries(a);await until(()=>!a.doc.querySelector('#design-series-dialog'),'Batch saved');await settle();
-  assert.match(a.doc.querySelector('#project-table-body').textContent,/试制系列/);assert.equal(a.doc.querySelector('#projects-series-edit').disabled,true);
+  assert.match(a.doc.querySelector('#project-table-body').textContent,/试制系列/);assert.equal(a.doc.querySelector('#projects-series-edit').disabled,false);
   a.nav('workbench');a.doc.querySelector('#save-design').click();assert.equal(a.doc.querySelector('#design-series-control-select').value,'series:试制系列');
   a.doc.querySelector('#save-as-new').checked=false;a.doc.querySelector('#save-as-new').dispatchEvent(new a.w.Event('change'));
   a.doc.querySelector('#save-form').dispatchEvent(new a.w.Event('submit',{cancelable:true}));await settle();
@@ -1757,4 +1757,111 @@ test('series single-edit conflict keeps the dialog, chosen value and list revisi
   assert.equal(a.doc.querySelector('#design-series-dialog').open,true);assert.match(a.doc.querySelector('.series-error').textContent,/未修改任何设计/);
   assert.equal(a.doc.querySelector('#batch-series-control input').value,'新系列');assert.equal(a.doc.querySelector('#designs-list select').value,'1');
   a.doc.querySelector('.series-dialog-actions button').click();assert.equal(a.doc.querySelector('#design-series-dialog'),null);
+});
+
+test('main series actions are visible beside series; unselected batch explains selection instead of staying grey',async t=>{
+  let item={id:'mine-single',name:'可编辑设计',owner:'张工',author:'张工',series:'旧系列',revision:1,updated_at:created};
+  const a=await app(t,(path,req)=>{
+    if(path==='/projects')return {items:[item]};
+    if(path==='/projects/series'){
+      assert.deepEqual(req.body.items,[{id:item.id,expected_revision:1}]);
+      item={...item,series:req.body.series,revision:2};return {items:[{...item,changed:true,previous_series:'旧系列',previous_revision:1}],changed_count:1,unchanged_count:0};
+    }
+  });
+  a.nav('projects');await until(()=>a.doc.querySelector('#project-table-body tr'),'Saved list');
+  const batch=a.doc.querySelector('#projects-series-edit');assert.equal(batch.disabled,false);
+  batch.click();assert.match(a.doc.querySelector('#projects-selection-count').textContent,/请先勾选/);
+  assert.equal(a.doc.querySelector('#design-series-dialog'),null);assert.ok(!a.calls.some(c=>c.url.pathname.endsWith('/projects/series')));
+  assert.equal(a.doc.activeElement,a.doc.querySelector('#project-table-body .design-select'));
+  const single=a.doc.querySelector('.project-series button');assert.equal(single.textContent,'修改系列名');assert.equal(single.disabled,false);
+  single.click();assert.equal(a.doc.querySelector('#design-series-title').textContent,'修改系列名');
+  setSeriesDialog(a,'单条新系列');submitSeries(a);await until(()=>!a.doc.querySelector('#design-series-dialog'),'Single edit saved');
+  assert.match(a.doc.querySelector('.project-series').textContent,/单条新系列/);
+});
+
+test('main explains missing historical ownership without claiming a latest author design',async t=>{
+  const a=await app(t,path=>path==='/projects'?{items:[
+    {id:'legacy',name:'历史未署名',owner:'',author:'张工',revision:3,updated_at:created},
+    {id:'foreign',name:'历史多作者',owner:'李工',author:'张工',revision:3,updated_at:created},
+    {id:'missing',name:'旧服务响应',author:'张工',revision:1,updated_at:created},
+    {id:'archived',name:'已归档',owner:'张工',author:'张工',archived:1,revision:1,updated_at:created}]}:undefined);
+  a.nav('projects');await until(()=>a.doc.querySelectorAll('.project-series button').length===4,'All series controls visible');
+  assert.ok([...a.doc.querySelectorAll('.project-series button')].every(b=>b.disabled));
+  const text=a.doc.querySelector('#project-table-body').textContent;
+  assert.match(text,/首版未署名/);assert.match(text,/原作者为「李工」/);assert.match(text,/缺少设计归属信息/);assert.match(text,/请先恢复/);
+  assert.equal(a.doc.querySelector('#projects-series-edit').disabled,true);
+  assert.match(a.doc.querySelector('#projects-selection-count').textContent,/查看各行说明/);
+});
+
+test('TX engineering results show snapshot wire gauges, all slot fills and flux with precise small values',async t=>{
+  const a=await txApp(t,(req,{p,result})=>{
+    if(req.path==='/calculate')return {id:'engineering',name:p.TYP,created_at:created,parameters:{...req.body.parameters,N6:3,D6:1.12,N7:0,D7:.85,GGP:600},result:{...result,
+      metrics:{...result.metrics,aj:981.2,slip:.0234},details:{...result.details,current_density_a_mm2:4.1234,resistance_ohm:.2345,stator_tooth_flux_g:14567,rotor_tooth2_flux_g:0,stator_slot_area_mm2:123.456},
+      winding:{material:'DW600',parallel_paths:2,wires:[{group:1,parallel_wires:3,diameter_mm:1.12,used:true},{group:2,parallel_wires:0,diameter_mm:.85,used:false}],slot_fills:[61,62,63,64].map((n,i)=>({label:`SF(${n})`,value:.6123+i*.05}))}}};
+  });
+  a.doc.querySelector('#calculate').click();await until(()=>!a.doc.querySelector('#results').hidden,'Engineering results');
+  const panel=a.doc.querySelector('#engineering-results'),text=panel.textContent;
+  for(const expected of ['DW600','1.12','未使用','SF(61)','SF(64)','61.23','76.23','4.1234','0.2345','0.0234','14,567','123.456','981.2'])assert.ok(text.includes(expected),expected);
+  assert.ok(!text.includes('NaN'));assert.equal(panel.querySelectorAll('.flux-panel .engineering-values>div').length,6);
+  const before=panel.innerHTML,input=a.doc.querySelector('[name=A1]');input.value='4';input.dispatchEvent(new a.w.Event('input'));
+  assert.equal(panel.innerHTML,before);assert.match(a.doc.querySelector('#result-status').textContent,/参数已修改/);
+});
+
+test('TX missing legacy engineering values stay unknown instead of becoming zero or NaN',async t=>{
+  const a=await txApp(t);a.doc.querySelector('#calculate').click();await until(()=>!a.doc.querySelector('#results').hidden,'Legacy result');
+  const panel=a.doc.querySelector('#engineering-results');assert.match(panel.textContent,/未记录/);assert.match(panel.textContent,/—/);
+  assert.doesNotMatch(panel.innerHTML,/NaN|Infinity|undefined/);
+  assert.equal([...panel.querySelectorAll('.flux-panel dd')].every(dd=>dd.textContent==='—'),true);
+});
+
+async function mainMetricSnapshot(t, value) {
+  const ui=await app(t,path=>path==='/calculations'?{items:[{id:'metric-check',name:'指标检查'}],total:1}:path==='/calculations/metric-check'?value:undefined,[{key:'ATA',label:'效率标准',group:'basic',type:'number',role:'input'}]);
+  ui.nav('comparisons');await settle();ui.find('#calculation-table-body button','打开快照').click();
+  await until(()=>ui.doc.querySelector('.primary-metrics'),'Primary metrics rendered');return ui;
+}
+function metricFixture(overrides={}) {
+  const definitions=[['Aj',1010,'热负荷',''],['Bts',14500,'定子齿磁密','G'],['TM1',2.5,'最大转矩',''],['ATA1',.89,'效率',''],
+    ['PF1',.82,'功率因数',''],['Bg',6500,'气隙磁密','G'],['IST1',7,'启动电流',''],['Sf',.72,'槽满率',''],['TST1',2.1,'启动转矩',''],['J1',4,'电密','A/mm²']];
+  return {...snapshot('metric-check'),inputs:{...parameters,ATA:.9,PF:.82,IST:8,TST:2.2,TM:2.4,_wire_target:.75},
+    metrics:definitions.map(([key,value,label,unit])=>({key,value,label,unit})),...overrides};
+}
+
+test('main detail metrics omit all six cards and stably put flux first without mutating the snapshot',async t=>{
+  const record=metricFixture(),before=JSON.stringify(record),ui=await mainMetricSnapshot(t,record);
+  assert.deepEqual([...ui.doc.querySelectorAll('.primary-metrics .metric-card')].map(n=>n.dataset.metric),['ATA1','PF1','IST1','TST1','TM1','Sf']);
+  assert.deepEqual([...ui.doc.querySelectorAll('.detailed-metrics tbody tr')].map(n=>n.dataset.metric),['Bts','Bg','Aj','J1']);
+  assert.equal(ui.doc.querySelectorAll('.detailed-metrics .magnetic-metric').length,2);
+  const card=key=>ui.doc.querySelector(`.primary-metrics [data-metric=${key}]`);
+  assert.match(card('ATA1').textContent,/89%/);assert.match(card('ATA1').textContent,/标准值 ≥ 90 %/);
+  assert.match(card('Sf').textContent,/目标值 = 75 %/);
+  assert.deepEqual([...ui.doc.querySelectorAll('.primary-metrics .metric-out-of-standard')].map(n=>n.dataset.metric),['ATA1','TST1','Sf']);
+  assert.match(card('IST1').textContent,/标准值 ≤ 8 倍/);assert.match(card('IST1').textContent,/未超过上限/);
+  assert.equal(JSON.stringify(record),before);
+});
+
+test('main standards use saved requirements and upper current limit; equal standards do not turn red',async t=>{
+  const record=metricFixture();record.requirements=[{metric:'ATA1',target:.88},{metric:'IST1',target:6.5},{metric:'TST1',target:2.1},{metric:'TM1',target:2.5}];
+  record.wire_selection={mode:'target_fill',target_fill:.72};
+  const ui=await mainMetricSnapshot(t,record),card=key=>ui.doc.querySelector(`.primary-metrics [data-metric=${key}]`);
+  assert.deepEqual([...ui.doc.querySelectorAll('.primary-metrics .metric-out-of-standard')].map(n=>n.dataset.metric),['IST1']);
+  assert.match(card('ATA1').textContent,/标准值 ≥ 88 %/);assert.match(card('IST1').textContent,/超过上限/);assert.match(card('Sf').textContent,/目标值 = 72 %/);
+  assert.match(card('TST1').textContent,/达到标准/);assert.match(card('Sf').textContent,/等于目标/);
+});
+
+test('missing standards and values stay unknown, with historical input-only standards preserved',async t=>{
+  const record=metricFixture({inputs:{...parameters,ATA:.9,ATA_req:.85,_wire_target:0}});
+  record.metrics=record.metrics.filter(m=>['ATA1','PF1','IST1','TST1','TM1','Sf'].includes(m.key));record.metrics.find(m=>m.key==='PF1').value=null;
+  const ui=await mainMetricSnapshot(t,record),card=key=>ui.doc.querySelector(`.primary-metrics [data-metric=${key}]`);
+  assert.match(card('ATA1').textContent,/标准值 ≥ 85 %/);assert.match(card('PF1').textContent,/—/);
+  for(const key of ['PF1','IST1','TST1','TM1','Sf'])assert.match(card(key).textContent,/标准值：未设置/);
+  assert.equal(ui.doc.querySelectorAll('.primary-metrics .metric-out-of-standard').length,0);
+  assert.equal(ui.doc.querySelector('.detailed-metrics'),null);assert.doesNotMatch(ui.doc.querySelector('.primary-metrics').textContent,/NaN|undefined/);
+});
+
+test('main standard coloring compares unrounded values and keeps current inputs out of old snapshots',async t=>{
+  const record=metricFixture({inputs:{...parameters,ATA:.9}});record.metrics.find(m=>m.key==='ATA1').value=.89999999;
+  const ui=await mainMetricSnapshot(t,record),card=ui.doc.querySelector('.primary-metrics [data-metric=ATA1]');
+  assert.ok(card.classList.contains('metric-out-of-standard'));assert.match(card.querySelector('.metric-assessment').title,/0.89999999/);
+  const before=card.textContent,input=ui.doc.querySelector('[data-key=ATA]');input.value='.8';input.dispatchEvent(new ui.w.Event('input',{bubbles:true}));
+  assert.equal(card.textContent,before);assert.ok(ui.doc.querySelector('#stale-result'));assert.match(card.textContent,/标准值 ≥ 90 %/);
 });
