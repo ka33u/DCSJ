@@ -82,9 +82,9 @@ def original_series(name):
     return match[1] if match else ''
 
 
-def series():
+def series(source='all'):
     from . import catalog
-    values = set(catalog.series())
+    values = set(catalog.series()) if source == 'all' else set()
     try:
         ctx=context();data=_catalog(str(ctx['paths']['tx_catalog.json']),ctx['files']['tx_catalog.json']['sha256'])
         values.update(original_series(m['name']) for m in data['models'])
@@ -174,15 +174,14 @@ def _result(vm,parameters,ctx,source):
 
 
 def calculate(parameters,persist=True,base_model_id=None,slot_bindings=None):
-    from . import slots
-    resolved = slots.resolve(slot_bindings, 'tx')
+    from .slot_identity import snapshot as identify_slots
     parameters=validate(parameters);ctx=context();source=lineage(base_model_id,ctx)
     if not _slots.acquire(blocking=False):raise BusyError('TX 计算资源已占满，请稍后重试')
     try:
         program=load_program(str(ctx['paths']['tx_kernel.json.gz']),ctx['files']['tx_kernel.json.gz']['sha256'])
         vm=TXVM(program,parameters);vm.run();result=_result(vm,parameters,ctx,source)
         result['slot_bindings'] = slot_bindings or {}
-        result['slots'] = slots.snapshot(parameters,module='tx',resolved=resolved,details=result['details'])
+        result['slots'] = identify_slots(parameters,module='tx',details=result['details'])
     except (ArithmeticError,ValueError,NotImplementedError,KeyError,IndexError,UnicodeError) as exc:
         raise TXInputError('TX 计算未完成，请检查槽型、绕组及计算系数。原因：'+str(exc)) from None
     finally:_slots.release()

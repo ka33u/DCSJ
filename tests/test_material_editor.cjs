@@ -37,7 +37,9 @@ async function app(t, initial = [], original) {
     return { ok: true, status: 200, json:async()=>data, text: async () => JSON.stringify(data) };
   };
   w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));
+  w.eval(readFileSync(resolve(root,'frontend/design-versions.js'),'utf8'));
   w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));
+  w.eval(readFileSync(resolve(root,'frontend/design-series.js'),'utf8'));
   w.eval(readFileSync(resolve(root, 'frontend/app.js'), 'utf8')); await settle();
   t.after(() => { w.close(); assert.deepEqual(errors, []); });
   const change = (selector, value, event = 'change') => { const node = d.querySelector(selector); node.value = value; node.dispatchEvent(new w.Event(event, { bubbles: true })); };

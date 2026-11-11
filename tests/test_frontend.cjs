@@ -105,7 +105,7 @@ async function settle() {
 
 test('series selector keeps custom input during refresh and retains unknown saved series',async t=>{
   const dom=new JSDOM('<div id="series"></div>',{runScripts:'outside-only'}),w=dom.window,d=w.document;t.after(()=>w.close());
-  w.eval(readFileSync(resolve(root,'frontend/design-versions.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));
+  w.eval(readFileSync(resolve(root,'frontend/design-versions.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/design-series.js'),'utf8'));
   const picker=w.SeriesPicker.mount(d.querySelector('#series'));picker.options(['YE3','YE4']);picker.set('历史自定义');
   assert.equal(picker.value(),'历史自定义');
   const select=d.querySelector('select'),input=d.querySelector('input');select.value='new';select.dispatchEvent(new w.Event('change'));
@@ -162,7 +162,7 @@ async function app(t, route, extraFields = []) {
   t.after(() => { w.close(); assert.deepEqual(errors, [], 'Unexpected frontend runtime errors'); });
   w.HTMLElement.prototype.scrollIntoView = function () {};
   w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
-  w.HTMLDialogElement.prototype.close = function () { this.open = false; };
+  w.HTMLDialogElement.prototype.close = function () { this.open = false; this.dispatchEvent(new w.Event('close')); };
   w.URL.createObjectURL = () => 'blob:synthetic-test';
   w.URL.revokeObjectURL = () => {};
   w.fetch = async (url, options = {}) => {
@@ -184,7 +184,7 @@ async function app(t, route, extraFields = []) {
     return { ok: true, status: 200, json: async()=>data, text: async () => JSON.stringify(data) };
   };
   w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));
-  w.eval(readFileSync(resolve(root,'frontend/design-versions.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));
+  w.eval(readFileSync(resolve(root,'frontend/design-versions.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/design-series.js'),'utf8'));
   w.eval(script);
   await until(() => doc.querySelector('#connection-text').textContent === '服务已连接', 'App boot completed');
   await settle();
@@ -333,7 +333,7 @@ test('saved projects expose history, archive and restore using the current revis
     if (path === '/projects/project-1/revisions/2') return { name: '人工旧版', parameters };
   });
   ui.nav('projects');
-  await until(() => ui.doc.querySelectorAll('#project-table-body button').length === 3, 'Project controls are available');
+  await until(() => ui.doc.querySelectorAll('#project-table-body button').length === 4, 'Project controls are available');
   ui.find('#project-table-body button', '打开设计 →').click();
   await until(() => ui.doc.querySelector('#current-design').textContent === project.name, 'Project opens');
   ui.nav('projects'); await settle();
@@ -712,7 +712,7 @@ test('old comparison-only requirements do not reappear when continuing a snapsho
   assert.equal(old.inputs.ATA_req, .99, 'Original snapshot remains unchanged');
 });
 
-async function txApp(t, route = () => undefined) {
+async function txApp(t, route = () => undefined, {loadExample=true}={}) {
   const p = {TYP:'人工 TX 设计', P2:7.2, A1:2, D3:18, FE:1};
   const fields = Object.entries({TYP:'额定参数',P2:'额定参数',A1:'导线与绕组',D3:'铁心与槽型',FE:'计算系数'})
     .map(([key,group])=>({key,label:key,group,unit:key==='D3'?'cm':'',type:key==='TYP'?'text':'number'}));
@@ -726,9 +726,9 @@ async function txApp(t, route = () => undefined) {
   const dom=new JSDOM(readFileSync(resolve(root,'frontend/tx.html'),'utf8'),{url:'https://dcsj.invalid/tx',runScripts:'outside-only',virtualConsole});
   const w=dom.window,doc=w.document;
   w.Headers=Headers;w.Request=Request;
-  w.HTMLElement.prototype.scrollIntoView=function(){};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};w.confirm=()=>true;
+  w.HTMLElement.prototype.scrollIntoView=function(){};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};w.confirm=()=>true;
   w.fetch=async(url,options={})=>{
-    const request={path:new URL(url,w.location.href).pathname.replace('/api/v1/tx',''),method:options.method||'GET',body:options.body?JSON.parse(options.body):null};calls.push(request);
+    const request={url:new URL(url,w.location.href),path:new URL(url,w.location.href).pathname.replace('/api/v1/tx',''),method:options.method||'GET',body:options.body?JSON.parse(options.body):null};calls.push(request);
     let data=request.path==='/api/v1/auth/me'?{username:'张工'}:await route(request,{p,result});
     if(data===undefined){
       if(request.path==='/series')data={items:['人工系列']};
@@ -740,8 +740,9 @@ async function txApp(t, route = () => undefined) {
     }
     assert.notEqual(data,undefined,request.path);return {ok:true,json:async()=>data};
   };
-  t.after(()=>{w.close();assert.deepEqual(errors,[]);});w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/design-versions.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/tx.js'),'utf8'));
-  await until(()=>doc.querySelector('#design-title').textContent===p.TYP&&!doc.querySelector('#calculate').disabled,'TX starts');
+  t.after(()=>{w.close();assert.deepEqual(errors,[]);});w.eval(readFileSync(resolve(root,'frontend/auth.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/design-versions.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/series-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/design-series.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/slot-picker.js'),'utf8'));w.eval(readFileSync(resolve(root,'frontend/tx.js'),'utf8'));
+  await until(()=>!doc.querySelector('#load-example').disabled,'TX starts');
+  if(loadExample){doc.querySelector('#load-example').click();await until(()=>doc.querySelector('#design-title').textContent===p.TYP&&!doc.querySelector('#calculate').disabled,'TX example loaded');}
   return {w,doc,calls,p,result};
 }
 
@@ -776,6 +777,31 @@ test('TX saves revisions with optimistic guards and creates a separate copy',asy
   const update=a.calls.find(c=>c.method==='PUT');assert.equal(update.body.expected_revision,1);assert.equal(update.path,'/designs/user-tx');
   a.doc.querySelector('#save-copy').click();await settle();
   assert.equal(a.calls.filter(c=>c.path==='/designs'&&c.method==='POST').length,2);
+});
+
+test('TX identifies snapshot slots and saves independent account-owned copies without importing dimensions',async t=>{
+  let saved;
+  const a=await txApp(t,(req,{p,result})=>{
+    if(req.path==='/calculate')return {id:'tx-recognized',parameters:req.body.parameters,name:p.TYP,created_at:created,
+      result:{...result,slots:{entries:[{side:'stator',name:'TX <recognized>',drawing:'TX-D1',status:'recognized'},
+        {side:'rotor',name:'未识别',drawing:'',status:'unrecognized'}]}}};
+    if(req.path==='/api/v1/slots/capture'){assert.equal(req.body.module,'tx');assert.equal(req.body.side,'stator');return {module:'tx',side:'stator',parameters:{bs1:.7},geometry:{stator_outer_mm:300,bore_mm:180}};}
+    if(req.path==='/api/v1/slots/save'){saved=req.body;return {id:'mine',author:'张工',revision:1};}
+  });
+  const host=a.doc.querySelector('#slot-workbench');
+  assert.doesNotMatch(host.textContent,/选择|带入|解除|校核/);
+  assert.equal(a.calls.filter(c=>c.path.includes('/slots/preview')).length,0);
+  a.doc.querySelector('#calculate').click();await until(()=>!a.doc.querySelector('#results').hidden,'recognized TX snapshot');
+  assert.equal(a.calls.find(c=>c.path==='/calculate').body.slot_bindings,undefined);
+  assert.match(a.doc.querySelector('#slot-result').textContent,/TX <recognized>.*TX-D1/);
+  assert.equal(a.doc.querySelector('#slot-result recognized'),null);
+  assert.equal(a.doc.querySelector('#raw-report'),null);
+  [...host.querySelectorAll('button')].find(b=>b.textContent==='另存为定子槽型').click();
+  const dialog=a.doc.querySelector('.slot-dialog');assert.equal(dialog.querySelector('input[readonly]').value,'张工');
+  [...dialog.querySelectorAll('button')].find(b=>b.textContent==='保存槽型').click();await until(()=>!!saved,'TX slot saved');
+  assert.equal(saved.operation,'copy');assert.equal(saved.document.module,'tx');assert.equal(saved.identity,undefined);assert.equal(saved.author,undefined);
+  assert.equal(a.doc.querySelector('[name="D3"]').value,'18');
+  assert.match(host.textContent,/已另存为自己的槽型/);
 });
 
 test('target fill exposes effective wire without overwriting editable design or snapshot inputs', async t => {
@@ -859,24 +885,24 @@ test('saving a signed design refreshes catalog and loading it updates the same d
   assert.equal(ui.calls.filter(c=>c.url.pathname==='/api/v1/models').at(-1).url.searchParams.get('source'),'saved');
 });
 
-test('TX author is revision metadata and a saved library record resumes its original identity',async t=>{
+test('TX author is revision metadata and My Designs resumes its original identity',async t=>{
   let design;
-  const reference='saved-design:tx-author@1';
   const a=await txApp(t,(req,{p})=>{
     if(req.path==='/designs'&&req.method==='POST')return design={id:'tx-author',owner:'张工',name:p.TYP,revision:1,...req.body,source:{resource_version:'synthetic.2',model_id:'synthetic'}};
-    if(req.path==='/models'&&design)return {total:1,items:[{id:reference,name:design.name,kind:'saved_design',power_kw:p.P2,poles:4,revision:1,author:design.author,source:{}}]};
-    if(req.path==='/models/'+encodeURIComponent(reference))return {kind:'saved_design',design};
+    if(req.path==='/designs'&&req.method==='GET')return {items:[design]};
+    if(req.path==='/designs/tx-author'&&req.method==='GET')return design;
     if(req.path==='/designs/tx-author'&&req.method==='PUT')return design={...design,...req.body,revision:2};
   });
   assert.equal(a.doc.querySelector('#design-author').readOnly,true);
   assert.equal(a.doc.querySelector('#design-author').value,'张工');
   a.doc.querySelector('#design-series-control-select').value='series:人工系列';
   a.doc.querySelector('#design-author').value='伪造姓名';a.doc.querySelector('#save-design').click();
-  await until(()=>a.doc.querySelector('#models').textContent.includes('张工')&&!a.doc.querySelector('#save-design').disabled,'Saved record indexed');
+  await until(()=>design&&!a.doc.querySelector('#save-design').disabled,'Design saved');
+  a.doc.querySelector('[data-view=designs]').click();await until(()=>a.doc.querySelector('#designs-list').textContent.includes('张工'),'Saved design listed');
   assert.equal(design.series,'人工系列');assert.ok(!('series' in design.parameters));
   assert.equal(design.author,'张工');assert.ok(!('author' in design.parameters));
   a.doc.querySelector('#design-author').value='尚未保存';
-  a.doc.querySelector('#models button').click();await settle();
+  a.doc.querySelector('#designs-list button').click();await settle();
   assert.equal(a.doc.querySelector('#design-author').value,'张工');
   assert.equal(a.doc.querySelector('#design-series-control-select').value,'series:人工系列');
   a.doc.querySelector('#design-author').value='李工';a.doc.querySelector('#save-design').click();
@@ -1571,8 +1597,8 @@ test('TX foreign revision shows the changed values and can only be copied',async
     if(req.path==='/designs/other')return {...source,parameters:p};
     if(req.path==='/designs' && req.method==='POST')return {...source,id:'mine',revision:1,owner:'张工',author:'张工'};
   });
-  a.doc.querySelector('#designs-open').click();await settle();
-  a.doc.querySelector('#records-list select').value='2';a.doc.querySelector('#records-list button').click();await settle();
+  a.doc.querySelector('[data-view=designs]').click();await settle();
+  a.doc.querySelector('#designs-list select').value='2';a.doc.querySelector('#designs-list button').click();await settle();
   assert.ok(a.doc.querySelector('#save-design').disabled);
   assert.match(a.doc.querySelector('#version-details').textContent,/1 → 2/);
   a.doc.querySelector('#save-copy').click();await settle();
@@ -1599,7 +1625,7 @@ test('main slot save-only controls never preview, bind or change design paramete
 
 test('compact slot catalog shows paired names and clears old aliases when dimensions change',async t=>{
  const dom=new JSDOM(readFileSync(resolve(root,'frontend/slots.html'),'utf8'),{url:'http://dcsj.invalid/slots',runScripts:'outside-only'});
- const w=dom.window,d=w.document;t.after(()=>w.close());w.DCSJAuth={ready:Promise.resolve({username:'张工'}),username:()=> '张工'};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+ const w=dom.window,d=w.document;t.after(()=>w.close());w.DCSJAuth={ready:Promise.resolve({username:'张工'}),username:()=> '张工'};w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
  const entry={id:'slot',reference:'resource-slot:test:slot',origin:'resource',name:'First',document:{schema_version:2,side:'stator',module:'main',drawing:'DRAW-1',parameters:{bs1:4},geometry:{stator_outer_mm:200,bore_mm:120},aliases:[{name:'Second',drawing:'DRAW-2'}]}};let saved;
  w.fetch=async(url,options={})=>{const path=new URL(url,w.location.href).pathname;let data;
   if(path==='/api/v1/slots/schema')data={fields:{main:{stator:[{key:'bs1',label:'槽宽',unit:'mm'}]}}};
@@ -1618,7 +1644,7 @@ test('compact slot catalog shows paired names and clears old aliases when dimens
 test('slot owner saves a revision, module switching retains identity, and a duplicate copy stays independent',async t=>{
  const dom=new JSDOM(readFileSync(resolve(root,'frontend/slots.html'),'utf8'),{url:'http://dcsj.invalid/slots',runScripts:'outside-only'});
  const w=dom.window,d=w.document;t.after(()=>w.close());w.DCSJAuth={ready:Promise.resolve({username:'张工'}),username:()=> '张工'};w.confirm=()=>true;
- w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+ w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
  const original={id:'mine',reference:'user-slot:mine@1',origin:'user',name:'Mine',revision:1,author:'张工',can_edit:true,can_archive:true,document:{schema_version:2,side:'stator',module:'main',drawing:'TEST',parameters:{bs1:4},geometry:{stator_outer_mm:200,bore_mm:120},aliases:[]}};
  let entry=structuredClone(original),writes=[];
  w.fetch=async(url,options={})=>{const path=new URL(url,w.location.href).pathname,body=options.body?JSON.parse(options.body):null;let data;
@@ -1636,4 +1662,99 @@ test('slot owner saves a revision, module switching retains identity, and a dupl
  assert.equal(writes.length,2,'A double submit creates one copy');assert.equal(writes[1].operation,'copy');assert.equal(writes[1].identity,undefined);assert.equal(writes[1].expected_revision,undefined);assert.equal(writes[1].copied_from,'user-slot:mine@2');
  assert.match(d.querySelector('#record-version').textContent,/当前 v1/);
  assert.equal(writes[1].author,undefined,'Author is derived by the server');
+});
+
+function setSeriesDialog(ui, name){
+  const select=ui.doc.querySelector('#batch-series-control-select');select.value='new';select.dispatchEvent(new ui.w.Event('change'));
+  ui.doc.querySelector('#batch-series-control input').value=name;
+}
+function submitSeries(ui){ui.doc.querySelector('#design-series-dialog form').dispatchEvent(new ui.w.Event('submit',{cancelable:true}));}
+
+test('TX starts empty, keeps original models separate and preserves the draft across pages',async t=>{
+  const a=await txApp(t,req=>req.path==='/designs'?{items:[]}:undefined,{loadExample:false});
+  assert.equal(a.doc.querySelector('#parameter-workspace').hidden,true);
+  assert.equal(a.doc.querySelector('#calculate').disabled,true);
+  assert.ok(!a.calls.some(c=>c.path.startsWith('/models')));
+  a.doc.querySelector('#choose-model').click();await until(()=>a.doc.querySelector('#models button'),'Original catalog ready');
+  assert.equal(a.w.location.hash,'#catalog');assert.equal(a.doc.querySelector('#tx-view-workbench').hidden,true);
+  assert.equal(a.calls.find(c=>c.path==='/models').url.searchParams.get('source'),'original');
+  assert.equal(a.doc.querySelector('#catalog-source'),null);
+  a.doc.querySelector('#models button').click();await until(()=>!a.doc.querySelector('#calculate').disabled,'Model loaded');
+  assert.equal(a.w.location.hash,'#workbench');
+  const input=a.doc.querySelector('[name=P2]');input.value='9';input.dispatchEvent(new a.w.Event('input'));
+  a.doc.querySelector('[data-view=designs]').click();await settle();
+  assert.equal(a.w.location.hash,'#designs');assert.match(a.doc.querySelector('#designs-feedback').textContent,/暂无/);
+  a.doc.querySelector('[data-view=workbench]').click();await settle();assert.equal(input.value,'9');
+  let confirms=0;a.w.confirm=()=>{confirms++;return false;};a.doc.querySelector('#load-example').click();await settle();
+  assert.equal(confirms,1);assert.equal(input.value,'9');
+  assert.equal(a.calls.filter(c=>c.path==='/models/synthetic').length,1,'Cancelled example load does not replace draft');
+});
+
+test('main batch series selection excludes foreign and archived designs and retains edited parameters',async t=>{
+  let items=[{id:'mine',name:'我的 <设计>',series:'旧系列',revision:1,owner:'张工',author:'张工',parameters,updated_at:created},
+    {id:'mine2',name:'第二方案',series:'旧系列',revision:1,owner:'张工',author:'张工',parameters,updated_at:created},
+    {id:'other',name:'其他设计',series:'共享',revision:1,owner:'李工',author:'李工',updated_at:created},
+    {id:'archive',name:'已归档',series:'旧系列',revision:1,owner:'张工',author:'张工',archived:1,updated_at:created}];
+  const a=await app(t,(path,req)=>{
+    if(path==='/projects')return {items};
+    if(path==='/projects/mine'&&req.method==='GET')return items[0];
+    if(path==='/projects/mine'&&req.method==='PUT')return {...items[0],...req.body,revision:3};
+    if(path==='/projects/series'){
+      assert.deepEqual(req.body.items.map(i=>i.id),['mine','mine2']);
+      const result=req.body.items.map(target=>{const item=items.find(i=>i.id===target.id),previous_series=item.series;item.series=req.body.series;item.revision++;return {...item,changed:true,previous_series,previous_revision:1};});
+      return {items:result,changed_count:2,unchanged_count:0};
+    }
+  });
+  a.nav('projects');await until(()=>a.doc.querySelectorAll('#project-table-body tr').length===4,'Designs ready');
+  a.find('#project-table-body button','打开设计 →').click();await settle();
+  const power=a.doc.querySelector('#parameter-fields input[data-key=kW]');
+  assert.ok(power,'Power input exists');power.value='17';power.dispatchEvent(new a.w.Event('input',{bubbles:true}));
+  a.nav('projects');await settle();
+  const checks=[...a.doc.querySelectorAll('#project-table-body .design-select')];assert.deepEqual(checks.map(c=>c.disabled),[false,false,true,true]);
+  a.doc.querySelector('#projects-select-all').click();assert.match(a.doc.querySelector('#projects-selection-count').textContent,/2/);
+  a.doc.querySelector('#projects-series-edit').click();assert.equal(a.doc.querySelectorAll('.series-targets li').length,2);assert.equal(a.doc.querySelector('.series-targets').querySelector('设计'),null);
+  setSeriesDialog(a,'试制系列');submitSeries(a);await until(()=>!a.doc.querySelector('#design-series-dialog'),'Batch saved');await settle();
+  assert.match(a.doc.querySelector('#project-table-body').textContent,/试制系列/);assert.equal(a.doc.querySelector('#projects-series-edit').disabled,true);
+  a.nav('workbench');a.doc.querySelector('#save-design').click();assert.equal(a.doc.querySelector('#design-series-control-select').value,'series:试制系列');
+  a.doc.querySelector('#save-as-new').checked=false;a.doc.querySelector('#save-as-new').dispatchEvent(new a.w.Event('change'));
+  a.doc.querySelector('#save-form').dispatchEvent(new a.w.Event('submit',{cancelable:true}));await settle();
+  const update=a.calls.find(c=>c.method==='PUT');assert.equal(update.body.expected_revision,2);assert.equal(update.body.parameters.kW,17);
+});
+
+test('TX batch series edit updates current version but keeps unsaved parameter and series choices',async t=>{
+  let items;
+  const a=await txApp(t,(req,{p})=>{
+    items??=[{id:'own',name:p.TYP,parameters:p,source:{},revision:1,latest_revision:1,owner:'张工',author:'张工',series:'旧系列',updated_at:created},
+      {id:'second',name:'第二设计',parameters:p,source:{},revision:1,owner:'张工',author:'张工',series:'旧系列',updated_at:created},
+      {id:'other',name:'他人设计',parameters:p,source:{},revision:1,owner:'李工',author:'李工',series:'共享',updated_at:created}];
+    if(req.path==='/designs'&&req.method==='GET')return {items};
+    if(req.path==='/designs/own'&&req.method==='GET')return items[0];
+    if(req.path==='/designs/own'&&req.method==='PUT')return {...items[0],...req.body,revision:3,latest_revision:3};
+    if(req.path==='/designs/series'){
+      assert.deepEqual(req.body.items.map(item=>item.id),['own','second']);
+      const result=req.body.items.map(target=>{const item=items.find(i=>i.id===target.id),previous_series=item.series;item.series=req.body.series;item.revision++;item.latest_revision=item.revision;return {...item,changed:true,previous_series,previous_revision:1,changes:[{field:'series',before:previous_series,after:req.body.series}]};});
+      return {items:result,changed_count:2,unchanged_count:0};
+    }
+  });
+  a.doc.querySelector('[data-view=designs]').click();await settle();a.doc.querySelector('#designs-list button').click();await settle();
+  const power=a.doc.querySelector('[name=P2]');power.value='9';power.dispatchEvent(new a.w.Event('input'));
+  const picker=a.doc.querySelector('#design-series-control-select');picker.value='new';picker.dispatchEvent(new a.w.Event('change'));
+  a.doc.querySelector('#design-series-control input').value='草稿系列';
+  a.doc.querySelector('[data-view=designs]').click();await settle();a.doc.querySelector('#designs-select-all').click();
+  assert.equal(a.doc.querySelectorAll('#designs-list .design-select:checked').length,2);
+  a.doc.querySelector('#designs-series-edit').click();setSeriesDialog(a,'批量系列');submitSeries(a);await settle();
+  a.doc.querySelector('[data-view=workbench]').click();await settle();assert.equal(power.value,'9');assert.equal(picker.value,'new');
+  assert.match(a.doc.querySelector('#revision').textContent,/v2/);assert.match(a.doc.querySelector('#version-details').textContent,/旧系列 → 批量系列/);
+  a.doc.querySelector('#save-design').click();await settle();const update=a.calls.find(c=>c.method==='PUT');
+  assert.equal(update.body.expected_revision,2);assert.equal(update.body.parameters.P2,9);assert.equal(update.body.series,'草稿系列');
+});
+
+test('series single-edit conflict keeps the dialog, chosen value and list revision',async t=>{
+  const a=await txApp(t,req=>req.path==='/designs'?{items:[{id:'own',name:'单条设计',owner:'张工',revision:1,series:'旧系列'}]}:undefined);
+  a.doc.querySelector('[data-view=designs]').click();await settle();
+  const original=a.w.fetch;a.w.fetch=(url,options)=>String(url).endsWith('/designs/series')?Promise.resolve({ok:false,status:409,json:async()=>({detail:'设计已有新版本，本次未修改任何设计。'})}):original(url,options);
+  [...a.doc.querySelectorAll('#designs-list button')].find(b=>b.textContent==='修改系列名').click();setSeriesDialog(a,'新系列');submitSeries(a);await settle();
+  assert.equal(a.doc.querySelector('#design-series-dialog').open,true);assert.match(a.doc.querySelector('.series-error').textContent,/未修改任何设计/);
+  assert.equal(a.doc.querySelector('#batch-series-control input').value,'新系列');assert.equal(a.doc.querySelector('#designs-list select').value,'1');
+  a.doc.querySelector('.series-dialog-actions button').click();assert.equal(a.doc.querySelector('#design-series-dialog'),null);
 });

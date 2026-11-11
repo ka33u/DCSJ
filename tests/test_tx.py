@@ -133,7 +133,10 @@ def test_calculation_failures_are_not_saved(client,tx_parameters,monkeypatch):
 
 
 def test_snapshot_report_is_escaped_and_independent_of_resources(client,tx_parameters,monkeypatch):
+    from dcsj import library, slots
     p={**tx_parameters,'TYP':'<script>alert(1)</script>'}
+    doc=slots.capture(p,'stator','tx');doc['drawing']='TX<1>'
+    slot=library.save('slots','<em>TX stator</em>',doc)
     fake={'metrics':dict(efficiency=.88,power_factor=.81,maximum_torque_ratio=2.7,starting_torque_ratio=2.1,
                          starting_current_ratio=6.8,speed_rpm=1700),
           'harmonics':[dict(order=i,winding_factor=.1,relative_mmf_percent=.5,turns=8,pitch=9,coil_index=n) for n,i in enumerate([1,5,7,11,13,17],1)],
@@ -145,17 +148,46 @@ def test_snapshot_report_is_escaped_and_independent_of_resources(client,tx_param
     monkeypatch.setattr(tx,'load_program',lambda *a:synthetic_program())
     monkeypatch.setattr(TXVM,'run',lambda self:None)
     monkeypatch.setattr(tx,'_result',lambda *a:copy.deepcopy(fake))
-    trial=client.post('/api/v1/tx/calculate',json={'parameters':p,'persist':False})
+    trial=client.post('/api/v1/tx/calculate',json={'parameters':p,'persist':False,
+                       'slot_bindings':{'stator':'user-slot:missing@1'}})
     assert trial.status_code==200 and trial.json()['id'] is None
+    assert trial.json()['result']['slots']['entries'][0]['name']==slot['name']
+    assert trial.json()['result']['slots']['entries'][0]['status']=='recognized'
     assert not tx.calculations()
     saved=client.post('/api/v1/tx/calculate',json={'parameters':p}).json()
+    library.save('slots','Updated TX name',doc,slot['id'],1)
+    again=client.post('/api/v1/tx/calculate',json={'parameters':p,'persist':False}).json()
+    assert again['result']['slots']['entries'][0]['name']=='Updated TX name'
+    assert tx.calculation(saved['id'])['result']['slots']['entries'][0]['name']==slot['name']
     fake['metrics']['efficiency']=.12
     assert tx.calculation(saved['id'])['result']['metrics']['efficiency']==.88
     monkeypatch.setattr(tx,'context',lambda:(_ for _ in ()).throw(tx.TXUnavailableError('offline')))
     output=client.get('/tx/reports/'+saved['id'])
     assert output.status_code==200 and '&lt;script&gt;' in output.text and '<script>alert' not in output.text
-    assert '&lt;img' in output.text and '<img src=x' not in output.text
+    assert '完整计算明细' not in output.text and '&lt;img' not in output.text and '<pre' not in output.text
+    assert '&lt;em&gt;TX stator&lt;/em&gt;' in output.text and 'TX&lt;1&gt;' in output.text
+    assert 'Updated TX name' not in output.text and 'parameter-columns' in output.text
     assert '输入参数快照' in output.text and 'TY / cm' in output.text
+    legacy=client.get('/tx/reports/'+saved['id']+'?layout=legacy')
+    assert legacy.status_code==200 and '&lt;img' in legacy.text
+
+
+def test_tx_recognition_accounts_for_centimetres_gap_and_hr0(client,tx_parameters):
+    from dcsj import library, slots, slot_identity
+    doc=slots.capture(tx_parameters,'rotor','tx')
+    library.save('slots','Native TX rotor',doc)
+    def rotor(p):return slot_identity.recognize(p,'tx')['entries'][1]
+    assert rotor(tx_parameters)['status']=='recognized'
+    assert rotor({**tx_parameters,'G':tx_parameters['G']+.02,'hr0':tx_parameters['hr0']-.02})['status']=='recognized'
+    assert rotor({**tx_parameters,'G':tx_parameters['G']+.02})['status']=='unrecognized'
+
+
+def test_modern_parameter_snapshot_keeps_input_precision_and_escapes_description(tx_parameters):
+    from dcsj.tx_report import parameter_columns
+    p={**tx_parameters,'FE':1.2345678901234567,'description':'<img src=x>\nOriginal note'}
+    html=parameter_columns(p)
+    assert str(p['FE']) in html and '&lt;img src=x&gt;' in html and '<img' not in html
+    assert all(group in html for group in ('额定参数','线圈组','导线与绕组','铁心与槽型','计算系数','设计说明'))
 
 
 def test_author_and_saved_catalog_without_private_resources(client, tx_parameters, monkeypatch):

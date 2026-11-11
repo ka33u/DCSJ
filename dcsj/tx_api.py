@@ -3,7 +3,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Literal
-from . import tx, slots, auth
+from . import tx, slots, auth, design_series
 from .tx_parameters import schema, validate
 from .tx_report import report
 from .parameters import ROOT
@@ -64,7 +64,7 @@ def parameters():return schema()
 
 
 @router.get('/api/v1/tx/series')
-def series():return {'items':tx.series()}
+def series(source:Literal['all','original']='all'):return {'items':tx.series(source)}
 
 
 @router.get('/api/v1/tx/models')
@@ -118,6 +118,11 @@ def designs():return {'items':tx.designs()}
 @router.post('/api/v1/tx/designs',status_code=201)
 def create(body:TXDesignCreate,request:Request):
     return tx.save_design(body.parameters,base_model_id=body.base_model_id,author=auth.author(request,body.author),slot_bindings=body.slot_bindings.model_dump(exclude_none=True),series=body.series,copied_from=body.copied_from)
+
+
+@router.post('/api/v1/tx/designs/series')
+def update_design_series(body: design_series.SeriesUpdate, request: Request):
+    return design_series.update('tx', body, auth.author(request))
 
 
 @router.get('/api/v1/tx/designs/{identity}')

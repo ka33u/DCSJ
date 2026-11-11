@@ -1,12 +1,31 @@
 'use strict';
 (() => {
   const $=id=>document.getElementById(id);
-  const state={slotBindings:{},schema:null,parameters:null,base:null,design:null,revision:null,changed:false,result:null,offset:0,total:0,query:'',searchSequence:0,resource:null,busy:false,group:'额定参数',fieldViews:[],groups:[],invalidField:null};
+  const state={schema:null,parameters:null,base:null,design:null,revision:null,changed:false,result:null,offset:0,total:0,query:'',searchSequence:0,resource:null,busy:false,group:'额定参数',fieldViews:[],groups:[],invalidField:null,view:null,designItems:[],designSequence:0,series:[]};
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const num=(v,d=3)=>Number(v).toLocaleString('zh-CN',{maximumFractionDigits:d});
   function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);$('notice').hidden=!text;}
   async function api(path,body,method){const response=await fetch('/api/v1/tx'+path,{method:method||(body?'POST':'GET'),headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const data=await response.json();if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail||data));return data;}
-  function busy(value){state.busy=value;seriesPicker.disable(value);for(const id of ['calculate','save-design','save-copy','import-input','design-author'])$(id).disabled=value;$('save-design').disabled=value || (!!state.design && !DesignVersions.editable(state.saved));for(const el of $('parameters').querySelectorAll('input'))el.disabled=value;if(!value&&state.invalidField){state.invalidField.focus();state.invalidField=null;}}
+  function busy(value){
+    state.busy=value;seriesPicker.disable(value||!state.parameters);
+    for(const id of ['calculate','save-design','save-copy','export-input'])$(id).disabled=value||!state.parameters;
+    for(const id of ['import-input','empty-import'])$(id).disabled=value||!state.schema;
+    $('load-example').disabled=value||!state.resource?.available;
+    $('save-design').disabled=value||!state.parameters||(!!state.design&&!DesignVersions.editable(state.saved));
+    for(const el of $('parameters').querySelectorAll('input'))el.disabled=value;
+    if(!value&&state.invalidField){state.invalidField.focus();state.invalidField=null;}
+  }
+  async function navigate(view,force=false){
+    if(!['workbench','catalog','designs'].includes(view))view='workbench';
+    if(!force&&state.view===view)return;
+    state.view=view;
+    for(const node of document.querySelectorAll('.tx-page'))node.hidden=node.id!=='tx-view-'+view;
+    for(const link of document.querySelectorAll('[data-view]')){if(link.dataset.view===view)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');}
+    if(location.hash!=='#'+view)history.pushState(null,'','#'+view);
+    if(view==='catalog')await search();
+    if(view==='designs')await loadDesigns();
+  }
+  function go(view){navigate(view).catch(e=>notice(e.message,true));}
   async function task(fn){if(state.busy)return;busy(true);try{await fn();}catch(e){notice(e.message,true);}finally{busy(false);}}
   function changed(){state.changed=true;slotPicker?.update();if(state.result)$('result-status').textContent='参数已修改；下方保留上次计算快照，请重新计算。';}
   function discard(){return !state.changed||confirm('当前参数尚未保存为设计版本，确定载入其他方案吗？');}
@@ -112,19 +131,68 @@
     throw new Error(message);
   }
   function read(){const p={};for(const f of state.schema.fields){const el=$('parameters').elements.namedItem(f.key);if(f.type==='text')p[f.key]=el.value.trim();else{if(el.value.trim()==='')invalidParameter(f,'请填写 '+fieldLabel(f)+'（'+f.key+'）');p[f.key]=Number(el.value);if(!Number.isFinite(p[f.key]))invalidParameter(f,f.key+' 数值无效');}}return p;}
-  function fill(p,{base=null,design=null,revision=null,author='',slot_bindings={},series='',source='手工输入',changed:edited=false}={}){series=window.SeriesPicker.validate(series);for(const f of state.schema.fields)$('parameters').elements.namedItem(f.key).value=p[f.key]??'';$('design-author').value=window.DCSJAuth.username();seriesPicker.set(series);state.parameters=p;state.slotBindings=slot_bindings||{};slotPicker?.update();state.base=base;state.saved=null;$('version-details').replaceChildren();$('save-design').textContent='保存设计';state.design=design;state.revision=revision;state.changed=edited;$('design-title').textContent=p.TYP||'设计参数';$('source').textContent=source;$('revision').textContent=revision?'用户设计 · v'+revision:'独立方案';state.result=null;$('results').hidden=true;for(const view of state.fieldViews)view.input.removeAttribute('aria-invalid');selectGroup('额定参数');for(const el of $('models').querySelectorAll('button'))el.classList.toggle('active',el.dataset.id===base);}
-  async function loadModel(id,ask=true){if(ask&&!discard())return;const m=await api('/models/'+encodeURIComponent(id));if(m.kind==='saved_design'){applyDesign(m.design);notice('');return;}fill(m.parameters,{base:m.id,series:m.series,source:`基础库 · ${m.source.sheet} / 第 ${m.source.row} 行 · 资源 ${m.resource_version}`});notice(m.verified_execution?'':'这条原始记录在批量试算中未完成计算，修改参数后再试算。',!m.verified_execution);}
+  function fill(p,{base=null,design=null,revision=null,author='',series='',source='手工输入',changed:edited=false}={}){series=window.SeriesPicker.validate(series);for(const f of state.schema.fields)$('parameters').elements.namedItem(f.key).value=p[f.key]??'';$('design-author').value=window.DCSJAuth.username();seriesPicker.set(series);state.parameters=p;slotPicker?.update();state.base=base;state.saved=null;$('version-details').replaceChildren();$('save-design').textContent='保存设计';state.design=design;state.revision=revision;state.changed=edited;$('workbench-empty').hidden=true;$('parameter-workspace').hidden=false;$('design-title').textContent=p.TYP||'设计参数';$('source').textContent=source;$('revision').textContent=revision?'用户设计 · v'+revision:'独立方案';state.result=null;$('results').hidden=true;for(const view of state.fieldViews)view.input.removeAttribute('aria-invalid');selectGroup('额定参数');for(const el of $('models').querySelectorAll('button'))el.classList.toggle('active',el.dataset.id===base);}
+  async function loadModel(id,ask=true){if(ask&&!discard())return;const m=await api('/models/'+encodeURIComponent(id));if(m.kind==='saved_design'){applyDesign(m.design);await navigate('workbench');notice('');return;}fill(m.parameters,{base:m.id,series:m.series,source:`基础库 · ${m.source.sheet} / 第 ${m.source.row} 行 · 资源 ${m.resource_version}`});await navigate('workbench');notice(m.verified_execution?'':'这条原始记录在批量试算中未完成计算，修改参数后再试算。',!m.verified_execution);}
   async function loadSeries(){
-    try{const data=await api('/series'),filter=$('series-filter'),value=filter.value;
-      filter.replaceChildren(new Option('全部系列',''),...[...new Set([...data.items,value].filter(Boolean))].map(s=>new Option(s,s)));filter.value=value;seriesPicker.options(data.items);
+    try{
+      const [data,original]=await Promise.all([api('/series'),api('/series?source=original')]);
+      state.series=data.items;seriesPicker.options(data.items);
+      const filter=$('series-filter'),value=filter.value;
+      filter.replaceChildren(new Option('全部系列',''),...original.items.map(s=>new Option(s,s)));filter.value=original.items.includes(value)?value:'';
     }catch(e){notice('系列列表读取失败，仍可选择未分类或新增系列：'+e.message,true);}
   }
   $('series-filter').onchange=()=>{state.offset=0;task(search);};
-  async function search(){const sequence=++state.searchSequence;const data=await api(`/models?q=${encodeURIComponent(state.query)}&source=${state.resource?.available?$('catalog-source').value:'saved'}&series=${encodeURIComponent($('series-filter').value)}&limit=60&offset=${state.offset}`);if(sequence!==state.searchSequence)return;state.total=data.total;$('model-count').textContent=data.total+' 个版本';$('models').replaceChildren();for(const m of data.items){const button=document.createElement('button');button.type='button';button.className='model';button.dataset.id=m.id;button.classList.toggle('active',m.id===state.base);button.innerHTML=`<strong>${esc(m.name)}</strong><span>${esc(m.series||'未分类')} · ${num(m.power_kw)} kW · ${m.poles} 极 · ${m.kind==='saved_design'?`已保存设计 · v${m.revision} · ${esc(m.author||'未署名')}`:`${esc(m.source.sheet)}:${esc(m.source.row)}${m.verified_execution?'':' · 待检查'}`}</span>`;button.addEventListener('click',()=>task(()=>loadModel(m.id)));$('models').append(button);}if(!data.items.length)$('models').textContent='没有匹配的型号。';$('paging-label').textContent=data.total?`${state.offset+1}–${Math.min(state.offset+60,data.total)} / ${data.total}`:'0';$('previous').disabled=state.offset===0;$('next').disabled=state.offset+60>=data.total;}
+  async function search(){
+    const sequence=++state.searchSequence;
+    if(!state.resource?.available){$('models').textContent='TX 原始资源未安装。可先导入资源，或到“我的设计”打开已保存的方案。';$('model-count').textContent='';$('paging-label').textContent='0';$('previous').disabled=$('next').disabled=true;return;}
+    $('model-count').textContent='正在读取…';
+    const data=await api(`/models?q=${encodeURIComponent(state.query)}&source=original&series=${encodeURIComponent($('series-filter').value)}&limit=60&offset=${state.offset}`);
+    if(sequence!==state.searchSequence)return;state.total=data.total;$('model-count').textContent=data.total+' 个版本';$('models').replaceChildren();
+    for(const m of data.items){const button=document.createElement('button');button.type='button';button.className='model';button.dataset.id=m.id;button.classList.toggle('active',m.id===state.base);button.innerHTML=`<strong>${esc(m.name)}</strong><span>${esc(m.series||'未分类')} · ${num(m.power_kw)} kW · ${m.poles} 极<br>${esc(m.source.sheet)}:${esc(m.source.row)}${m.verified_execution?'':' · 待检查'}</span>`;button.addEventListener('click',()=>task(()=>loadModel(m.id)));$('models').append(button);}
+    if(!data.items.length)$('models').textContent='没有匹配的原始型号。';
+    $('paging-label').textContent=data.total?`${state.offset+1}–${Math.min(state.offset+60,data.total)} / ${data.total}`:'0';$('previous').disabled=state.offset===0;$('next').disabled=state.offset+60>=data.total;
+  }
+  async function loadDesigns(){
+    const sequence=++state.designSequence;designSelection.set([]);$('designs-list').replaceChildren();$('designs-feedback').textContent='正在读取已保存设计…';
+    try{const data=await api('/designs');if(sequence!==state.designSequence)return;
+      state.designItems=data.items;const filter=$('design-series-filter'),value=filter.value;
+      const series=[...new Set(data.items.map(item=>item.series).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'zh-CN'));
+      filter.replaceChildren(new Option('全部系列',''),...series.map(s=>new Option(s,s)));filter.value=series.includes(value)?value:'';renderDesigns();
+    }catch(e){if(sequence===state.designSequence)$('designs-feedback').textContent='读取失败：'+e.message;}
+  }
+  function renderDesigns(){
+    const query=$('design-search').value.trim().normalize('NFKC').toLocaleLowerCase(),series=$('design-series-filter').value;
+    const items=state.designItems.filter(item=>(!$('design-owned-only').checked||DesignVersions.owned(item))&&(!series||item.series===series)&&[item.name,item.series,item.author].join(' ').normalize('NFKC').toLocaleLowerCase().includes(query));
+    designSelection.set(items);$('designs-list').replaceChildren();$('designs-feedback').textContent=items.length?`${items.length} 个设计 · 系列名修改保留版本差异`:'暂无匹配的设计。可在工作台保存新设计。';
+    for(const item of items){
+      const row=document.createElement('tr'),check=document.createElement('td');check.append(designSelection.checkbox(item));row.append(check);
+      for(const value of [item.name,item.series||'未分类',item.author||'未署名',new Date(item.updated_at).toLocaleString('zh-CN')]){const cell=document.createElement('td');cell.textContent=value;row.append(cell);}
+      const cell=document.createElement('td'),actions=document.createElement('div');actions.className='design-actions';
+      const version=document.createElement('select');version.setAttribute('aria-label',item.name+' 的设计版本');
+      for(let i=item.revision;i>=1;i--)version.append(new Option('v'+i,i));
+      const open=document.createElement('button');open.textContent='打开设计';open.onclick=()=>task(()=>openDesign(item.id,Number(version.value)));
+      actions.append(version,open);
+      if(DesignVersions.editable(item)){const edit=document.createElement('button');edit.textContent='修改系列名';edit.onclick=()=>editDesignSeries([item]);actions.append(edit);}
+      cell.append(actions);row.append(cell);$('designs-list').append(row);
+    }
+  }
+  function editDesignSeries(items){
+    if(state.busy)return notice('请等待当前操作完成。');
+    DesignSeries.open({items,endpoint:'/api/v1/tx/designs/series',series:state.series,onSaved:async data=>{
+      for(const item of data.items){
+        if(item.changed&&state.saved?.id===item.id&&state.revision===item.previous_revision&&DesignVersions.editable(state.saved)){
+          let draftSeries;try{draftSeries=seriesPicker.value();}catch{}
+          if(draftSeries===item.previous_series)seriesPicker.set(item.series);
+          savedVersion({...state.saved,...item,latest_revision:item.revision});
+        }
+      }
+      await loadSeries();await loadDesigns();notice(`已修改 ${data.changed_count} 个设计的系列名${data.unchanged_count?`，${data.unchanged_count} 个保持原系列`:''}。`);
+    }});
+  }
   const table=(headers,rows)=>'<table><thead><tr>'+headers.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(row=>'<tr>'+row.map(v=>'<td>'+esc(v)+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
   function coilDiagram(harmonics){const active=harmonics.filter(h=>h.turns>0),max=Math.max(...active.map(h=>h.pitch));const colors=['#126b7a','#4254bb','#a55f25','#884d98','#27774d','#a44455'];let out='<svg viewBox="0 0 540 210" role="img" aria-label="同心线圈节距示意">';active.forEach((h,i)=>{const span=h.pitch/max*300,left=(540-span)/2,top=20+i*13,bottom=180-i*9,color=colors[i];out+=`<path d="M ${left} 100 V ${top+16} Q ${left} ${top} ${left+16} ${top} H ${left+span-16} Q ${left+span} ${top} ${left+span} ${top+16} V ${bottom-16} Q ${left+span} ${bottom} ${left+span-16} ${bottom} H ${left+16} Q ${left} ${bottom} ${left} ${bottom-16} Z" fill="none" stroke="${color}" stroke-width="2"/><text x="5" y="${25+i*26}" fill="${color}" font-size="12">${i+1}组 · ${h.turns}匝</text>`;});return out+'</svg>';}
   function harmonicChart(harmonics){const rows=harmonics.slice(1),limit=Math.max(.1,...rows.map(h=>Math.abs(h.relative_mmf_percent)));let svg='<svg viewBox="0 0 500 210" role="img" aria-label="各次谐波相对磁势柱图"><path d="M 35 102 H 480" stroke="#bccfd5"/>';rows.forEach((h,i)=>{const x=65+i*85,height=Math.abs(h.relative_mmf_percent)/limit*63,y=h.relative_mmf_percent>=0?102-height:102;svg+=`<rect x="${x}" y="${y}" width="34" height="${Math.max(height,.5)}" rx="2" fill="#357e94"/><text x="${x+17}" y="${h.relative_mmf_percent>=0?y-8:y+height+17}" text-anchor="middle" fill="#315b68" font-size="12">${num(h.relative_mmf_percent,4)}%</text><text x="${x+17}" y="198" text-anchor="middle" fill="#708a94" font-size="12">${h.order} 次</text>`;});return svg+'</svg>';}
-  function render(record){state.result=record;if(window.SlotPicker)$('slot-result').replaceChildren(window.SlotPicker.summary(record.result.slots));const r=record.result,m=r.metrics;$('results').hidden=false;$('result-name').textContent=record.name;$('result-status').textContent=`${new Date(record.created_at).toLocaleString('zh-CN')} · 资源 ${r.resource_version} · 计算快照`;$('report-link').href='/tx/reports/'+encodeURIComponent(record.id);$('legacy-report-link').href='/tx/reports/'+encodeURIComponent(record.id)+'?layout=legacy';const cards=[['效率',m.efficiency*100,'%'],['功率因数',m.power_factor,''],['最大转矩',m.maximum_torque_ratio,'倍'],['启动转矩',m.starting_torque_ratio,'倍'],['启动电流',m.starting_current_ratio,'倍'],['转速',m.speed_rpm,'r/min']];$('metric-cards').innerHTML=cards.map(([label,v,unit])=>`<div class="metric"><small>${label}</small><strong>${num(v,label==='功率因数'?4:2)}<em>${unit}</em></strong></div>`).join('');$('coil-diagram').innerHTML=coilDiagram(r.harmonics);$('harmonic-chart').innerHTML=harmonicChart(r.harmonics);$('harmonic-table').innerHTML=table(['次数','KDP','FV / %','匝数','节距'],r.harmonics.map(h=>[h.order,num(h.winding_factor,6),num(h.relative_mmf_percent,6),h.turns,h.pitch]));$('coil-table').innerHTML=table(['组','TY / cm','R / cm','端角 / rad','H / cm'],r.coils.map(c=>[c.index,c.span_cm,c.radius_cm,c.end_angle_rad,c.height_cm]));$('raw-report').textContent=r.report_text;const lossKeys=[['iron_loss_w','铁损','W'],['stator_copper_loss_w','定子铜损','W'],['rotor_copper_loss_w','转子铜损','W'],['total_loss_w','总损耗','W'],['current_a','定子电流','A'],['copper_mass_kg','铜重','kg'],['iron_mass_kg','铁重','kg'],['mean_turn_length_mm','平均匝长','mm']];$('losses').innerHTML=lossKeys.map(([key,label,unit])=>`<div><small>${label}</small>${num(r.details[key])} ${unit}</div>`).join('');}
+  function render(record){state.result=record;if(window.SlotPicker)$('slot-result').replaceChildren(window.SlotPicker.summary(record.result.slots));const r=record.result,m=r.metrics;$('results').hidden=false;$('result-name').textContent=record.name;$('result-status').textContent=`${new Date(record.created_at).toLocaleString('zh-CN')} · 资源 ${r.resource_version} · 计算快照`;$('report-link').href='/tx/reports/'+encodeURIComponent(record.id);$('legacy-report-link').href='/tx/reports/'+encodeURIComponent(record.id)+'?layout=legacy';const cards=[['效率',m.efficiency*100,'%'],['功率因数',m.power_factor,''],['最大转矩',m.maximum_torque_ratio,'倍'],['启动转矩',m.starting_torque_ratio,'倍'],['启动电流',m.starting_current_ratio,'倍'],['转速',m.speed_rpm,'r/min']];$('metric-cards').innerHTML=cards.map(([label,v,unit])=>`<div class="metric"><small>${label}</small><strong>${num(v,label==='功率因数'?4:2)}<em>${unit}</em></strong></div>`).join('');$('coil-diagram').innerHTML=coilDiagram(r.harmonics);$('harmonic-chart').innerHTML=harmonicChart(r.harmonics);$('harmonic-table').innerHTML=table(['次数','KDP','FV / %'],r.harmonics.map(h=>[h.order,num(h.winding_factor,6),num(h.relative_mmf_percent,6)]));$('coil-table').innerHTML=table(['组','匝数','节距 / 槽','TY / cm','R / cm','端角 / rad','H / cm'],r.coils.map(c=>[c.index,record.parameters['NDXP('+c.index+')']??'—',record.parameters['YDXP('+c.index+')']??'—',c.span_cm,c.radius_cm,c.end_angle_rad,c.height_cm]));const lossKeys=[['iron_loss_w','铁损','W'],['stator_copper_loss_w','定子铜损','W'],['rotor_copper_loss_w','转子铜损','W'],['total_loss_w','总损耗','W'],['current_a','定子电流','A'],['copper_mass_kg','铜重','kg'],['iron_mass_kg','铁重','kg'],['mean_turn_length_mm','平均匝长','mm']];$('losses').innerHTML=lossKeys.map(([key,label,unit])=>`<div><small>${label}</small>${num(r.details[key])} ${unit}</div>`).join('');}
   function savedVersion(d){
     state.design=d.id; state.revision=d.revision; state.saved=d;
     const editable=DesignVersions.editable(d);
@@ -133,7 +201,7 @@
     $('version-details').replaceChildren(DesignVersions.describe(d,state.schema.fields));
   }
   async function save(copy=false){
-    const parameters=read(), body={parameters,series:seriesPicker.value(),slot_bindings:state.slotBindings,
+    const parameters=read(), body={parameters,series:seriesPicker.value(),
       author:window.DCSJAuth.username(),base_model_id:state.base};
     const updating=state.design&&!copy&&DesignVersions.editable(state.saved);
     if(updating) body.expected_revision=state.revision;
@@ -142,28 +210,46 @@
     savedVersion(d); state.changed=false;
     $('design-author').value=window.DCSJAuth.username();
     $('source').textContent='用户设计 · '+d.author;
-    notice('已保存「'+d.name+'」第 '+d.revision+' 版，可在型号库检索。');
-    state.offset=0;await loadSeries();await search();
+    notice('已保存「'+d.name+'」第 '+d.revision+' 版，可在“我的设计”中查看。');
+    await loadSeries();
   }
   function applyDesign(d){
-    fill(d.parameters,{series:d.series,slot_bindings:d.slot_bindings,design:d.id,revision:d.revision,
+    fill(d.parameters,{series:d.series,design:d.id,revision:d.revision,
       base:d.source.resource_version===state.resource?.resource_version?d.source.model_id:null,
       source:'用户设计 · 第 '+d.revision+' 版 · '+(d.author||'未署名')+(d.source.name?' · 源自 '+d.source.name:'')});
     savedVersion(d);
   }
-  async function openDesign(id,revision){if(!discard())return;const d=await api('/designs/'+encodeURIComponent(id)+(revision?'?revision='+revision:''));applyDesign(d);$('records-dialog').close();notice('');}
-  async function records(kind){const data=await api('/'+kind);$('records-title').textContent=kind==='designs'?'我的 TX 设计':'TX 计算记录';$('records-list').replaceChildren();for(const item of data.items){const row=document.createElement('div');row.className='record';const label=document.createElement('span');label.innerHTML=esc(item.name)+`<small>${esc(new Date(item.updated_at||item.created_at).toLocaleString('zh-CN'))}${item.revision?' · '+esc(item.series||'未分类')+' · v'+item.revision+' · '+esc(item.author||'未署名'):''}</small>`;row.append(label);if(kind==='designs'){const version=document.createElement('select');version.setAttribute('aria-label','设计版本');for(let i=item.revision;i>=1;i--){const op=document.createElement('option');op.value=i;op.textContent='v'+i;version.append(op);}row.append(version);const open=document.createElement('button');open.textContent='载入';open.onclick=()=>task(()=>openDesign(item.id,Number(version.value)));row.append(open);}else{const open=document.createElement('button');open.textContent='查看快照';open.onclick=()=>task(async()=>{const r=await api('/calculations/'+encodeURIComponent(item.id));render(r);if(state.changed||!state.parameters||JSON.stringify(read())!==JSON.stringify(r.parameters))$('result-status').textContent='历史计算快照 · '+new Date(r.created_at).toLocaleString('zh-CN')+' · 当前参数未被替换';$('records-dialog').close();$('results').scrollIntoView({behavior:'smooth',block:'start'});});const link=document.createElement('a');link.className='button';link.textContent='新版打印';link.target='_blank';link.rel='noopener';link.href='/tx/reports/'+encodeURIComponent(item.id);const legacy=link.cloneNode();legacy.textContent='旧版打印';legacy.href=link.href+'?layout=legacy';row.append(open,link,legacy);}$('records-list').append(row);}if(!data.items.length)$('records-list').textContent='暂无记录。';$('records-dialog').showModal();}
+  async function openDesign(id,revision){if(!discard())return;const d=await api('/designs/'+encodeURIComponent(id)+(revision?'?revision='+revision:''));applyDesign(d);await navigate('workbench');notice('');}
+  async function records(){
+    const data=await api('/calculations');$('records-title').textContent='TX 计算记录';$('records-list').replaceChildren();
+    for(const item of data.items){
+      const row=document.createElement('div');row.className='record';const label=document.createElement('span');label.innerHTML=esc(item.name)+`<small>${esc(new Date(item.created_at).toLocaleString('zh-CN'))}</small>`;row.append(label);
+      const open=document.createElement('button');open.textContent='查看快照';open.onclick=()=>task(async()=>{const r=await api('/calculations/'+encodeURIComponent(item.id));render(r);if(state.changed||!state.parameters||JSON.stringify(read())!==JSON.stringify(r.parameters))$('result-status').textContent='历史计算快照 · '+new Date(r.created_at).toLocaleString('zh-CN')+' · 当前参数未被替换';$('records-dialog').close();await navigate('workbench');$('results').scrollIntoView({behavior:'smooth',block:'start'});});
+      const link=document.createElement('a');link.className='button';link.textContent='新版打印';link.target='_blank';link.rel='noopener';link.href='/tx/reports/'+encodeURIComponent(item.id);const legacy=link.cloneNode();legacy.textContent='旧版打印';legacy.href=link.href+'?layout=legacy';row.append(open,link,legacy);$('records-list').append(row);
+    }
+    if(!data.items.length)$('records-list').textContent='暂无记录。';$('records-dialog').showModal();
+  }
   $('parameter-search').addEventListener('input',renderParameters);
   $('parameter-search').addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();selectGroup(state.group);}});
   $('clear-parameter-search').addEventListener('click',()=>{selectGroup(state.group);$('parameter-search').focus();});
-  $('catalog-source').onchange=()=>{state.offset=0;task(search);};
-  $('search-form').onsubmit=e=>{e.preventDefault();state.query=$('search').value.trim();state.offset=0;task(search);};$('previous').onclick=()=>task(async()=>{state.offset=Math.max(0,state.offset-60);await search();});$('next').onclick=()=>task(async()=>{state.offset+=60;await search();});$('parameters').onsubmit=e=>e.preventDefault();$('calculate').onclick=()=>task(async()=>{notice('正在计算绕组与电磁性能…');const record=await api('/calculate',{parameters:read(),slot_bindings:state.slotBindings,base_model_id:state.base,persist:true});render(record);notice('计算完成，报告已保存为独立快照。');$('results').scrollIntoView({behavior:'smooth',block:'start'});});$('save-design').onclick=()=>task(()=>save());$('save-copy').onclick=()=>task(()=>save(true));$('designs-open').onclick=()=>task(()=>records('designs'));$('history-open').onclick=()=>task(()=>records('calculations'));$('records-close').onclick=()=>$('records-dialog').close();$('import-input').onclick=()=>$('import-file').click();$('import-file').onchange=()=>task(async()=>{try{const file=$('import-file').files[0];if(!file)return;if(file.size>200000)throw new Error('参数文件不能超过 200 KB');const data=JSON.parse(await file.text());if(data.module&&data.module!=='tx')throw new Error('请选择 TX 模块参数文件');if(data.author!==undefined&&(typeof data.author!=='string'||data.author.length>120))throw new Error('作者署名须为不超过 120 字的文本');const p=data.parameters||data;await api('/validate',{parameters:p});if(!discard())return;fill(p,{series:data.series,slot_bindings:data.slot_bindings,author:data.author||'',source:'导入文件 · '+file.name,changed:true});notice('参数已导入，可继续修改或计算。');}finally{$('import-file').value='';}});$('export-input').onclick=()=>task(async()=>{const parameters=read();const blob=new Blob([JSON.stringify({module:'tx',schema_version:1,series:seriesPicker.value(),slot_bindings:state.slotBindings,author:window.DCSJAuth.username(),parameters},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(parameters.TYP||'TX').replace(/[<>:"/\\|?*]/g,'_')+'-TX.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});window.addEventListener('beforeunload',e=>{if(state.changed){e.preventDefault();e.returnValue='';}});
+  for(const link of document.querySelectorAll('[data-view]'))link.onclick=event=>{event.preventDefault();go(link.dataset.view);};
+  window.addEventListener('hashchange',()=>go(location.hash.slice(1)));
+  $('choose-model').onclick=()=>go('catalog');
+  $('load-example').onclick=()=>task(()=>loadModel(state.resource.default_id));
+  $('refresh-designs').onclick=()=>loadDesigns();
+  $('design-search').oninput=renderDesigns;$('design-series-filter').onchange=renderDesigns;$('design-owned-only').onchange=renderDesigns;
+  $('empty-import').onclick=()=>$('import-file').click();
+  $('search-form').onsubmit=e=>{e.preventDefault();state.query=$('search').value.trim();state.offset=0;task(search);};$('previous').onclick=()=>task(async()=>{state.offset=Math.max(0,state.offset-60);await search();});$('next').onclick=()=>task(async()=>{state.offset+=60;await search();});$('parameters').onsubmit=e=>e.preventDefault();$('calculate').onclick=()=>task(async()=>{notice('正在计算绕组与电磁性能…');const record=await api('/calculate',{parameters:read(),base_model_id:state.base,persist:true});render(record);notice('计算完成，报告已保存为独立快照。');$('results').scrollIntoView({behavior:'smooth',block:'start'});});$('save-design').onclick=()=>task(()=>save());$('save-copy').onclick=()=>task(()=>save(true));$('history-open').onclick=()=>task(records);$('records-close').onclick=()=>$('records-dialog').close();$('import-input').onclick=()=>$('import-file').click();$('import-file').onchange=()=>task(async()=>{try{const file=$('import-file').files[0];if(!file)return;if(file.size>200000)throw new Error('参数文件不能超过 200 KB');const data=JSON.parse(await file.text());if(data.module&&data.module!=='tx')throw new Error('请选择 TX 模块参数文件');if(data.author!==undefined&&(typeof data.author!=='string'||data.author.length>120))throw new Error('作者署名须为不超过 120 字的文本');const p=data.parameters||data;await api('/validate',{parameters:p});if(!discard())return;fill(p,{series:data.series,author:data.author||'',source:'导入文件 · '+file.name,changed:true});await navigate('workbench');notice('参数已导入，可继续修改或计算。');}finally{$('import-file').value='';}});$('export-input').onclick=()=>task(async()=>{const parameters=read();const blob=new Blob([JSON.stringify({module:'tx',schema_version:1,series:seriesPicker.value(),author:window.DCSJAuth.username(),parameters},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(parameters.TYP||'TX').replace(/[<>:"/\\|?*]/g,'_')+'-TX.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});window.addEventListener('beforeunload',e=>{if(state.changed){e.preventDefault();e.returnValue='';}});
+  const designSelection=DesignSeries.selection({all:$('designs-select-all'),button:$('designs-series-edit'),count:$('designs-selection-count'),onEdit:editDesignSeries});
   const seriesPicker=window.SeriesPicker.mount($('design-series-control'),{onChange:()=>{state.changed=true;}});
   const slotPicker=window.SlotPicker?.mount($('slot-workbench'),{
-    module:'tx',read:()=>{if(!state.parameters)return {};const p={};for(const f of state.schema.fields){const el=$('parameters').elements.namedItem(f.key);if(f.type==='number'&&el.value.trim()==='')throw new Error('请先填写完整参数');p[f.key]=f.type==='number'?Number(el.value):el.value;}return p;},
-    bindings:()=>state.slotBindings,busy:()=>state.busy,
-    apply:(parameters,binding)=>{for(const f of state.schema.fields)$('parameters').elements.namedItem(f.key).value=parameters[f.key]??'';state.parameters=parameters;state.slotBindings={...state.slotBindings,...binding};changed();notice('槽型已带入，请重新计算。');},
-    detach:side=>{delete state.slotBindings[side];changed();},
+    module:'tx',saveOnly:true,read:()=>state.parameters?read():{},busy:()=>state.busy,
   });
-  task(async()=>{await window.DCSJAuth.ready;window.DCSJAuth.beforeLogout=()=>{if(state.busy){notice('请等待当前操作完成后退出登录。');return false;}if(state.changed&&!confirm('当前设计尚未保存，确定退出登录？'))return false;state.changed=false;return true;};await loadSeries();state.schema=await api('/schema');buildForm();busy(true);state.resource=await api('/status');if(!state.resource.available){$('resource-badge').textContent='TX 资源未安装';notice(state.resource.message,true);$('catalog-source').value='saved';$('catalog-source').disabled=true;await search();return;}$('resource-badge').textContent='资源 '+state.resource.resource_version;await search();await loadModel(state.resource.default_id,false);});
+  task(async()=>{
+    await window.DCSJAuth.ready;window.DCSJAuth.beforeLogout=()=>{if(state.busy){notice('请等待当前操作完成后退出登录。');return false;}if(state.changed&&!confirm('当前设计尚未保存，确定退出登录？'))return false;state.changed=false;return true;};
+    await loadSeries();state.schema=await api('/schema');buildForm();state.resource=await api('/status');
+    $('resource-badge').textContent=state.resource.available?'资源 '+state.resource.resource_version:'TX 资源未安装';
+    if(!state.resource.available)notice(state.resource.message,true);
+    await navigate(location.hash.slice(1)||'workbench',true);
+  });
 })();

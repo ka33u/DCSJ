@@ -21,6 +21,7 @@ from . import pdf_fonts
 from .pdf_report import PDFUnavailableError, PDFContentError
 from .saved_catalog import series_name, parse_reference
 from .design_history import OwnershipError, copy_origin
+from . import design_series
 
 
 @asynccontextmanager
@@ -566,6 +567,11 @@ def save_project(body: ProjectCreate, request: Request):
     return projects.save_project(body.name, body.parameters, body.notes, origin, author, bindings, body.series)
 
 
+@app.post('/api/v1/projects/series', tags=['保存的设计'])
+def update_project_series(body: design_series.SeriesUpdate, request: Request):
+    return design_series.update('main', body, auth.author(request))
+
+
 @app.get("/api/v1/projects/{project_id}", tags=["保存的设计"])
 def get_project(project_id: str):
     result = projects.get_project(project_id)
@@ -782,6 +788,16 @@ def javascript():
 @app.get('/design-versions.js', include_in_schema=False)
 def version_script():
     return FileResponse(ROOT/'frontend/design-versions.js', media_type='application/javascript')
+
+
+@app.get('/design-series.js', include_in_schema=False)
+def design_series_script():
+    return FileResponse(ROOT/'frontend/design-series.js', media_type='application/javascript')
+
+
+@app.get('/design-series.css', include_in_schema=False)
+def design_series_styles():
+    return FileResponse(ROOT/'frontend/design-series.css', media_type='text/css')
 
 
 @app.get('/series-picker.js', include_in_schema=False)

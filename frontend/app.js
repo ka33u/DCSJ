@@ -11,6 +11,7 @@
     name: "",
     author: "",
     series: "",
+    seriesOptions: [],
     model: "",
     source: null,
     baseModelId: null,
@@ -780,6 +781,7 @@
       const names = [...new Set([...data.items, selected].filter(Boolean))];
       filter.replaceChildren(new Option("全部系列", ""), ...names.map(item => new Option(item, item)));
       filter.value = selected; filter.disabled = false;
+      state.seriesOptions = data.items;
       seriesPicker.options(data.items);
     } catch (error) {
       showToast(`系列筛选暂不可用：${errorText(error)}`, "error");
@@ -862,19 +864,39 @@
     }
   }
   let projectsRequest = 0;
+  let projectSeries = [];
+  const projectSelection = DesignSeries.selection({all:$("#projects-select-all"),button:$("#projects-series-edit"),count:$("#projects-selection-count"),onEdit:editProjectSeries});
+  function editProjectSeries(items) {
+    if(state.busy)return showToast("请等待当前操作完成。", "warning");
+    DesignSeries.open({items,endpoint:"/api/v1/projects/series",series:[...state.seriesOptions,...projectSeries],onSaved:async data=>{
+      for(const item of data.items){
+        if(item.changed&&state.project?.id===item.id&&state.project.revision===item.previous_revision&&DesignVersions.editable(state.project)){
+          if(state.series===item.previous_series)state.series=item.series;
+          state.project={...state.project,series:item.series,revision:item.revision,updated_at:item.updated_at};
+        }
+      }
+      state.catalog.loaded=false;++state.catalog.request;
+      await loadSeries();await loadProjects();
+      showToast(`已修改 ${data.changed_count} 个设计的系列名${data.unchanged_count?`，${data.unchanged_count} 个保持原系列`:""}。`);
+    }});
+  }
   async function loadProjects() {
     const request = ++projectsRequest;
     $("#projects-feedback").textContent = "正在读取已保存设计…";
     $("#project-table-body").replaceChildren();
+    projectSelection.set([]);
     try {
       const data = await api(`/projects?include_archived=${$("#include-archived").checked}`);
       if (request !== projectsRequest) return;
       if (!Array.isArray(data.items)) throw new Error("设计接口没有返回 items 数组。");
       $("#projects-feedback").textContent = data.items.length ? "" : "还没有保存的设计。在工作台中载入参数后，点击「保存设计」。";
+      projectSeries = [...new Set(data.items.map(item=>item.series).filter(Boolean))];
+      projectSelection.set(data.items);
       data.items.forEach(project => {
         const row = el("tr");
+        const selected = el("td");selected.append(projectSelection.checkbox(project));row.append(selected);
         const date = new Date(project.updated_at);
-        [`${project.name} · ${project.series || "未分类"} · v${project.revision}${project.archived ? " · 已归档" : ""}`, project.author || "未署名", project.id, Number.isNaN(date.getTime()) ? project.updated_at || "—" : date.toLocaleString("zh-CN")].forEach(value => row.append(el("td", "", value)));
+        [`${project.name} · v${project.revision}${project.archived ? " · 已归档" : ""}`, project.series || "未分类", project.author || "未署名", project.id, Number.isNaN(date.getTime()) ? project.updated_at || "—" : date.toLocaleString("zh-CN")].forEach(value => row.append(el("td", "", value)));
         const action = el("td");
         const trigger = button("打开设计 →", "text-button", async () => {
           if (state.busy) return showToast("计算正在进行，请在完成后打开其他设计。", "warning");
@@ -900,6 +922,7 @@
           } catch (error) { showToast(errorText(error), "error"); }
           finally { archive.disabled = false; }
         });
+        if (DesignVersions.editable(project)) action.append(button("修改系列名", "text-button", () => editProjectSeries([project])));
         if (DesignVersions.owned(project)) action.append(archive);
         row.append(action);
         $("#project-table-body").append(row);
