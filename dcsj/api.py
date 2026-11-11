@@ -21,7 +21,7 @@ from . import pdf_fonts
 from .pdf_report import PDFUnavailableError, PDFContentError
 from .saved_catalog import series_name, parse_reference
 from .design_history import OwnershipError, copy_origin
-from . import design_series
+from . import design_series, design_catalog
 
 
 @asynccontextmanager
@@ -549,8 +549,11 @@ def archive_user_entry(kind: str, identity: str, body: ArchiveInput,request:Requ
 
 
 @app.get("/api/v1/projects", tags=["保存的设计"])
-def get_projects(include_archived: bool = False):
-    return {"items": projects.list_projects(include_archived)}
+def get_projects(request: Request, include_archived: bool = False, q: str = Query('', max_length=120),
+                 series: str = Query('', max_length=80), owned_only: bool = False,
+                 limit: int = Query(500, ge=1, le=500), offset: int = Query(0, ge=0)):
+    return design_catalog.search('main', q=q, series=series, owner=auth.author(request) if owned_only else None,
+                                 include_archived=include_archived, limit=limit, offset=offset)
 
 
 @app.post("/api/v1/projects", status_code=201, tags=["保存的设计"])

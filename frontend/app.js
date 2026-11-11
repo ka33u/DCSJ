@@ -415,7 +415,8 @@
     const unit=percent?'%':['IST1','TST1','TM1'].includes(metric.key)?'倍':metric.unit;
     const actual=Number.isFinite(metric.value)?metric.value:null;
     const card=el('div','metric-card');card.dataset.metric=metric.key;
-    card.append(el('span','metric-label',metric.label||metric.key));
+    const label={ATA1:'效率',PF1:'功率因数',IST1:'启动电流',TST1:'启动转矩',TM1:'最大转矩',Sf:'槽满率'}[metric.key]||metric.label||metric.key;
+    const caption=el('span','metric-label',label);caption.title=metric.label||metric.key;card.append(caption);
     const value=el('div','metric-value',fmt(actual===null?null:actual*factor,percent?3:5));
     if(unit)value.append(el('span','metric-unit',unit));card.append(value);
     const target=standard.target,reference=el('div','metric-standard');
@@ -425,11 +426,11 @@
     if(target!==null&&actual!==null){
       const failed=standard.relation==='maximum'?actual>target:actual<target;
       card.classList.toggle('metric-out-of-standard',failed);
-      const label=standard.relation==='maximum'?(failed?'超过上限':'未超过上限'):standard.relation==='target'?(failed?'低于目标':actual>target?'高于目标':'等于目标'):(failed?'低于标准':'达到标准');
-      const assessment=el('div','metric-assessment',label);
-      // Keep the exact comparison inspectable even if two displayed values round alike.
-      assessment.title=`计算值 ${actual}；${standard.relation==='target'?'目标':'标准'} ${target}`;
-      card.append(assessment);
+      const assessment=standard.relation==='maximum'?(failed?'超过上限':'未超过上限'):standard.relation==='target'?(failed?'低于目标':actual>target?'高于目标':'等于目标'):(failed?'低于标准':'达到标准');
+      card.classList.toggle('metric-within-standard',!failed);
+      // Exact values and status remain available without adding a visual status row.
+      card.title=`${metric.label||metric.key}；${assessment}；计算值 ${actual}；${standard.relation==='target'?'目标':'标准'} ${target}`;
+      card.setAttribute('aria-label',`${metric.label||metric.key}：${value.textContent}，${reference.textContent}，${assessment}`);
     }
     return card;
   }
@@ -900,7 +901,7 @@
     }
   }
   let projectsRequest = 0;
-  let projectSeries = [];
+  let projectSeries = [], projectItems = [], projectOffset = 0, projectTotal = 0, projectServerFiltered = false, projectTimer;
   const projectSelection = DesignSeries.selection({all:$("#projects-select-all"),button:$("#projects-series-edit"),count:$("#projects-selection-count"),onEdit:editProjectSeries});
   function editProjectSeries(items) {
     if(state.busy)return showToast("请等待当前操作完成。", "warning");
@@ -917,29 +918,44 @@
     }});
   }
   async function loadProjects() {
+    clearTimeout(projectTimer);$("#projects-paging").hidden=true;$("#projects-count").textContent="";
     const request = ++projectsRequest;
     $("#projects-feedback").textContent = "正在读取已保存设计…";
     $("#project-table-body").replaceChildren();
     projectSelection.set([]);
     try {
-      const data = await api(`/projects?include_archived=${$("#include-archived").checked}`);
+      const params=new URLSearchParams({include_archived:$("#include-archived").checked,q:$("#project-search").value.trim(),series:$("#project-series-filter").value,owned_only:$("#project-owned-only").checked,limit:100,offset:projectOffset});
+      const data = await api('/projects?'+params);
       if (request !== projectsRequest) return;
       if (!Array.isArray(data.items)) throw new Error("设计接口没有返回 items 数组。");
-      $("#projects-feedback").textContent = data.items.length ? "" : "还没有保存的设计。在工作台中载入参数后，点击「保存设计」。";
-      projectSeries = [...new Set(data.items.map(item=>item.series).filter(Boolean))];
-      projectSelection.set(data.items);
-      data.items.forEach(project => {
+      projectItems = data.items; projectServerFiltered=Number.isInteger(data.total); projectTotal=data.total??data.items.length; projectOffset=data.offset??projectOffset;
+      projectSeries = data.series||[...new Set(data.items.map(item=>item.series).filter(Boolean))];
+      const filter=$("#project-series-filter"),selected=filter.value;
+      filter.replaceChildren(new Option('全部系列',''),...[...new Set([...projectSeries,selected].filter(Boolean))].map(name=>new Option(name,name)));filter.value=selected;
+      renderProjects();
+    } catch (error) { if (request === projectsRequest) $("#projects-feedback").textContent = `读取失败：${errorText(error)}`; }
+  }
+  function renderProjects() {
+      const query=$("#project-search").value.trim().normalize('NFKC').toLocaleLowerCase().split(/\s+/).filter(Boolean);
+      const items=projectServerFiltered?projectItems:projectItems.filter(item=>(!$("#project-owned-only").checked||DesignVersions.owned(item))&&(!$("#project-series-filter").value||item.series===$("#project-series-filter").value)&&query.every(word=>[item.name,item.series,item.author,item.id].join(' ').normalize('NFKC').toLocaleLowerCase().includes(word)));
+      $("#project-table-body").replaceChildren();projectSelection.set(items);
+      $("#projects-feedback").textContent=items.length?'':projectItems.length||$("#project-search").value||$("#project-series-filter").value||$("#project-owned-only").checked?'没有匹配的设计，请调整搜索或筛选。':'暂无设计，可在工作台保存方案。';
+      $("#projects-count").textContent=projectTotal?`${projectOffset+1}–${projectOffset+items.length} / ${projectTotal} 项`:'0 项';
+      $("#projects-previous").disabled=projectOffset===0;$("#projects-next").disabled=projectOffset+100>=projectTotal;
+      $("#projects-paging").hidden=projectTotal<=100;
+      items.forEach(project => {
         const row = el("tr");
         const selected = el("td");selected.append(projectSelection.checkbox(project));row.append(selected);
         const date = new Date(project.updated_at);
-        const name = el("td", "project-name", `${project.name} · v${project.revision}${project.archived ? " · 已归档" : ""}`);
-        name.append(el("small", "project-id", project.id));row.append(name);
+        const name = el("td", "project-name"), nameLine=el("div","design-name-line");
+        nameLine.append(el("span","",project.name),el("small","",` · v${project.revision}${project.archived ? " · 已归档" : ""}`));name.append(nameLine);
+        name.title=`${project.name} · v${project.revision}\n${project.id}`;row.append(name);
         const series = el("td", "project-series");series.append(el("span", "", project.series || "未分类"));
         const editSeries = button("修改系列名", "text-button", () => editProjectSeries([project]));
         const reason = DesignVersions.editReason(project);editSeries.disabled=!DesignVersions.editable(project);editSeries.title=reason||"修改此设计的系列名并保留版本差异";
-        series.append(editSeries);if(reason)series.append(el("small", "design-edit-reason", reason));row.append(series);
-        [project.author || "未署名", Number.isNaN(date.getTime()) ? project.updated_at || "—" : date.toLocaleString("zh-CN")].forEach(value => row.append(el("td", "", value)));
-        const action = el("td");
+        series.append(editSeries);series.title=reason||project.series||"未分类";row.append(series);
+        [project.author || "未署名", Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("zh-CN",{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})].forEach((value,index) => {const cell=el("td", "", value);cell.title=index===0?value:Number.isNaN(date.getTime())?'':date.toLocaleString("zh-CN");row.append(cell);});
+        const action = el("td", "design-actions");
         const trigger = button("打开设计 →", "text-button", async () => {
           if (state.busy) return showToast("计算正在进行，请在完成后打开其他设计。", "warning");
           trigger.disabled = true;
@@ -968,7 +984,11 @@
         row.append(action);
         $("#project-table-body").append(row);
       });
-    } catch (error) { if (request === projectsRequest) $("#projects-feedback").textContent = `读取失败：${errorText(error)}`; }
+  }
+  function filterProjects(delay=0){
+    clearTimeout(projectTimer);++projectsRequest;projectOffset=0;$("#projects-paging").hidden=true;$("#projects-count").textContent="";projectSelection.set([]);
+    $("#project-table-body").replaceChildren();$("#projects-feedback").textContent='正在搜索…';
+    projectTimer=setTimeout(loadProjects,delay);
   }
   function saveMode() {
     const project = state.project, create = $("#save-as-new").checked;
@@ -2429,7 +2449,12 @@
   $('#add-cycle-stage').addEventListener('click',()=>addCycleStage());
   $("#optimization-form").addEventListener("submit", startOptimization);
   $("#refresh-optimization-jobs").addEventListener("click", loadOptimizationJobs);
-  $("#include-archived").addEventListener("change", loadProjects);
+  $("#include-archived").addEventListener("change",()=>filterProjects());
+  $("#project-search").addEventListener("input",()=>filterProjects(180));
+  $("#project-series-filter").addEventListener("change",()=>filterProjects());
+  $("#project-owned-only").addEventListener("change",()=>filterProjects());
+  $("#projects-previous").onclick=()=>{projectOffset=Math.max(0,projectOffset-100);loadProjects();};
+  $("#projects-next").onclick=()=>{projectOffset+=100;loadProjects();};
   $("#close-history").addEventListener("click", () => $("#history-dialog").close());
   $("#refresh-calculations").addEventListener("click", () => { loadCalculations(); loadSavedComparisons(); });
   $("#saved-comparisons-previous").addEventListener("click", () => { state.comparisonOffset = Math.max(0, state.comparisonOffset - 20); loadSavedComparisons(); });

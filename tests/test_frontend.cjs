@@ -902,7 +902,7 @@ test('TX author is revision metadata and My Designs resumes its original identit
   assert.equal(design.series,'人工系列');assert.ok(!('series' in design.parameters));
   assert.equal(design.author,'张工');assert.ok(!('author' in design.parameters));
   a.doc.querySelector('#design-author').value='尚未保存';
-  a.doc.querySelector('#designs-list button').click();await settle();
+  a.doc.querySelector('#designs-list .design-actions button').click();await settle();
   assert.equal(a.doc.querySelector('#design-author').value,'张工');
   assert.equal(a.doc.querySelector('#design-series-control-select').value,'series:人工系列');
   a.doc.querySelector('#design-author').value='李工';a.doc.querySelector('#save-design').click();
@@ -1598,7 +1598,7 @@ test('TX foreign revision shows the changed values and can only be copied',async
     if(req.path==='/designs' && req.method==='POST')return {...source,id:'mine',revision:1,owner:'张工',author:'张工'};
   });
   a.doc.querySelector('[data-view=designs]').click();await settle();
-  a.doc.querySelector('#designs-list select').value='2';a.doc.querySelector('#designs-list button').click();await settle();
+  a.doc.querySelector('#designs-list select').value='2';a.doc.querySelector('#designs-list .design-actions button').click();await settle();
   assert.ok(a.doc.querySelector('#save-design').disabled);
   assert.match(a.doc.querySelector('#version-details').textContent,/1 → 2/);
   a.doc.querySelector('#save-copy').click();await settle();
@@ -1736,7 +1736,7 @@ test('TX batch series edit updates current version but keeps unsaved parameter a
       return {items:result,changed_count:2,unchanged_count:0};
     }
   });
-  a.doc.querySelector('[data-view=designs]').click();await settle();a.doc.querySelector('#designs-list button').click();await settle();
+  a.doc.querySelector('[data-view=designs]').click();await settle();a.doc.querySelector('#designs-list .design-actions button').click();await settle();
   const power=a.doc.querySelector('[name=P2]');power.value='9';power.dispatchEvent(new a.w.Event('input'));
   const picker=a.doc.querySelector('#design-series-control-select');picker.value='new';picker.dispatchEvent(new a.w.Event('change'));
   a.doc.querySelector('#design-series-control input').value='草稿系列';
@@ -1787,10 +1787,10 @@ test('main explains missing historical ownership without claiming a latest autho
     {id:'archived',name:'已归档',owner:'张工',author:'张工',archived:1,revision:1,updated_at:created}]}:undefined);
   a.nav('projects');await until(()=>a.doc.querySelectorAll('.project-series button').length===4,'All series controls visible');
   assert.ok([...a.doc.querySelectorAll('.project-series button')].every(b=>b.disabled));
-  const text=a.doc.querySelector('#project-table-body').textContent;
+  const text=[...a.doc.querySelectorAll('.project-series button')].map(button=>button.title).join(' ');
   assert.match(text,/首版未署名/);assert.match(text,/原作者为「李工」/);assert.match(text,/缺少设计归属信息/);assert.match(text,/请先恢复/);
   assert.equal(a.doc.querySelector('#projects-series-edit').disabled,true);
-  assert.match(a.doc.querySelector('#projects-selection-count').textContent,/查看各行说明/);
+  assert.match(a.doc.querySelector('#projects-selection-count').textContent,/没有可修改/);
 });
 
 test('TX engineering results show snapshot wire gauges, all slot fills and flux with precise small values',async t=>{
@@ -1835,7 +1835,7 @@ test('main detail metrics omit all six cards and stably put flux first without m
   assert.match(card('ATA1').textContent,/89%/);assert.match(card('ATA1').textContent,/标准值 ≥ 90 %/);
   assert.match(card('Sf').textContent,/目标值 = 75 %/);
   assert.deepEqual([...ui.doc.querySelectorAll('.primary-metrics .metric-out-of-standard')].map(n=>n.dataset.metric),['ATA1','TST1','Sf']);
-  assert.match(card('IST1').textContent,/标准值 ≤ 8 倍/);assert.match(card('IST1').textContent,/未超过上限/);
+  assert.match(card('IST1').textContent,/标准值 ≤ 8 倍/);assert.ok(card('IST1').classList.contains('metric-within-standard'));assert.doesNotMatch(card('IST1').textContent,/未超过上限|达到标准/);
   assert.equal(JSON.stringify(record),before);
 });
 
@@ -1844,8 +1844,8 @@ test('main standards use saved requirements and upper current limit; equal stand
   record.wire_selection={mode:'target_fill',target_fill:.72};
   const ui=await mainMetricSnapshot(t,record),card=key=>ui.doc.querySelector(`.primary-metrics [data-metric=${key}]`);
   assert.deepEqual([...ui.doc.querySelectorAll('.primary-metrics .metric-out-of-standard')].map(n=>n.dataset.metric),['IST1']);
-  assert.match(card('ATA1').textContent,/标准值 ≥ 88 %/);assert.match(card('IST1').textContent,/超过上限/);assert.match(card('Sf').textContent,/目标值 = 72 %/);
-  assert.match(card('TST1').textContent,/达到标准/);assert.match(card('Sf').textContent,/等于目标/);
+  assert.match(card('ATA1').textContent,/标准值 ≥ 88 %/);assert.match(card('IST1').title,/超过上限/);assert.match(card('Sf').textContent,/目标值 = 72 %/);
+  assert.ok(card('TST1').classList.contains('metric-within-standard'));assert.ok(card('Sf').classList.contains('metric-within-standard'));assert.equal(ui.doc.querySelectorAll('.metric-assessment').length,0);
 });
 
 test('missing standards and values stay unknown, with historical input-only standards preserved',async t=>{
@@ -1861,7 +1861,66 @@ test('missing standards and values stay unknown, with historical input-only stan
 test('main standard coloring compares unrounded values and keeps current inputs out of old snapshots',async t=>{
   const record=metricFixture({inputs:{...parameters,ATA:.9}});record.metrics.find(m=>m.key==='ATA1').value=.89999999;
   const ui=await mainMetricSnapshot(t,record),card=ui.doc.querySelector('.primary-metrics [data-metric=ATA1]');
-  assert.ok(card.classList.contains('metric-out-of-standard'));assert.match(card.querySelector('.metric-assessment').title,/0.89999999/);
+  assert.ok(card.classList.contains('metric-out-of-standard'));assert.match(card.title,/0.89999999/);
   const before=card.textContent,input=ui.doc.querySelector('[data-key=ATA]');input.value='.8';input.dispatchEvent(new ui.w.Event('input',{bubbles:true}));
   assert.equal(card.textContent,before);assert.ok(ui.doc.querySelector('#stale-result'));assert.match(card.textContent,/标准值 ≥ 90 %/);
+});
+
+for(const module of ['main','tx'])test(module+' design search clears selections, handles races and pages matching metadata',async t=>{
+  const old=deferred(),queries=[],item=(id,name)=>({id,name,series:'试制',owner:'张工',author:'张工',revision:2,updated_at:created});
+  const route=async(path,request)=>{
+    if(path!==(module==='main'?'/projects':'/designs'))return;
+    const params=request.url.searchParams,q=params.get('q'),offset=Number(params.get('offset')||0);queries.push({q,offset});
+    if(q==='old')await old.promise;
+    const items=q?[item(q,q+' 方案')]:[item(offset?'second':'first',offset?'第二页':'第一页')];
+    return {items,total:q?1:101,offset,series:['试制']};
+  };
+  const a=module==='main'?await app(t,route):await txApp(t,request=>route(request.path,request));
+  if(module==='main')a.nav('projects');else a.doc.querySelector('[data-view=designs]').click();
+  const prefix=module==='main'?'projects':'designs',body=module==='main'?'#project-table-body':'#designs-list',search=a.doc.querySelector(module==='main'?'#project-search':'#design-search');
+  await until(()=>a.doc.querySelector(body+' tr'),'Initial design page');
+  a.doc.querySelector('#'+prefix+'-select-all').click();assert.equal(a.doc.querySelectorAll(body+' input:checked').length,1);
+  a.doc.querySelector('#'+prefix+'-next').click();await until(()=>a.doc.querySelector(body).textContent.includes('第二页'),'Second page');
+  assert.equal(a.doc.querySelectorAll(body+' input:checked').length,0);assert.equal(a.doc.querySelector('#'+prefix+'-next').disabled,true);
+  const searchFor=async value=>{search.value=value;search.dispatchEvent(new a.w.Event('input'));assert.equal(a.doc.querySelectorAll(body+' input:checked').length,0);await new Promise(resolve=>setTimeout(resolve,210));};
+  await searchFor('old');await searchFor('new');await until(()=>a.doc.querySelector(body).textContent.includes('new 方案'),'Latest search shown');
+  old.release();await settle();assert.doesNotMatch(a.doc.querySelector(body).textContent,/old 方案/);assert.ok(queries.some(q=>q.q==='new'&&q.offset===0));
+  a.doc.querySelector('#'+prefix+'-select-all').click();a.doc.querySelector('#'+prefix+'-series-edit').click();
+  assert.equal(a.doc.querySelectorAll('.series-targets li').length,1);assert.match(a.doc.querySelector('.series-targets').textContent,/new 方案/);
+});
+
+test('TX references use saved parameters, compare exact values and show only label value and reference',async t=>{
+  let snapshot;
+  const a=await txApp(t,(req,{p,result})=>{
+    if(req.path==='/calculate')return snapshot={id:'reference',name:p.TYP,created_at:created,parameters:{...p,E4:.88,E6:.82,TMN:2.7,TQN:2,ISN:6.7},
+      result:{...result,metrics:{...result.metrics,efficiency:.87999999}}};
+  });
+  a.doc.querySelector('#calculate').click();await until(()=>!a.doc.querySelector('#results').hidden,'TX reference results');
+  const box=a.doc.querySelector('#metric-cards'),card=key=>box.querySelector('[data-metric='+key+']'),before=JSON.stringify(snapshot);
+  assert.equal(box.children.length,6);
+  assert.deepEqual([...box.querySelectorAll('.metric-out-of-standard')].map(c=>c.dataset.metric),['efficiency','power_factor','starting_current_ratio']);
+  assert.deepEqual([...box.querySelectorAll('.metric-within-standard')].map(c=>c.dataset.metric),['maximum_torque_ratio','starting_torque_ratio']);
+  assert.match(card('efficiency').textContent,/参考 ≥ 88 %/);assert.match(card('efficiency').title,/0.87999999/);
+  assert.match(card('starting_current_ratio').textContent,/参考 ≤ 6.7 倍/);assert.match(card('speed_rpm').textContent,/参考：未设置/);
+  assert.doesNotMatch(box.textContent,/达标|低于|超过|NaN|undefined/);
+  const html=box.innerHTML,input=a.doc.querySelector('[name=P2]');input.value='9';input.dispatchEvent(new a.w.Event('input'));
+  assert.equal(box.innerHTML,html);assert.equal(JSON.stringify(snapshot),before);
+});
+
+test('TX missing references and absent metric values stay neutral and unknown',async t=>{
+  const a=await txApp(t,(req,{p,result})=>req.path==='/calculate'?{id:'legacy-reference',name:p.TYP,created_at:created,parameters:{...p,E4:.8,E6:null,ISN:NaN},result:{...result,metrics:{...result.metrics,efficiency:null}}}:undefined);
+  a.doc.querySelector('#calculate').click();await until(()=>!a.doc.querySelector('#results').hidden,'Legacy reference results');
+  const box=a.doc.querySelector('#metric-cards');assert.equal(box.querySelectorAll('.metric-out-of-standard,.metric-within-standard').length,0);
+  assert.match(box.querySelector('[data-metric=efficiency] strong').textContent,/—/);assert.equal([...box.querySelectorAll('.metric-standard')].filter(c=>c.textContent==='参考：未设置').length,5);
+  assert.doesNotMatch(box.textContent,/NaN|undefined/);
+});
+
+for(const module of ['main','tx'])test(module+' keeps a selected series filter when its last design moves away',async t=>{
+  let moved=false;
+  const route=(path)=>path===(module==='main'?'/projects':'/designs')?{items:moved?[]:[{id:'last',name:'最后方案',series:'旧系列',owner:'张工',author:'张工',revision:1,updated_at:created}],total:moved?0:1,offset:0,series:moved?['新系列']:['旧系列']}:undefined;
+  const a=module==='main'?await app(t,route):await txApp(t,request=>route(request.path));
+  if(module==='main')a.nav('projects');else a.doc.querySelector('[data-view=designs]').click();
+  const filter=a.doc.querySelector(module==='main'?'#project-series-filter':'#design-series-filter');await until(()=>filter.options.length===2,'Series filter');filter.value='旧系列';moved=true;
+  a.doc.querySelector(module==='main'?'#refresh-projects':'#refresh-designs').click();await settle();
+  assert.equal(filter.value,'旧系列');assert.equal(a.doc.querySelectorAll(module==='main'?'#project-table-body tr':'#designs-list tr').length,0);
 });

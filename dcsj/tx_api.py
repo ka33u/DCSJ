@@ -3,7 +3,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Literal
-from . import tx, slots, auth, design_series
+from . import tx, slots, auth, design_series, design_catalog
 from .tx_parameters import schema, validate
 from .tx_report import report
 from .parameters import ROOT
@@ -117,7 +117,10 @@ def legacy_pdf(identity:str,layout:Literal['legacy']='legacy'):
 
 
 @router.get('/api/v1/tx/designs')
-def designs():return {'items':tx.designs()}
+def designs(request:Request, q:str=Query('',max_length=120), series:str=Query('',max_length=80),
+            owned_only:bool=False, limit:int=Query(500,ge=1,le=500), offset:int=Query(0,ge=0)):
+    return design_catalog.search('tx',q=q,series=series,owner=auth.author(request) if owned_only else None,
+                                 limit=limit,offset=offset)
 
 
 @router.post('/api/v1/tx/designs',status_code=201)

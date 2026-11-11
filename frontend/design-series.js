@@ -9,14 +9,14 @@ window.DesignSeries=(()=>{
       all.indeterminate=selected.size>0&&!all.checked;
       all.disabled=!eligible.length||eligible.length>200;
       all.title=eligible.length>200?'单批最多 200 项，请逐条勾选或筛选列表':'';
-      count.textContent=eligible.length?`已选 ${selected.size} 项 · 可修改 ${eligible.length} 项`:'没有可修改的设计，请查看各行说明';
+      count.textContent=eligible.length?`已选 ${selected.size} 项 · 可修改 ${eligible.length} 项`:'没有可修改的设计';
       button.disabled=!eligible.length;
       button.title=eligible.length?'先勾选设计，再批量修改系列名':'仅可修改自己未归档的最新设计';
       for(const [id,input] of controls)input.checked=selected.has(id);
     }
     all.addEventListener('change',()=>{selected.clear();if(all.checked)for(const item of items.filter(DesignVersions.editable))selected.set(item.id,item);sync();});
     button.addEventListener('click',()=>{
-      if(!selected.size){count.textContent='请先勾选要修改的设计，或使用「全选可修改设计」。';controls.find(([,input])=>!input.disabled)?.[1].focus();return;}
+      if(!selected.size){count.textContent='请先勾选要修改的设计，或使用「全选本页」。';controls.find(([,input])=>!input.disabled)?.[1].focus();return;}
       onEdit([...selected.values()]);
     });
     return {
