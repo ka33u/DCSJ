@@ -1956,6 +1956,37 @@ test('TX history selection updates rating columns and rejects stale responses wi
  assert.equal(a.doc.querySelector('[name=P2]').value,draft);
 });
 
+test('TX historical rating strings display as numbers without coercing missing or invalid values to zero',async t=>{
+ const samples=[
+   {P2:' 5.5 ',U1:'380',HZ:'5e1'},
+   {P2:'0',U1:220,HZ:' 60 '},
+   {P2:'',U1:'  ',HZ:null},
+   {P2:true,U1:false,HZ:[]},
+   {P2:'NaN',U1:'Infinity',HZ:'1e9999'},
+   {P2:'380V',U1:'0x10',HZ:'1_000'},
+   {P2:'.125',U1:'+3.8e2',HZ:'50.'},
+ ];
+ const before=JSON.stringify(samples),latest=samples.length+1;
+ const item={id:'string-versions',name:'历史字符串参数',owner:'张工',revision:latest,power_kw:12,voltage_v:400,frequency_hz:60,updated_at:created};
+ const a=await txApp(t,(req,{p})=>{
+   if(req.path==='/designs')return {items:[item]};
+   if(req.path==='/designs/string-versions'){const rev=Number(req.url.searchParams.get('revision'));return {...item,revision:rev,parameters:{...p,...samples[rev-1]}};}
+ });
+ const draft=a.doc.querySelector('[name=P2]').value;
+ a.doc.querySelector('[data-view=designs]').click();await settle();
+ const row=a.doc.querySelector('#designs-list tr'),version=row.querySelector('select'),open=row.querySelector('.design-actions button');
+ const expected=[['5.5','380','50'],['0','220','60'],...Array.from({length:4},()=>['—','—','—']),['0.125','380','50']];
+ for(let i=0;i<samples.length;i++){
+   version.value=String(i+1);version.dispatchEvent(new a.w.Event('change'));
+   await until(()=>!open.disabled,'Historical rating values loaded');
+   const cells=[...row.querySelectorAll('.design-rating')];assert.deepEqual(cells.map(n=>n.textContent),expected[i]);
+   cells.forEach((cell,j)=>assert.match(cell.title,expected[i][j]==='—'?/未记录有效数值/:new RegExp(' · v'+(i+1)+'$')));
+ }
+ version.value=String(latest);version.dispatchEvent(new a.w.Event('change'));await until(()=>!open.disabled,'Latest ratings restored');
+ assert.deepEqual([...row.querySelectorAll('.design-rating')].map(n=>n.textContent),['12','400','60']);
+ assert.equal(a.doc.querySelector('[name=P2]').value,draft);assert.equal(JSON.stringify(samples),before);
+});
+
 test('compact fixed wire includes saved slot conductors and marks inactive groups without multiplying counts',async t=>{
  const record={...snapshot('metric-check'),inputs:{...parameters,ZZ:24.5,JJ:4,Djj:1.1,MM:0,Dmm:.8},wire_selection:{mode:'fixed',used:{JJ:4,Djj:1.10000002,MM:0,Dmm:.8},actual_fill:.7525}};
  const before=JSON.stringify(record),ui=await mainMetricSnapshot(t,record),box=ui.doc.querySelector('.wire-result');

@@ -164,8 +164,17 @@
     }catch(e){if(sequence===state.designSequence)$('designs-feedback').textContent='读取失败：'+e.message;}
   }
   const designRatingFields=[['power_kw','P2','kW'],['voltage_v','U1','V（线）'],['frequency_hz','HZ','Hz']];
+  function designRatingNumber(value){
+    // Match the list API's decimal-string compatibility for historical snapshots.
+    if(typeof value==='string'){
+      value=value.trim();
+      if(!/^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/.test(value))return null;
+      value=Number(value);
+    }
+    return Number.isFinite(value)?value:null;
+  }
   function showDesignRatings(cells,values,revision){
-    designRatingFields.forEach(([key,,unit],i)=>{const value=values[key];cells[i].textContent=num(value,5);cells[i].title=Number.isFinite(value)?`${value} ${unit} · v${revision}`:'此保存版本未记录有效数值';});
+    designRatingFields.forEach(([key,,unit],i)=>{const value=designRatingNumber(values[key]);cells[i].textContent=num(value,5);cells[i].title=Number.isFinite(value)?`${value} ${unit} · v${revision}`:'此保存版本未记录有效数值';});
   }
   function renderDesigns(){
     const query=$('design-search').value.trim().normalize('NFKC').toLocaleLowerCase().split(/\s+/).filter(Boolean),series=$('design-series-filter').value;

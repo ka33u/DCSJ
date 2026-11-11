@@ -70,12 +70,15 @@ def test_search_bounds(client, catalog):
         assert client.get(url, params=params).status_code == 422
 
 
-def test_rating_columns_read_current_saved_version_and_keep_raw_voltage(client, catalog):
+@pytest.mark.parametrize('string_parameters', [False, True])
+def test_rating_columns_read_current_saved_version_and_keep_raw_voltage(client, catalog, string_parameters):
     import json
     module, url = catalog
     table, revisions, key = ('projects','project_revisions','project_id') if module == 'main' else ('tx_designs','tx_revisions','design_id')
     old = {'kW':1.1,'Ufai':220,'f':50,'Jiefa':'Y'} if module == 'main' else {'P2':1.1,'U1':380,'HZ':50}
     current = {'kW':.125,'Ufai':230.5,'f':60,'Jiefa':'Y'} if module == 'main' else {'P2':.125,'U1':415.5,'HZ':60}
+    if string_parameters:
+        current = {key: f' {value} ' if isinstance(value, (int, float)) else value for key, value in current.items()}
     with storage.connect() as db:
         db.execute(f'UPDATE {revisions} SET parameters=? WHERE {key}=?', (json.dumps(old),'design-0000'))
         columns = f'{key},revision,parameters,created_at,author,series'
@@ -95,7 +98,47 @@ def test_rating_columns_read_current_saved_version_and_keep_raw_voltage(client, 
     assert 'parameters' not in row and 'rating_parameters' not in row
     with storage.connect() as db:
         before=json.loads(db.execute(f'SELECT parameters FROM {revisions} WHERE {key}=? AND revision=1',('design-0000',)).fetchone()[0])
+        saved=json.loads(db.execute(f'SELECT parameters FROM {revisions} WHERE {key}=? AND revision=2',('design-0000',)).fetchone()[0])
+        if module == 'main':
+            assert json.loads(db.execute('SELECT parameters FROM projects WHERE id=?',('design-0000',)).fetchone()[0]) == current
     assert before==old
+    assert saved==current
+
+
+def test_rating_columns_accept_api_saved_strings_and_mixed_types_without_rewriting(client):
+    cases = [
+        {'kW':5.5,'Ufai':380,'f':50},
+        {'kW':'5.5','Ufai':'380','f':'50'},
+        {'kW':' 5.5 ','Ufai':380,'f':' 5e1 '},
+    ]
+    for parameters in cases:
+        response=client.post('/api/v1/projects',json={'name':'String ratings regression','parameters':parameters})
+        assert response.status_code==201
+        identity=response.json()['id']
+        row=client.get('/api/v1/projects',params={'q':identity}).json()['items'][0]
+        assert [row[key] for key in ('power_kw','voltage_v','frequency_hz')]==[5.5,380,50]
+        assert client.get('/api/v1/projects/'+identity).json()['parameters']==parameters
+        assert client.get('/api/v1/projects/'+identity+'/revisions/1').json()['parameters']==parameters
+
+
+def test_rating_columns_handle_legacy_invalid_values_and_string_zero(client,catalog):
+    import json
+    module,url=catalog
+    keys=('kW','Ufai','f') if module=='main' else ('P2','U1','HZ')
+    cases=[(' 0 ',0),('+3.8e2',380),('.125',.125),('50.',50)]
+    cases += [(value,None) for value in (
+        '', '  ', None, True, False, [], {}, 'bad', '380V', 'NaN', 'Infinity',
+        '-Infinity', '1e9999', float('nan'), float('inf'), 10**400, '0x10', '1_000', '3,80',
+    )]
+    for value,expected in cases:
+        raw=json.dumps(dict.fromkeys(keys,value))
+        with storage.connect() as db:
+            if module=='main':db.execute('UPDATE projects SET parameters=? WHERE id=?',(raw,'design-0000'))
+            else:db.execute('UPDATE tx_revisions SET parameters=? WHERE design_id=?',(raw,'design-0000'))
+        response=client.get(url,params={'q':'design-0000'})
+        assert response.status_code==200
+        row=response.json()['items'][0]
+        assert [row[key] for key in ('power_kw','voltage_v','frequency_hz')]==[expected]*3,repr(value)
 
 
 def test_rating_columns_preserve_zero_and_mark_absent_or_invalid_values_unknown(client,catalog):

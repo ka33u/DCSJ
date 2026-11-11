@@ -1,10 +1,24 @@
 """Search lightweight saved-design metadata before applying the page limit."""
 import json
 import math
+import re
 import unicodedata
 
 from .storage import connect
 from .design_history import MAIN_OWNER, TX_OWNER
+
+
+def _rating_number(value):
+    """Read legacy decimal strings without changing the saved input snapshot."""
+    if isinstance(value, str):
+        value = value.strip()
+        if not re.fullmatch(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?', value):
+            return None
+        value = float(value)
+    try:
+        return value if type(value) in (int, float) and math.isfinite(value) else None
+    except OverflowError:
+        return None
 
 
 def _ratings(raw, module):
@@ -17,8 +31,7 @@ def _ratings(raw, module):
     keys = ('kW', 'Ufai', 'f') if module == 'main' else ('P2', 'U1', 'HZ')
     result = {}
     for field, key in zip(('power_kw', 'voltage_v', 'frequency_hz'), keys):
-        value = parameters.get(key)
-        result[field] = value if type(value) in (int, float) and math.isfinite(value) else None
+        result[field] = _rating_number(parameters.get(key))
     return result
 
 
