@@ -163,6 +163,10 @@
       filter.replaceChildren(new Option('全部系列',''),...[...new Set([...series,value].filter(Boolean))].map(s=>new Option(s,s)));filter.value=value;renderDesigns();
     }catch(e){if(sequence===state.designSequence)$('designs-feedback').textContent='读取失败：'+e.message;}
   }
+  const designRatingFields=[['power_kw','P2','kW'],['voltage_v','U1','V（线）'],['frequency_hz','HZ','Hz']];
+  function showDesignRatings(cells,values,revision){
+    designRatingFields.forEach(([key,,unit],i)=>{const value=values[key];cells[i].textContent=num(value,5);cells[i].title=Number.isFinite(value)?`${value} ${unit} · v${revision}`:'此保存版本未记录有效数值';});
+  }
   function renderDesigns(){
     const query=$('design-search').value.trim().normalize('NFKC').toLocaleLowerCase().split(/\s+/).filter(Boolean),series=$('design-series-filter').value;
     const items=state.designServerFiltered?state.designItems:state.designItems.filter(item=>(!$('design-owned-only').checked||DesignVersions.owned(item))&&(!series||item.series===series)&&query.every(word=>[item.name,item.series,item.author,item.id].join(' ').normalize('NFKC').toLocaleLowerCase().includes(word)));
@@ -172,10 +176,22 @@
       const row=document.createElement('tr'),check=document.createElement('td');check.append(designSelection.checkbox(item));row.append(check);
       const date=new Date(item.updated_at),stamp=Number.isNaN(date.getTime())?'—':date.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
       for(const [i,value] of [item.name,item.series||'未分类',item.author||'未署名',stamp].entries()){const cell=document.createElement('td');cell.textContent=value;cell.title=i===0?item.name+' · v'+item.revision+'\n'+item.id:i===3&&!Number.isNaN(date.getTime())?date.toLocaleString('zh-CN'):value;if(i===0){const line=document.createElement('div'),label=document.createElement('span');line.className='design-name-line';label.textContent=value;line.append(label);cell.replaceChildren(line);}if(i===1){cell.className='project-series';const label=document.createElement('span');label.textContent=value;cell.replaceChildren(label);}row.append(cell);}
+      const authorCell=row.children[3],ratingCells=designRatingFields.map(([key])=>{const cell=document.createElement('td');cell.className='design-rating';cell.dataset.rating=key;row.insertBefore(cell,authorCell);return cell;});
+      showDesignRatings(ratingCells,item,item.revision);
       const cell=document.createElement('td');
       const version=document.createElement('select');version.setAttribute('aria-label',item.name+' 的设计版本');
       for(let i=item.revision;i>=1;i--)version.append(new Option('v'+i,i));
       const open=document.createElement('button');open.textContent='打开设计';open.onclick=()=>task(()=>openDesign(item.id,Number(version.value)));
+      let ratingRequest=0;
+      version.onchange=async()=>{
+        const request=++ratingRequest,revision=Number(version.value);open.disabled=true;
+        showDesignRatings(ratingCells,{},revision);
+        try{
+          const values=revision===item.revision?item:await api('/designs/'+encodeURIComponent(item.id)+'?revision='+revision).then(design=>Object.fromEntries(designRatingFields.map(([key,input])=>[key,design.parameters?.[input]])));
+          if(request!==ratingRequest||!row.isConnected)return;
+          showDesignRatings(ratingCells,values,revision);open.disabled=false;
+        }catch(e){if(request===ratingRequest&&row.isConnected){for(const cell of ratingCells)cell.title='版本参数读取失败，请重新选择版本';notice('版本参数读取失败：'+e.message,true);}}
+      };
       const edit=document.createElement('button');edit.textContent='修改系列名';edit.className='text-button';edit.disabled=!DesignVersions.editable(item);edit.title=DesignVersions.editReason(item)||'修改此设计的系列名并保留版本差异';edit.onclick=()=>editDesignSeries([item]);row.querySelector('.project-series').append(edit);
       row.children[1].firstChild.append(version);cell.append(open);cell.className='design-actions';row.append(cell);$('designs-list').append(row);
     }

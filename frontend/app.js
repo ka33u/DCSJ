@@ -545,33 +545,44 @@
     setDesignState("计算完成", "teal");
   }
   function renderWireSelection(result) {
-    const p = result.inputs || {};
-    const automatic = result.wire_selection?.mode === "target_fill" || Number(p._wire_target) > 0;
-    const wire = result.wire_selection;
-    if (!wire && !automatic) return null;
-    const box = el("section", "wire-result");
-    box.append(el("h3", "result-section-title", automatic ? "反算采用线规" : "本次采用线规"));
-    const used = wire?.used;
-    if (!used) {
-      box.append(el("p", "small", "旧记录未保存反算后的线规。重新计算后可查看，原输入不能作为实际规格。"));
+    const p=result.inputs||{},wire=result.wire_selection;
+    const automatic=wire?.mode==='target_fill'||Number(p._wire_target)>0;
+    if(!wire&&!automatic&&!Number.isFinite(p.ZZ))return null;
+    const box=el('section','wire-result'),heading=el('div','wire-heading'),stats=el('div','wire-stats');
+    heading.append(el('h3','',automatic?'反算采用线规':'本次采用线规'));
+    const stat=(label,value,key)=>{const item=el('span','');item.append(el('span','',label+' '));const reading=el('strong','',value);reading.dataset.wireStat=key;item.append(reading);stats.append(item);return item;};
+    stat('每槽导体数',Number.isFinite(p.ZZ)?fmt(p.ZZ):'—','ZZ').title='本次计算保存的每槽导体数 ZZ';
+    const actual=Number.isFinite(wire?.actual_fill)?wire.actual_fill:result.values?.Sf;
+    stat('槽满率',Number.isFinite(actual)?fmt(actual*100,4)+'%':'—','actual_fill');
+    heading.append(stats);box.append(heading);
+    // Fixed-wire legacy records retain their inputs; automatic selections must be recorded explicitly.
+    const keys=['JJ','Djj','MM','Dmm'];
+    const used=wire?.used||(!automatic&&keys.every(key=>Number.isFinite(p[key]))?p:null);
+    if(!used){
+      box.append(el('p','wire-missing',automatic?'旧记录未保存反算后的线规。重新计算后可查看，原输入不能作为实际规格。':'此记录未保存完整的实际线规。'));
       return box;
     }
-    const scroll = el("div", "table-scroll"), table = el("table", "result-table");
-    const head = el("thead"), row = el("tr"), body = el("tbody");
-    ["规格", automatic ? "原输入（未采用）" : "输入", "实际采用", "单位"].forEach(label => row.append(el("th", "", label)));
-    head.append(row);
-    [["JJ", "第一组根数", "根"], ["Djj", "第一组线径", "mm"], ["MM", "第二组根数", "根"], ["Dmm", "第二组线径", "mm"]].forEach(([key, label, unit]) => {
-      const line = el("tr"); line.dataset.wireKey = key;
-      [label + " " + key, fmt(wire.input?.[key]), fmt(used[key]), unit].forEach(value => line.append(el("td", "", value)));
-      body.append(line);
-    });
-    table.append(head, body); scroll.append(table); box.append(scroll);
-    const actual = wire.actual_fill;
-    const target = wire.target_fill;
-    box.append(el("p", "small", automatic
-      ? `目标槽满率 ${fmt(target * 100, 4)}% · 实际 ${fmt(actual * 100, 4)}% · 差值 ${fmt((actual - target) * 100, 4)} 个百分点。反算按可选规格取值，可能偏离目标。`
-      : `实际槽满率 ${fmt(actual * 100, 4)}%`));
-    if (used.JJ === 0 || used.MM === 0) box.append(el("p", "small muted", "根数为 0 的导线组不参与计算。"));
+    const groups=el('div','wire-groups');
+    for(const [label,count,diameter] of [['第一组','JJ','Djj'],['第二组','MM','Dmm']]){
+      const group=el('div','wire-group');group.append(el('span','wire-group-label',label));
+      const amount=el('strong','',Number.isFinite(used[count])?fmt(used[count]):'—');amount.dataset.wireKey=count;group.append(amount,el('span','','根'));
+      if(used[count]===0){group.classList.add('wire-unused');group.append(el('span','','· 未采用'));}
+      else{const size=el('strong','',Number.isFinite(used[diameter])?fmt(used[diameter]):'—');size.dataset.wireKey=diameter;group.append(el('span','','× φ'),size,el('span','','mm'));}
+      group.title=`${label}：并绕根数 ${count}，线径 ${diameter}`;groups.append(group);
+    }
+    box.append(groups);
+    if(automatic){
+      const footer=el('div','wire-footer'),target=Number.isFinite(wire?.target_fill)?wire.target_fill:p._wire_target;
+      const difference=Number.isFinite(actual)&&Number.isFinite(target)?(actual-target)*100:null;
+      const comparison=el('span','wire-target',`目标槽满率 ${Number.isFinite(target)?fmt(target*100,4)+'%':'—'} · 差值 ${fmt(difference,4)} 个百分点`);
+      comparison.title='反算按可选规格取值，可能偏离目标。';footer.append(comparison);
+      const detail=el('details','wire-input-details');detail.append(el('summary','','原输入（未采用）'));
+      const original=el('div','wire-input-values');
+      for(const [key,label,unit] of [['JJ','第一组','根'],['Djj','线径','mm'],['MM','第二组','根'],['Dmm','线径','mm']]){
+        const value=el('span','',`${label} ${Number.isFinite(wire?.input?.[key])?fmt(wire.input[key]):'—'} ${unit}`);value.dataset.inputWireKey=key;original.append(value);
+      }
+      detail.append(original);footer.append(detail);box.append(footer);
+    }
     return box;
   }
   function svgNode(tag, attrs = {}, text) {
@@ -954,6 +965,10 @@
         const editSeries = button("修改系列名", "text-button", () => editProjectSeries([project]));
         const reason = DesignVersions.editReason(project);editSeries.disabled=!DesignVersions.editable(project);editSeries.title=reason||"修改此设计的系列名并保留版本差异";
         series.append(editSeries);series.title=reason||project.series||"未分类";row.append(series);
+        for(const [key,unit] of [['power_kw','kW'],['voltage_v','V（相）'],['frequency_hz','Hz']]){
+          const value=Number.isFinite(project[key])?fmt(project[key]):'—',cell=el('td','design-rating',value);
+          cell.dataset.rating=key;cell.title=value==='—'?'此保存版本未记录有效数值':`${project[key]} ${unit} · v${project.revision}`;row.append(cell);
+        }
         [project.author || "未署名", Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("zh-CN",{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})].forEach((value,index) => {const cell=el("td", "", value);cell.title=index===0?value:Number.isNaN(date.getTime())?'':date.toLocaleString("zh-CN");row.append(cell);});
         const action = el("td", "design-actions");
         const trigger = button("打开设计 →", "text-button", async () => {

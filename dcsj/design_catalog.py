@@ -1,8 +1,25 @@
 """Search lightweight saved-design metadata before applying the page limit."""
+import json
+import math
 import unicodedata
 
 from .storage import connect
 from .design_history import MAIN_OWNER, TX_OWNER
+
+
+def _ratings(raw, module):
+    try:
+        parameters = json.loads(raw or '{}')
+    except (TypeError, ValueError):
+        parameters = {}
+    if not isinstance(parameters, dict):
+        parameters = {}
+    keys = ('kW', 'Ufai', 'f') if module == 'main' else ('P2', 'U1', 'HZ')
+    result = {}
+    for field, key in zip(('power_kw', 'voltage_v', 'frequency_hz'), keys):
+        value = parameters.get(key)
+        result[field] = value if type(value) in (int, float) and math.isfinite(value) else None
+    return result
 
 
 def search(module, *, q='', series='', owner=None, include_archived=False, limit=100, offset=0):
@@ -31,8 +48,12 @@ def search(module, *, q='', series='', owner=None, include_archived=False, limit
         total = db.execute(prefix + 'SELECT count(*) FROM designs' + clause, args).fetchone()[0]
         # A filter or deletion can move the last page; return the nearest existing page.
         offset = min(offset, max(0, (total - 1) // limit * limit))
-        items = [dict(row) for row in db.execute(prefix + 'SELECT * FROM designs' + clause +
+        parameters = '(SELECT parameters FROM projects p WHERE p.id=designs.id)' if module == 'main' else (
+            '(SELECT parameters FROM tx_revisions r WHERE r.design_id=designs.id AND r.revision=designs.revision)')
+        items = [dict(row) for row in db.execute(prefix + f'SELECT *,{parameters} AS rating_parameters FROM designs' + clause +
                   ' ORDER BY updated_at DESC,id LIMIT ? OFFSET ?', [*args, limit, offset])]
+        for item in items:
+            item.update(_ratings(item.pop('rating_parameters'), module))
         series_names = [row[0] for row in db.execute(prefix +
                        "SELECT DISTINCT series FROM designs WHERE coalesce(series,'')<>'' ORDER BY series")]
     return {'items': items, 'total': total, 'offset': offset, 'limit': limit, 'series': series_names}

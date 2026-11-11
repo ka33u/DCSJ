@@ -805,7 +805,7 @@ test('TX identifies snapshot slots and saves independent account-owned copies wi
 });
 
 test('target fill exposes effective wire without overwriting editable design or snapshot inputs', async t => {
-  const input = { ...parameters, JJ: 4, Djj: 1, MM: 0, Dmm: 0, _wire_target: .8 };
+  const input = { ...parameters, ZZ: 32, JJ: 4, Djj: 1, MM: 0, Dmm: 0, _wire_target: .8 };
   const used = { JJ: 3, Djj: 1.25, MM: 1, Dmm: .75 };
   const result = { ...snapshot('wire'), inputs: input, values: { ATA1: .9, Sf: .775 },
     wire_selection: { mode: 'target_fill', input, used, target_fill: .8, actual_fill: .775, fill_delta: -.025 } };
@@ -818,8 +818,10 @@ test('target fill exposes effective wire without overwriting editable design or 
   assert.match(ui.doc.querySelector('#wire-mode-note').textContent, /输入暂不采用/);
   ui.doc.querySelector('#parameter-form').dispatchEvent(new ui.w.Event('submit', { bubbles: true, cancelable: true }));
   await until(() => ui.doc.querySelector('[data-wire-key=JJ]'), 'Actual wire result visible');
-  assert.deepEqual([...ui.doc.querySelector('[data-wire-key=JJ]').children].map(n => n.textContent), ['第一组根数 JJ', '4', '3', '根']);
-  assert.match(ui.doc.querySelector('.wire-result').textContent, /目标槽满率 80% · 实际 77.5% · 差值 -2.5 个百分点/);
+  assert.equal(ui.doc.querySelector('[data-wire-key=JJ]').textContent,'3');assert.equal(ui.doc.querySelector('[data-wire-key=Djj]').textContent,'1.25');
+  assert.equal(ui.doc.querySelector('[data-wire-stat=ZZ]').textContent,'32');assert.equal(ui.doc.querySelector('.wire-input-details').open,false);
+  assert.match(ui.doc.querySelector('[data-input-wire-key=JJ]').textContent,/4 根/);
+  assert.match(ui.doc.querySelector('.wire-result').textContent, /目标槽满率 80% · 差值 -2.5 个百分点/);assert.equal(ui.doc.querySelector('[data-wire-stat=actual_fill]').textContent,'77.5%');
   assert.equal(first.value, '4', 'Calculation does not silently overwrite inputs');
   target.value = '0'; target.dispatchEvent(new ui.w.Event('input', { bubbles: true }));
   assert.equal(first.readOnly, false);
@@ -1923,4 +1925,60 @@ for(const module of ['main','tx'])test(module+' keeps a selected series filter w
   const filter=a.doc.querySelector(module==='main'?'#project-series-filter':'#design-series-filter');await until(()=>filter.options.length===2,'Series filter');filter.value='旧系列';moved=true;
   a.doc.querySelector(module==='main'?'#refresh-projects':'#refresh-designs').click();await settle();
   assert.equal(filter.value,'旧系列');assert.equal(a.doc.querySelectorAll(module==='main'?'#project-table-body tr':'#designs-list tr').length,0);
+});
+
+for(const module of ['main','tx'])test(module+' saved-design rows show rated values and units without inventing missing data',async t=>{
+ const items=[{id:'rated',name:'有额定参数',owner:'张工',author:'张工',series:'试制',revision:2,updated_at:created,power_kw:.125,voltage_v:module==='main'?230.5:415.5,frequency_hz:60},{id:'missing',name:'旧设计',owner:'张工',revision:1,power_kw:0}];
+ const a=module==='main'?await app(t,path=>path==='/projects'?{items}:undefined):await txApp(t,req=>req.path==='/designs'?{items}:undefined);
+ if(module==='main')a.nav('projects');else a.doc.querySelector('[data-view=designs]').click();
+ const body=module==='main'?'#project-table-body':'#designs-list';await until(()=>a.doc.querySelectorAll(body+' tr').length===2,'Rated designs loaded');
+ const rows=[...a.doc.querySelectorAll(body+' tr')];assert.equal(rows[0].children.length,9);
+ assert.deepEqual([...rows[0].querySelectorAll('.design-rating')].map(n=>n.textContent),['0.125',module==='main'?'230.5':'415.5','60']);
+ assert.deepEqual([...rows[1].querySelectorAll('.design-rating')].map(n=>n.textContent),['0','—','—']);
+ assert.match(rows[0].querySelector('[data-rating=voltage_v]').title,module==='main'?/V（相）/:/V（线）/);
+ assert.match(rows[0].closest('table').querySelector('thead').textContent,module==='main'?/电压 \/ V（相）/:/电压 \/ V（线）/);
+});
+
+test('TX history selection updates rating columns and rejects stale responses without changing the draft',async t=>{
+ const pending=deferred();let item;
+ const a=await txApp(t,async(req,{p})=>{
+   item??={id:'versions',name:'版本参数',owner:'张工',revision:3,power_kw:12,voltage_v:380,frequency_hz:50,updated_at:created};
+   if(req.path==='/designs')return {items:[item]};
+   if(req.path==='/designs/versions'){const rev=Number(req.url.searchParams.get('revision'));if(rev===1)await pending.promise;return {...item,revision:rev,parameters:{...p,P2:rev,U1:rev*110,HZ:rev*25}};}
+ });
+ const draft=a.doc.querySelector('[name=P2]').value;
+ a.doc.querySelector('[data-view=designs]').click();await settle();const row=a.doc.querySelector('#designs-list tr'),version=row.querySelector('select'),open=row.querySelector('.design-actions button');
+ const choose=rev=>{version.value=String(rev);version.dispatchEvent(new a.w.Event('change'));};
+ choose(1);assert.ok(open.disabled);assert.deepEqual([...row.querySelectorAll('.design-rating')].map(n=>n.textContent),['—','—','—']);
+ choose(2);await until(()=>!open.disabled,'Second version ratings loaded');assert.deepEqual([...row.querySelectorAll('.design-rating')].map(n=>n.textContent),['2','220','50']);
+ pending.release();await settle();assert.deepEqual([...row.querySelectorAll('.design-rating')].map(n=>n.textContent),['2','220','50']);
+ choose(3);await until(()=>!open.disabled,'Latest version ratings restored');assert.deepEqual([...row.querySelectorAll('.design-rating')].map(n=>n.textContent),['12','380','50']);
+ assert.equal(a.doc.querySelector('[name=P2]').value,draft);
+});
+
+test('compact fixed wire includes saved slot conductors and marks inactive groups without multiplying counts',async t=>{
+ const record={...snapshot('metric-check'),inputs:{...parameters,ZZ:24.5,JJ:4,Djj:1.1,MM:0,Dmm:.8},wire_selection:{mode:'fixed',used:{JJ:4,Djj:1.10000002,MM:0,Dmm:.8},actual_fill:.7525}};
+ const before=JSON.stringify(record),ui=await mainMetricSnapshot(t,record),box=ui.doc.querySelector('.wire-result');
+ assert.equal(box.querySelectorAll('.wire-group').length,2);assert.equal(box.querySelector('table'),null);
+ assert.equal(box.querySelector('[data-wire-stat=ZZ]').textContent,'24.5');assert.equal(box.querySelector('[data-wire-stat=actual_fill]').textContent,'75.25%');
+ assert.equal(box.querySelector('[data-wire-key=JJ]').textContent,'4');assert.equal(box.querySelector('[data-wire-key=Djj]').textContent,'1.1');
+ assert.match(box.querySelector('.wire-unused').textContent,/第二组0根· 未采用/);assert.equal(box.querySelector('[data-wire-key=Dmm]'),null);
+ assert.equal(box.querySelector('details'),null);assert.equal(JSON.stringify(record),before);
+});
+
+test('wire slot conductors stay in the calculation snapshot while the active winding is edited',async t=>{
+ const input={...parameters,ZZ:32,JJ:2,Djj:1.2,MM:1,Dmm:.8,_wire_target:0},value={...snapshot('wire-frozen'),inputs:input,wire_selection:{mode:'fixed',used:{JJ:2,Djj:1.2,MM:1,Dmm:.8},actual_fill:.7}};
+ const ui=await app(t,path=>path==='/example'?{parameters:input,name:'wire-frozen'}:path==='/calculate'?value:undefined,['ZZ','JJ','Djj','MM','Dmm'].map(key=>({key,label:key,group:'basic',type:'number',role:'input'})));
+ ui.doc.querySelector('#load-example').click();await settle();ui.doc.querySelector('#parameter-form').dispatchEvent(new ui.w.Event('submit',{bubbles:true,cancelable:true}));await until(()=>ui.doc.querySelector('.wire-result'),'Wire shown');
+ const before=ui.doc.querySelector('.wire-result').textContent;
+ for(const [key,value] of [['ZZ','48'],['JJ','6']]){const input=ui.doc.querySelector('[data-key='+key+']');input.value=value;input.dispatchEvent(new ui.w.Event('input',{bubbles:true}));}
+ assert.equal(ui.doc.querySelector('.wire-result').textContent,before);assert.equal(ui.doc.querySelector('[data-wire-stat=ZZ]').textContent,'32');assert.ok(ui.doc.querySelector('#stale-result'));assert.equal(value.inputs.ZZ,32);
+});
+
+test('legacy fixed wire uses saved inputs and missing wire statistics do not become zero',async t=>{
+ const record={...snapshot('metric-check'),inputs:{...parameters,ZZ:12,JJ:1,Djj:.7,MM:0,Dmm:0}};
+ const ui=await mainMetricSnapshot(t,record);assert.equal(ui.doc.querySelector('[data-wire-key=Djj]').textContent,'0.7');assert.equal(ui.doc.querySelector('[data-wire-stat=actual_fill]').textContent,'—');
+ const missing={...snapshot('metric-check'),inputs:{...parameters},wire_selection:{mode:'target_fill',used:{JJ:1,Djj:.7,MM:0,Dmm:0},target_fill:null,actual_fill:null}};
+ const second=await mainMetricSnapshot(t,missing),box=second.doc.querySelector('.wire-result');
+ assert.equal(box.querySelector('[data-wire-stat=ZZ]').textContent,'—');assert.equal(box.querySelector('[data-wire-stat=actual_fill]').textContent,'—');assert.match(box.textContent,/目标槽满率 — · 差值 — 个百分点/);assert.doesNotMatch(box.textContent,/NaN|undefined|槽满率 0/);
 });

@@ -1,2 +1,2 @@
 """DCSJ cross-platform induction motor design workbench."""
-__version__ = "0.35.4"
+__version__ = "0.35.6"
