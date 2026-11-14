@@ -2,6 +2,7 @@
 import copy
 from io import BytesIO
 import json
+import re
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -77,6 +78,84 @@ def test_effective_wire_is_used_and_old_unknown_selection_is_not_invented(snapsh
     del saved['wire_selection']
     values=''.join(i['value'] for i in legacy_report.main_sheets(saved)[0].items if i['kind']=='text')
     assert 'N1*d1:   -*   -' in values
+
+
+@pytest.mark.parametrize('packet', [None, {'status':'unavailable'}, {'status':'complete','text':'unparseable legacy sheet'}])
+@pytest.mark.parametrize('mode', ['selected', 'unknown', 'explicit-unknown', 'fixed'])
+def test_fallback_cc_wire_agrees_with_first_page_in_html_and_pdf(snapshot,packet,mode):
+    from dcsj.classic_sheet import native_pages
+    saved={**copy.deepcopy(snapshot),'name':'合成线规回退测试','calculation_id':'cc-wire','created_at':'2026-11-14'}
+    saved['inputs'].update(_wire_target=0 if mode=='fixed' else .73,JJ=9,Djj=9.9,MM=2,Dmm=2.8)
+    selected={'JJ':2,'Djj':.8,'MM':1,'Dmm':.5}
+    if mode=='selected':saved['wire_selection']={'mode':'target_fill','used':selected}
+    if mode=='explicit-unknown':saved['wire_selection']={'mode':'target_fill','used':None}
+    if packet is not None:saved['legacy_report']=copy.deepcopy(packet)
+    before=copy.deepcopy(saved)
+    (first,second),complete=native_pages(saved)
+    assert not complete
+    expected=list(selected.values()) if mode=='selected' else [9,9.9,2,2.8] if mode=='fixed' else [None]*4
+    leading_keys='b01 hs0 zs1 bs1 bs2 hs12 zc bc02 hr0 zs2 br1 br2 br3 br4 hr12 hr3 hr4 L a ZZ'.split()
+    pages=legacy_report.main_sheets(saved)
+    svg_text='\n'.join(''.join(ET.fromstring(legacy_report.sheet_svg(page)).itertext()) for page in pages)
+    pdf,text=text_of(legacy_report.render_pdf(saved))
+    assert len(pdf.pages)==2
+    for rendered in ('\n'.join(second),svg_text,text):
+        cc=re.search(r'CC:(.*?)DD:',rendered,re.S).group(1).split()
+        assert len(cc)==24
+        values=[None if value=='-' else float(value) for value in cc]
+        assert values[:20]==[saved['inputs'].get(key) for key in leading_keys]
+        assert values[-4:]==expected
+    for rendered in (svg_text,text):
+        compact=''.join(rendered.split())
+        if mode=='selected':
+            assert 'N1*d1:2.*0.80' in compact and 'N2*d2:1.*0.50' in compact
+            assert 'CC为实际采用线规。' in compact
+        elif mode=='fixed':
+            assert 'N1*d1:9.*9.90' in compact and 'N2*d2:2.*2.80' in compact
+            assert '自动选线目标' not in compact
+        else:
+            assert 'N1*d1:-*-' in compact and 'N2*d2:-*-' in compact
+            assert '未保存实际采用线规' in compact and 'CC为实际采用线规' not in compact
+    assert saved==before
+
+
+def test_fallback_wire_pdf_route_preserves_snapshot_and_does_not_recalculate(client,snapshot,monkeypatch):
+    snapshot['inputs'].update(_wire_target=.73,JJ=9,Djj=9.9,MM=2,Dmm=2.8)
+    snapshot['wire_selection']={'mode':'target_fill','used':{'JJ':2,'Djj':.8,'MM':1,'Dmm':.5},
+                               'input':{key:snapshot['inputs'][key] for key in ('JJ','Djj','MM','Dmm')},
+                               'target_fill':.73,'actual_fill':.725,'fill_delta':-.005}
+    saved=calculations.save(snapshot,'合成线规路由测试')
+    identity=saved['calculation_id']
+    before=calculations.get(identity)
+    monkeypatch.setattr('dcsj.engine.calculate_design',lambda *a,**k: (_ for _ in ()).throw(AssertionError('Printing must not recalculate')))
+    response=client.get(f'/api/v1/calculations/{identity}/report.pdf?layout=legacy')
+    assert response.status_code==200
+    _,text=text_of(response.content)
+    cc=re.search(r'CC:(.*?)DD:',text,re.S).group(1).split()
+    assert cc[-4:]==['2.0000','0.8000','1.0000','0.5000']
+    assert 'N1*d1:2.*0.80' in ''.join(text.split())
+    modern=client.get('/reports/'+identity)
+    assert '<td>采用线径 Djj</td><td>0.8 mm</td>' in modern.text
+    assert calculations.get(identity)==before
+
+
+def test_complete_native_wire_is_preserved_even_without_structured_selection(snapshot):
+    from dcsj.classic_sheet import fallback,native_pages
+    saved={**copy.deepcopy(snapshot),'name':'合成原版线规','calculation_id':'native-wire','created_at':'2026-11-14'}
+    saved['inputs'].update(_wire_target=.73,JJ=9,Djj=9.9,MM=2,Dmm=2.8)
+    first,second=fallback(saved)
+    first=[line.replace('N1*d1:   -*   -','N1*d1:  2.*0.80').replace('N2*d2:   -*   -','N2*d2:  1.*0.50') for line in first]
+    # An independently recorded final CC row, unlike the submitted input values.
+    cc=second.index(' CC:')
+    second[cc+3]='   0.0000 160.0000   1.0000  16.0000   2.0000   0.8000   1.0000   0.5000'
+    saved['legacy_report']={'status':'complete','source':'kernel-formatted-unit-2','text':'\n'+'\n'.join('   '+line for line in first+second)}
+    before=copy.deepcopy(saved)
+    assert native_pages(saved)==((first,second),True)
+    _,text=text_of(legacy_report.render_pdf(saved))
+    assert re.search(r'CC:(.*?)DD:',text,re.S).group(1).split()[-4:]==['2.0000','0.8000','1.0000','0.5000']
+    assert 'N1*d1:2.*0.80' in ''.join(text.split())
+    assert '首页及CC线规取自保存的原版报表' in ''.join(text.split())
+    assert saved==before
 
 
 def test_long_inputs_zero_and_custom_elements_survive_balanced_pagination(snapshot):

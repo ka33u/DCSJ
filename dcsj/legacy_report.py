@@ -241,9 +241,16 @@ def main_sheets(snapshot):
     if any(snapshot['inputs'].get(key) not in (0,None) for key in ELEMENT_KEYS):
         extra.append('自定义槽形元素（本次输入）')
         extra.extend('  '.join(field(snapshot['inputs'],key) for key in ELEMENT_KEYS[i:i+4]) for i in range(0,len(ELEMENT_KEYS),4))
-    if recorded(snapshot)['mode']=='target_fill':
+    wire = recorded(snapshot)
+    if wire['mode']=='target_fill':
+        if complete:
+            wire_note = '首页及 CC 线规取自保存的原版报表。'
+        elif wire.get('used'):
+            wire_note = 'CC 为实际采用线规。'
+        else:
+            wire_note = '旧记录未保存实际采用线规，首页及 CC 线规以 - 表示；重新计算可补齐。'
         extra.extend(_classic_wrap('自动选线目标 Sf='+plain(snapshot['inputs'].get('_wire_target'))+'；原输入线规 '+
-            ' / '.join(f'{plain(snapshot["inputs"].get(a))}×{plain(snapshot["inputs"].get(b))}' for a,b in [('JJ','Djj'),('MM','Dmm')])+'；CC 为实际采用线规。'))
+            ' / '.join(f'{plain(snapshot["inputs"].get(a))}×{plain(snapshot["inputs"].get(b))}' for a,b in [('JJ','Djj'),('MM','Dmm')])+'；'+wire_note))
     for key,resolved in snapshot.get('loss_semantics',{}).items():
         if resolved.get('mode')!='legacy' or resolved.get('speed_scaling',{}).get('enabled'):
             extra.extend(_classic_wrap(f'原输入 {key}={plain(resolved.get("input"))} {resolved.get("resolved_unit","")}；BB 核内比例={plain(resolved.get("kernel_pu"))}'))

@@ -1,7 +1,7 @@
 """Original two-sheet arrangement and honest fallback for older snapshots."""
 import re
 from .legacy_output import fixed
-from .wire_selection import recorded
+from .wire_selection import KEYS as WIRE_KEYS, recorded
 
 COLUMNS = 76
 CONNECTION_SYMBOLS = {'$': '△', 'Δ': '△', 'D': '△', 'y': 'Y'}
@@ -101,10 +101,13 @@ def fallback(snapshot):
             ('BB','kW p Q1 Q2 D1 Df Dn Xn Di1 Di2 g Y1 sk pfw ps Srr Jc srl hrr hrl le lel'),
             ('CC','b01 hs0 zs1 bs1 bs2 hs12 zc bc02 hr0 zs2 br1 br2 br3 br4 hr12 hr3 hr4 L a ZZ JJ Djj MM Dmm'),
             ('DD','ATA PF IST TST TM CORR')]
+    # CC must agree with the first-sheet winding specification. In old automatic
+    # runs without saved selected wire, leave these four fields unknown as well.
+    displayed = {**p, **{key: wire.get(key) for key in WIRE_KEYS}}
     for label,keys in groups:
         second.append(' '+label+':');keys=keys.split()
         for start in range(0,len(keys),8):
-            second.append(' '+' '.join(fixed(p.get(k) if isinstance(p.get(k),(int,float)) else None,8,4) for k in keys[start:start+8]))
+            second.append(' '+' '.join(fixed(displayed.get(k) if isinstance(displayed.get(k),(int,float)) else None,8,4) for k in keys[start:start+8]))
     return first,second
 
 
