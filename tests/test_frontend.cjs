@@ -92,9 +92,11 @@ for(const full of [true,false])test(`constraint diagnosis distinguishes ${full?'
 });
 
 async function until(check, message) {
-  for (let attempt = 0; attempt < 80; attempt++) {
+  // Event-loop turns can finish before a UI timer fires, especially on Windows.
+  const deadline = performance.now() + 2000;
+  while (performance.now() < deadline) {
     if (check()) return;
-    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setTimeout(resolve, 1));
   }
   assert.ok(check(), message);
 }
